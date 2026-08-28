@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+/*
+ * Theme colours are plain CSS custom properties rather than Tailwind's
+ * `@theme`: `@theme` is only valid at the top level, so the dark-mode override
+ * could not live inside a media query. Components consume these directly as
+ * arbitrary values (e.g. `bg-[var(--color-surface)]`), so no Tailwind utility
+ * generation is needed.
+ */
+:root {
+  --color-canvas: #ffffff;
+  --color-surface: #f7f7f8;
+  --color-border: #e5e5e7;
+  --color-ink: #1a1a1c;
+  --color-muted: #6b6b70;
+  --color-accent: #2f6fed;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-canvas: #131316;
+    --color-surface: #1b1b1f;
+    --color-border: #2c2c31;
+    --color-ink: #ececee;
+    --color-muted: #9a9aa1;
+    --color-accent: #6c9bff;
+  }
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}

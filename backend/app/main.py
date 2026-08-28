@@ -1,0 +1,86 @@
+"""Mai backend application entrypoint (Stage 1)."""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.errors import register_exception_handlers
+from app.api.middleware import RequestContextMiddleware
+from app.api.routes import conversations_router, health_router
+from app.core.config import get_settings
+from app.core.logging import configure_logging, get_logger
+from app.database.session import (
+    check_database_connection,
+    dispose_engine,
+    init_engine,
+)
+from app.llm.factory import dispose_provider, init_provider
+
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start up shared resources, and tear them down on shutdown."""
+    settings = get_settings()
+    configure_logging(level=settings.LOG_LEVEL, log_format=settings.LOG_FORMAT)
+
+    logger.info(
+        "Starting Mai backend",
+        extra={"app": settings.APP_NAME, "environment": settings.APP_ENV},
+    )
+
+    init_engine(settings)
+    if await check_database_connection():
+        logger.info("Database connection established")
+    else:
+        # Deliberately non-fatal: the container should come up and report
+        # "degraded" on /health rather than crash-loop while Postgres boots.
+        logger.error("Database is unreachable at startup; /health will report degraded")
+
+    provider = init_provider(settings)
+    if not settings.is_llm_configured:
+        logger.warning(
+            "No LLM API key configured; chat requests will fail until one is set",
+            extra={"provider": provider.name},
+        )
+
+    logger.info("Mai backend ready")
+    yield
+
+    logger.info("Shutting down Mai backend")
+    await dispose_provider()
+    await dispose_engine()
+    logger.info("Shutdown complete")
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+
+    app = FastAPI(
+        title=f"{settings.APP_NAME} API",
+        description="Stage 1 foundation: chat, conversation persistence, LLM integration.",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
+    )
+
+    register_exception_handlers(app)
+
+    app.include_router(health_router)
+    app.include_router(conversations_router)
+
+    return app
+
+
+app = create_app()

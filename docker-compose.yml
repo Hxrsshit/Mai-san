@@ -1,0 +1,72 @@
+# Mai -- Stage 1 development environment.
+#
+#   cp .env.example .env    # then set GROQ_API_KEY
+#   docker compose up --build
+#
+# Frontend  http://localhost:3000
+# Backend   http://localhost:8000  (docs at /docs)
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mai-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mai}
+      POSTGRES_DB: ${POSTGRES_DB:-mai}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Named volume: data survives `docker compose down`.
+      - mai_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mai} -d ${POSTGRES_DB:-mai}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    container_name: mai-backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # `db` is the compose service name, not localhost.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mai}:${POSTGRES_PASSWORD:-mai}@db:5432/${POSTGRES_DB:-mai}
+      LLM_PROVIDER: ${LLM_PROVIDER:-groq}
+      GROQ_API_KEY: ${GROQ_API_KEY:?GROQ_API_KEY must be set in .env}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      MAX_CONTEXT_MESSAGES: ${MAX_CONTEXT_MESSAGES:-40}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-console}
+      APP_ENV: development
+      CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Source is mounted so host edits apply on container restart
+      # (the CMD does not run uvicorn --reload).
+      - ./backend:/app
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+      args:
+        # Reached from the browser, so it is localhost -- not the service name.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: mai-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    restart: unless-stopped
+
+volumes:
+  mai_pgdata:
