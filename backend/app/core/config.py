@@ -136,6 +136,16 @@ class Settings(BaseSettings):
     RELATIONSHIP_EXTRACTION_TEMPERATURE: float = 0.1
     RELATIONSHIP_EXTRACTION_MAX_TOKENS: int = 1024
 
+    # --- Knowledge lifecycle (Stage 3C) ---
+    # Conflict evaluation runs in the background pipeline after relationship
+    # extraction. It adds no model calls anywhere. Disabling it stops new
+    # lifecycle decisions; existing statuses and links are untouched.
+    CONFLICT_DETECTION_ENABLED: bool = True
+    # Whether a query using historical language ("what did I use before?") may
+    # retrieve superseded knowledge. Off means history is stored and traceable
+    # but never surfaces in chat.
+    HISTORICAL_RETRIEVAL_ENABLED: bool = True
+
     # --- Context retrieval (Stage 2D) ---
     # Retrieval runs on the request path before the chat call. It adds no
     # model calls -- every step is a bounded database query.

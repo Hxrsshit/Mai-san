@@ -4,6 +4,7 @@ from app.api.routes.context import router as context_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.entities import router as entities_router
 from app.api.routes.health import router as health_router
+from app.api.routes.knowledge import router as knowledge_router
 from app.api.routes.prompt import router as prompt_router
 from app.api.routes.relationships import entity_router as entity_relationships_router
 from app.api.routes.relationships import router as relationships_router
@@ -22,4 +23,5 @@ __all__ = [
     "context_preview_router",
     "context_router",
     "prompt_router",
+    "knowledge_router",
 ]

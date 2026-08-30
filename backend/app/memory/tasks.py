@@ -1,9 +1,10 @@
 """Post-turn analysis, run as a FastAPI background task.
 
 Memory extraction runs first, then entity extraction over whatever memories
-were stored, then relationship extraction over those same memories. All three
-live in this one task deliberately: a second concurrent background writer
-would race the first on the same tables.
+were stored, then relationship extraction over those same memories, then
+Stage 3C conflict evaluation over the same memories once their entities and
+relationships are durable. All four live in this one task deliberately: a
+second concurrent background writer would race the first on the same tables.
 
 Starlette runs background tasks after the response has been sent, so the user
 never waits on extraction and never sees an error from it. No external queue
@@ -23,6 +24,7 @@ from app.llm.base import LLMProvider
 from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
 from app.memory.models import Memory
+from app.knowledge.service import KnowledgeService
 from app.relationships.service import RelationshipService
 from app.memory.service import MemoryService
 
@@ -210,6 +212,66 @@ async def run_relationship_extraction(
         except Exception as exc:  # noqa: BLE001 - contain per memory
             logger.error(
                 "Relationship extraction task failed",
+                extra={"memory_id": str(memory_id), "error": str(exc)},
+                exc_info=exc,
+            )
+
+    # Conflicts are evaluated last, once entities and relationships are
+    # committed: detection resolves entity names and inspects relationship
+    # shape, so running it earlier would judge an incomplete picture.
+    await run_conflict_evaluation(
+        memory_ids=memory_ids,
+        settings=settings,
+        session_factory=session_factory,
+    )
+
+
+async def run_conflict_evaluation(
+    memory_ids: List[uuid.UUID],
+    settings: Optional[Settings] = None,
+    session_factory=None,
+) -> None:
+    """Stage 3C: mark superseded knowledge historical, record what conflicts.
+
+    Takes no provider. Conflict detection is deterministic and adds **zero**
+    model calls anywhere -- background or request path.
+
+    Runs on its own session per memory, after everything else is durable, so a
+    failure here can never roll back a memory, an entity, a relationship, or
+    the chat turn. The knowledge simply stays ACTIVE and unresolved, which the
+    specification prefers over a partially mutated state.
+
+    Never raises.
+    """
+    settings = settings or get_settings()
+    if not (settings.MEMORY_ENABLED and settings.CONFLICT_DETECTION_ENABLED):
+        return
+
+    try:
+        if session_factory is None:
+            session_factory = get_session_factory()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Conflict evaluation could not start", extra={"error": str(exc)}
+        )
+        return
+
+    for memory_id in memory_ids:
+        try:
+            async with session_factory() as session:
+                memory = await session.get(Memory, memory_id)
+                if memory is None:
+                    continue
+
+                service = KnowledgeService(session=session, settings=settings)
+                report = await service.evaluate_memory(memory)
+                if report.links_created:
+                    await session.commit()
+                else:
+                    await session.rollback()
+        except Exception as exc:  # noqa: BLE001 - contain per memory
+            logger.error(
+                "Conflict evaluation task failed",
                 extra={"memory_id": str(memory_id), "error": str(exc)},
                 exc_info=exc,
             )

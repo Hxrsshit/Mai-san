@@ -11,6 +11,7 @@ from app.database.session import get_db_session, get_session_factory
 from app.llm.base import LLMProvider
 from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
+from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
 from app.prompt.formatter import PromptFormatter
 from app.relationships.service import RelationshipService
@@ -67,6 +68,14 @@ def get_chat_service(
     )
 
 
+def get_knowledge_service(
+    session: DbSession, settings: AppSettings
+) -> KnowledgeService:
+    """Stage 3C lifecycle reads. Takes no provider: conflict handling makes
+    no model call anywhere."""
+    return KnowledgeService(session=session, settings=settings)
+
+
 def get_memory_service(
     session: DbSession, provider: Provider, settings: AppSettings
 ) -> MemoryService:
@@ -93,3 +102,4 @@ Relationships = Annotated[RelationshipService, Depends(get_relationship_service)
 Retrieval = Annotated[RetrievalService, Depends(get_retrieval_service)]
 Context = Annotated[ContextService, Depends(get_context_service)]
 Formatter = Annotated[PromptFormatter, Depends(get_prompt_formatter)]
+Knowledge = Annotated[KnowledgeService, Depends(get_knowledge_service)]

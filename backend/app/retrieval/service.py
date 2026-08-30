@@ -10,6 +10,15 @@ Retrieval degrades gracefully. Each source is wrapped independently: if
 relationship lookup fails, memories and entities are still used; if everything
 fails, an empty package is returned and the chat turn proceeds on recent
 conversation alone. Retrieval must never break chat.
+
+Stage 3C made retrieval lifecycle-aware. By default only ACTIVE knowledge is
+eligible, so anything the background pipeline marked SUPERSEDED stops being
+offered as current fact. A query with explicit historical intent ("what did I
+use before?") widens the eligible set to include SUPERSEDED -- the one route
+by which retired knowledge reaches a prompt.
+
+**Retrieval remains read-only.** Lifecycle state is consulted here and changed
+only by the background pipeline. Nothing on the request path writes.
 """
 
 import time
@@ -25,6 +34,10 @@ from app.retrieval.entity_matcher import EntityMatcher
 from app.retrieval.query_normalizer import NormalizedQuery, analyse
 from app.retrieval.ranker import Ranker
 from app.retrieval.retrievers import (
+    DEFAULT_MEMORY_STATUSES,
+    DEFAULT_RELATIONSHIP_STATUSES,
+    HISTORICAL_MEMORY_STATUSES,
+    HISTORICAL_RELATIONSHIP_STATUSES,
     MemoryCandidate,
     MemoryRetriever,
     RelationshipCandidate,
@@ -87,6 +100,23 @@ class RetrievalService:
 
         degraded: List[str] = []
 
+        # Lifecycle eligibility, decided once for the whole pass. Superseded
+        # knowledge is offered only when the query asked about the past, and
+        # only when the feature is enabled; archived knowledge, never.
+        historical = bool(
+            analysis.historical_intent
+            and self._settings.HISTORICAL_RETRIEVAL_ENABLED
+        )
+        memory_statuses = (
+            HISTORICAL_MEMORY_STATUSES if historical else DEFAULT_MEMORY_STATUSES
+        )
+        relationship_statuses = (
+            HISTORICAL_RELATIONSHIP_STATUSES
+            if historical
+            else DEFAULT_RELATIONSHIP_STATUSES
+        )
+        package.metadata.historical_intent = historical
+
         matches = await self._safe(self._matcher.match(analysis), "entities", degraded, [])
         entity_strength: Dict[uuid.UUID, float] = {
             match.entity.id: match.strength for match in matches
@@ -95,7 +125,9 @@ class RetrievalService:
 
         relationship_candidates: List[RelationshipCandidate] = await self._safe(
             RelationshipRetriever(
-                self._session, self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE
+                self._session,
+                self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE,
+                statuses=relationship_statuses,
             ).collect(entity_ids),
             "relationships",
             degraded,
@@ -109,7 +141,9 @@ class RetrievalService:
 
         candidates: Dict[uuid.UUID, MemoryCandidate] = await self._safe(
             MemoryRetriever(
-                self._session, self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE
+                self._session,
+                self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE,
+                statuses=memory_statuses,
             ).collect(
                 keywords=analysis.keywords,
                 entity_ids=entity_ids,
@@ -153,6 +187,7 @@ class RetrievalService:
             candidate_memories=len(pool),
             candidate_relationships=len(relationship_candidates),
             degraded_sources=degraded,
+            historical_intent=historical,
         )
         package = self._builder.build(
             query=query,
@@ -172,6 +207,7 @@ class RetrievalService:
                 "selected_memories": package.metadata.selected_memories,
                 "selected_relationships": package.metadata.selected_relationships,
                 "context_chars": package.metadata.context_chars,
+                "historical_intent": historical,
                 "degraded": ",".join(degraded) or None,
                 "duration_ms": package.metadata.duration_ms,
             },

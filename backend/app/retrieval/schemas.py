@@ -93,6 +93,10 @@ class RetrievalMetadata(BaseModel):
     degraded_sources: List[str] = Field(default_factory=list)
     enabled: bool = True
 
+    #: True when the query asked about the past and superseded knowledge was
+    #: therefore eligible. Stage 3C; false on every ordinary question.
+    historical_intent: bool = False
+
 
 class RetrievalResult(BaseModel):
     """Where Stage 2D ends: ranked knowledge, not yet assembled context.

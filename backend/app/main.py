@@ -16,7 +16,12 @@ from app.api.routes import (
     relationships_router,
     retrieval_router,
 )
-from app.api.routes import context_preview_router, context_router, prompt_router
+from app.api.routes import (
+    context_preview_router,
+    context_router,
+    knowledge_router,
+    prompt_router,
+)
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.database.session import (
@@ -109,6 +114,9 @@ def create_app() -> FastAPI:
         # Stage 3A assembly reads memories/entities/relationships, so it
         # shares their master switch.
         app.include_router(context_router)
+        # Stage 3C lifecycle inspection reads memories and relationships,
+        # so it shares their master switch.
+        app.include_router(knowledge_router)
 
     return app
 

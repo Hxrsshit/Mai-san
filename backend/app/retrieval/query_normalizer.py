@@ -41,6 +41,21 @@ MAX_PHRASE_WORDS = 4
 _PUNCTUATION = re.compile(r"[^\w\s]")
 _WHITESPACE = re.compile(r"\s+")
 
+# Words that mark a question as being about the past. Stage 3C uses this to
+# decide whether superseded knowledge may be retrieved.
+#
+# Deliberately conservative. Common past-tense auxiliaries ("was", "were",
+# "did") are excluded: "what was my name" asks about the present, and treating
+# it as historical would surface retired knowledge on ordinary questions. Only
+# words whose whole job is to point backwards are listed.
+HISTORICAL_MARKERS = frozenset({
+    "previously", "before", "earlier", "formerly", "historically",
+    "originally", "past", "prior", "old", "older", "ago",
+})
+
+# Multi-word markers, matched against the normalised string rather than tokens.
+HISTORICAL_PHRASES = ("used to", "no longer", "in the past", "back then")
+
 
 @dataclass(frozen=True)
 class NormalizedQuery:
@@ -51,6 +66,10 @@ class NormalizedQuery:
     tokens: Tuple[str, ...] = field(default_factory=tuple)
     keywords: Tuple[str, ...] = field(default_factory=tuple)
     phrases: Tuple[str, ...] = field(default_factory=tuple)
+
+    #: True when the question explicitly asks about the past. Stage 3C widens
+    #: retrieval to superseded knowledge only when this is set.
+    historical_intent: bool = False
 
     @property
     def is_empty(self) -> bool:
@@ -115,6 +134,27 @@ def extract_phrases(normalized: str) -> List[str]:
     return phrases
 
 
+def has_historical_intent(normalized: str) -> bool:
+    """True when the query explicitly asks about the past.
+
+    Word-boundary matching on the normalised string, so "before" matches and
+    "beforehand" does not turn into a false positive through substring luck.
+
+    This is a keyword test, not an intent model. It will miss "what did I use
+    when I started Mai" and it will fire on "tell me about my old laptop" even
+    though nothing there is superseded. Both failure modes are safe: a miss
+    means normal current-state retrieval, and a false positive merely widens
+    the candidate pool -- ranking still decides what survives.
+    """
+    if not normalized:
+        return False
+
+    tokens = set(normalized.split())
+    if tokens & HISTORICAL_MARKERS:
+        return True
+    return any(phrase in normalized for phrase in HISTORICAL_PHRASES)
+
+
 def analyse(raw: str) -> NormalizedQuery:
     """Full deterministic analysis of one user message."""
     normalized = normalize_query(raw)
@@ -124,4 +164,5 @@ def analyse(raw: str) -> NormalizedQuery:
         tokens=tuple(normalized.split()),
         keywords=tuple(extract_keywords(normalized)),
         phrases=tuple(extract_phrases(normalized)),
+        historical_intent=has_historical_intent(normalized),
     )
