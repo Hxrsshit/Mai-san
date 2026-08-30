@@ -12,10 +12,16 @@ services:
     container_name: mai-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mai}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mai}
+      # No default. A database holding personal conversations and memories
+      # must not ship with a guessable password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       POSTGRES_DB: ${POSTGRES_DB:-mai}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Loopback only. Docker binds 0.0.0.0 by default, which would put a
+      # database of personal memories on every interface of the host --
+      # reachable from the local network. Use `docker compose exec db psql`
+      # for access from elsewhere.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       # Named volume: data survives `docker compose down`.
       - mai_pgdata:/var/lib/postgresql/data
@@ -36,7 +42,7 @@ services:
         condition: service_healthy
     environment:
       # `db` is the compose service name, not localhost.
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mai}:${POSTGRES_PASSWORD:-mai}@db:5432/${POSTGRES_DB:-mai}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mai}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/${POSTGRES_DB:-mai}
       LLM_PROVIDER: ${LLM_PROVIDER:-groq}
       GROQ_API_KEY: ${GROQ_API_KEY:?GROQ_API_KEY must be set in .env}
       GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
@@ -47,7 +53,10 @@ services:
       APP_ENV: development
       CORS_ORIGINS: http://localhost:3000
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      # Loopback only. The API has no authentication: every endpoint,
+      # including the DELETE routes, is open to whoever can reach the port.
+      # Until an auth stage exists, that must not be the local network.
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
       # Source is mounted so host edits apply on container restart
       # (the CMD does not run uvicorn --reload).
@@ -65,7 +74,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     restart: unless-stopped
 
 volumes:

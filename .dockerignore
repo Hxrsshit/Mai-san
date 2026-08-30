@@ -1,0 +1,61 @@
+# Build-context exclusions.
+#
+# SECURITY: the backend Dockerfile does `COPY backend/ ./`. Without this file
+# `backend/.env` -- which holds the live provider API key -- would be copied
+# into an image layer, where it survives `docker history`, layer extraction and
+# any push to a registry. Deleting the file in a later layer would not remove
+# it. Secrets reach the container through `environment:` in docker-compose,
+# never through the image.
+
+# --- Secrets ----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+id_rsa*
+
+# --- Local databases --------------------------------------------------------
+# A development database contains real conversations and memories.
+*.db
+*.sqlite
+*.sqlite3
+**/*.db
+
+# --- Virtualenvs and caches -------------------------------------------------
+# Host-built wheels are the wrong platform, and .venv is ~49MB of noise that
+# would also invalidate the layer cache on every local install.
+.venv/
+venv/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# --- Node -------------------------------------------------------------------
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+
+# --- VCS and tooling --------------------------------------------------------
+.git/
+.gitignore
+.github/
+.claude/
+*.log
+
+# --- Docs and editors -------------------------------------------------------
+docs/
+*.md
+!README.md
+.vscode/
+.idea/
+.DS_Store

@@ -7,18 +7,26 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.errors import DatabaseError, MaiError
-from app.core.logging import get_logger, get_request_id
+from app.core.logging import get_logger, get_request_id, redact
 
 logger = get_logger(__name__)
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
+    """Build the error envelope.
+
+    The message is redacted on the way out. Most messages are written by this
+    application and carry nothing sensitive, but provider errors are derived
+    from an upstream response body -- and upstream APIs do echo fragments of a
+    rejected credential back ("Incorrect API key provided: sk-...XYZ"). That
+    text would otherwise be reflected verbatim to whoever made the request.
+    """
     return JSONResponse(
         status_code=status_code,
         content={
             "error": {
                 "code": code,
-                "message": message,
+                "message": redact(message),
                 "request_id": get_request_id(),
             }
         },

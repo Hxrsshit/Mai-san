@@ -80,10 +80,27 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestContextMiddleware)
+
+    # A wildcard origin combined with credentials lets *any* website call this
+    # API from a visitor's browser and read the response -- every conversation,
+    # memory and entity, plus the DELETE routes. Starlette resolves "*" by
+    # echoing the request's own origin when credentials are allowed, so the
+    # wildcard is not the harmless default it looks like. Credentials are
+    # dropped rather than the origin list being silently rewritten, so an
+    # operator who really wants "*" gets a working read-only-from-anywhere API
+    # rather than a surprise.
+    origins = list(settings.CORS_ORIGINS)
+    allow_credentials = "*" not in origins
+    if not allow_credentials:
+        logger.warning(
+            "CORS_ORIGINS contains '*'; credentialed cross-origin requests are "
+            "disabled. Set an explicit origin list to re-enable them.",
+        )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
-        allow_credentials=True,
+        allow_origins=origins,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["X-Request-ID"],
