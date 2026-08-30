@@ -20,6 +20,7 @@ from app.schemas.conversation import (
     ConversationRead,
     ConversationUpdate,
 )
+from app.intent.schemas import IntentRead
 from app.memory.tasks import run_memory_extraction
 from app.schemas.message import ChatResponse, MessageCreate, MessageRead
 
@@ -122,7 +123,7 @@ async def send_message(
     session_factory: SessionFactory,
     session: DbSession,
 ) -> ChatResponse:
-    user_message, assistant_message = await chat.send_message(
+    user_message, assistant_message, intent = await chat.send_message(
         conversation_id=conversation_id, content=payload.content
     )
 
@@ -152,6 +153,9 @@ async def send_message(
         conversation_id=conversation_id,
         user_message=MessageRead.model_validate(user_message),
         assistant_message=MessageRead.model_validate(assistant_message),
+        # Stage 4A understanding, reported alongside the turn. Application
+        # state: it never reached the prompt, and it authorises nothing.
+        intent=IntentRead.model_validate(intent, from_attributes=True),
     )
 
 

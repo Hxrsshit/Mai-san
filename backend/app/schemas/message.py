@@ -2,10 +2,12 @@
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.database.models.message import MessageRole
+from app.intent.schemas import IntentRead
 
 
 class MessageCreate(BaseModel):
@@ -50,3 +52,14 @@ class ChatResponse(BaseModel):
     conversation_id: uuid.UUID
     user_message: MessageRead
     assistant_message: MessageRead
+
+    #: Stage 4A. What Mai understood the user to be asking for.
+    #:
+    #: A sibling of the messages, not part of one: intent is application state
+    #: about the turn, and keeping it in its own field is what stops it being
+    #: mistaken for something the user or the model said. It is `None` when
+    #: classification is disabled or unavailable.
+    #:
+    #: Nothing here authorises anything. `requires_execution` records that a
+    #: future stage would have to arrange execution; Stage 4A has no executor.
+    intent: Optional[IntentRead] = None

@@ -19,6 +19,7 @@ from app.api.routes import (
 from app.api.routes import (
     context_preview_router,
     context_router,
+    intent_router,
     knowledge_router,
     prompt_router,
 )
@@ -115,6 +116,10 @@ def create_app() -> FastAPI:
     # does. With memory off it is how you confirm no knowledge reaches the
     # model.
     app.include_router(prompt_router)
+    # Stage 4A understanding. Registered unconditionally alongside the
+    # chat path it describes: it reads no memory and needs no knowledge
+    # subsystem, and with memory disabled it is how you confirm that.
+    app.include_router(intent_router)
 
     # The memory subsystem can be disabled entirely; when it is, the
     # inspection routes are not registered at all.

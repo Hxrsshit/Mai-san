@@ -64,7 +64,11 @@ async def test_the_one_call_guarantee_is_recorded(
     )
 
     record = record_named(chat_logs, "Chat turn started")
-    assert record.request_path_llm_calls == 1
+    # Stage 4A split this counter in two. Generation stays at exactly one --
+    # the Stage 3B guarantee -- and classification is counted separately so
+    # the two bounds can be checked independently.
+    assert record.request_path_generation_calls == 1
+    assert record.request_path_classification_calls <= 1
     assert len(fake_provider.calls) == 1
 
 

@@ -79,7 +79,25 @@ class ClaudeShapedProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        json_mode: bool = False,
     ) -> LLMResponse:
+        """Accepts `json_mode` and ignores it, which the contract permits.
+
+        A provider may have no native JSON mode; it may not refuse the
+        parameter. Stage 4A's classifier is the first request-path caller to
+        pass it, so a provider that omitted it used to work by accident.
+        """
+        if json_mode:
+            # No structured mode of its own: answer the shape the caller needs
+            # from the prompt alone, exactly as the contract describes.
+            self.received = list(messages)
+            return LLMResponse(
+                content=(
+                    '{"intent_type": "conversation", "confidence": 0.5,'
+                    ' "ambiguity": "none", "secondary_intents": []}'
+                ),
+                model=self._model,
+            )
         self.received = list(messages)
         return LLMResponse(content="reply from a different vendor", model=self._model)
 
@@ -125,7 +143,7 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
     conversation = await conversations.create_conversation()
 
     chat = ChatService(session=db_session, provider=provider, settings=settings)
-    user_message, assistant_message = await chat.send_message(
+    user_message, assistant_message, intent = await chat.send_message(
         conversation.id, "hello from the test"
     )
 
@@ -133,6 +151,14 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
     assert user_message.content == "hello from the test"
     # The provider received the system prompt plus the user turn.
     assert [m.role for m in provider.received] == ["system", "user"]
+
+    # Stage 4A rides the same abstraction. A provider with a different wire
+    # format, no native JSON mode and no OpenAI-compatible transport still
+    # produces a usable classification, because the classifier only ever
+    # speaks `LLMMessage` and validates whatever comes back.
+    assert intent.intent_type.value == "conversation"
+    assert intent.classified is True
+    assert intent.requires_execution is False
 
 
 async def test_switching_providers_changes_the_endpoint_called() -> None:

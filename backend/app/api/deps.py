@@ -11,6 +11,7 @@ from app.database.session import get_db_session, get_session_factory
 from app.llm.base import LLMProvider
 from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
+from app.intent.service import IntentService
 from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
 from app.prompt.formatter import PromptFormatter
@@ -52,12 +53,20 @@ def get_prompt_formatter(settings: AppSettings) -> PromptFormatter:
     return PromptFormatter(system_prompt=settings.MAI_SYSTEM_PROMPT)
 
 
+def get_intent_service(
+    session: DbSession, provider: Provider, settings: AppSettings
+) -> IntentService:
+    """Stage 4A understanding. Read-only, and holds no executor."""
+    return IntentService(session=session, provider=provider, settings=settings)
+
+
 def get_chat_service(
     session: DbSession,
     provider: Provider,
     settings: AppSettings,
     context_service: "Context",
     formatter: "Formatter",
+    intent_service: "Intent",
 ) -> ChatService:
     return ChatService(
         session=session,
@@ -65,6 +74,7 @@ def get_chat_service(
         settings=settings,
         context_service=context_service,
         prompt_formatter=formatter,
+        intent_service=intent_service,
     )
 
 
@@ -103,3 +113,4 @@ Retrieval = Annotated[RetrievalService, Depends(get_retrieval_service)]
 Context = Annotated[ContextService, Depends(get_context_service)]
 Formatter = Annotated[PromptFormatter, Depends(get_prompt_formatter)]
 Knowledge = Annotated[KnowledgeService, Depends(get_knowledge_service)]
+Intent = Annotated[IntentService, Depends(get_intent_service)]

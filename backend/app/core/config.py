@@ -136,6 +136,22 @@ class Settings(BaseSettings):
     RELATIONSHIP_EXTRACTION_TEMPERATURE: float = 0.1
     RELATIONSHIP_EXTRACTION_MAX_TOKENS: int = 1024
 
+    # --- Intent understanding (Stage 4A) ---
+    # Classification runs on the request path and costs ONE bounded
+    # structured model call per user turn, in addition to the single
+    # response-generation call. Disabling it restores the exact pre-4A call
+    # profile; nothing else changes, because intent never reaches the prompt.
+    INTENT_CLASSIFICATION_ENABLED: bool = True
+    # Zero temperature: the same message must classify the same way every
+    # time, or downstream stages cannot rely on the label.
+    INTENT_CLASSIFICATION_TEMPERATURE: float = 0.0
+    INTENT_CLASSIFICATION_MAX_TOKENS: int = 512
+    # How many recent turns are shown to the classifier so a short follow-up
+    # ("do that one") can be understood. Kept small on purpose: Stage 2D
+    # retrieval is NOT reused here, and this must not become a second context
+    # system.
+    INTENT_CONTEXT_MESSAGES: int = 4
+
     # --- Knowledge lifecycle (Stage 3C) ---
     # Conflict evaluation runs in the background pipeline after relationship
     # extraction. It adds no model calls anywhere. Disabling it stops new

@@ -33,11 +33,16 @@ class FakeLLMProvider(LLMProvider):
     Set `raise_error` to make the next call fail, which is how the error-path
     tests exercise the API without touching the network.
 
-    Calls made with `json_mode=True` are extraction calls. They are recorded
+    Calls made with `json_mode=True` are structured calls. They are recorded
     separately and answered with a canned payload, so one fake serves the chat
-    turn, the memory extraction that follows it, the entity extraction after
-    that, and the relationship extraction after that. The three extraction
-    kinds are told apart by their system prompt.
+    turn, the Stage 4A intent classification that precedes it, and the memory,
+    entity and relationship extraction that follow it. The kinds are told apart
+    by their system prompt.
+
+    `calls` therefore holds *generation* calls only -- the single synchronous
+    response call per turn. Classification and extraction never appear there,
+    which is what keeps the Stage 3B one-generation-call assertion meaningful
+    after Stage 4A added a second request-path call of a different kind.
     """
 
     name = "fake"
@@ -46,6 +51,13 @@ class FakeLLMProvider(LLMProvider):
     NO_MEMORIES = '{"should_store_memory": false, "memories": []}'
     NO_ENTITIES = '{"entities": []}'
     NO_RELATIONSHIPS = '{"relationships": []}'
+    #: A neutral Stage 4A answer: ordinary conversation, nothing required.
+    CONVERSATION_INTENT = (
+        '{"intent_type": "conversation", "confidence": 0.9, "goal": null,'
+        ' "requested_outcome": null, "ambiguity": "none",'
+        ' "ambiguity_reason": null, "suggests_planning": false,'
+        ' "suggests_research": false, "secondary_intents": []}'
+    )
 
     def __init__(self, reply: str = "Hello from Mai.") -> None:
         self.reply = reply
@@ -53,13 +65,21 @@ class FakeLLMProvider(LLMProvider):
         self.extraction_calls: List[List[LLMMessage]] = []
         self.entity_calls: List[List[LLMMessage]] = []
         self.relationship_calls: List[List[LLMMessage]] = []
+        self.intent_calls: List[List[LLMMessage]] = []
         self.extraction_reply: str = self.NO_MEMORIES
         self.entity_reply: str = self.NO_ENTITIES
         self.relationship_reply: str = self.NO_RELATIONSHIPS
+        self.intent_reply: str = self.CONVERSATION_INTENT
         self.raise_error: Optional[Exception] = None
         self.extraction_error: Optional[Exception] = None
         self.entity_error: Optional[Exception] = None
         self.relationship_error: Optional[Exception] = None
+        self.intent_error: Optional[Exception] = None
+
+    @staticmethod
+    def _is_intent_call(messages: List[LLMMessage]) -> bool:
+        system = messages[0].content if messages else ""
+        return "You classify what a user is asking for" in system
 
     @staticmethod
     def _is_entity_call(messages: List[LLMMessage]) -> bool:
@@ -82,7 +102,12 @@ class FakeLLMProvider(LLMProvider):
         max_tokens: Optional[int] = None,
         json_mode: bool = False,
     ) -> LLMResponse:
-        if json_mode and self._is_relationship_call(messages):
+        if json_mode and self._is_intent_call(messages):
+            self.intent_calls.append(list(messages))
+            if self.intent_error is not None:
+                raise self.intent_error
+            content = self.intent_reply
+        elif json_mode and self._is_relationship_call(messages):
             self.relationship_calls.append(list(messages))
             if self.relationship_error is not None:
                 raise self.relationship_error
@@ -132,6 +157,11 @@ class FakeLLMProvider(LLMProvider):
     def last_relationship_call(self) -> List[LLMMessage]:
         assert self.relationship_calls, "relationship extraction was never called"
         return self.relationship_calls[-1]
+
+    @property
+    def last_intent_call(self) -> List[LLMMessage]:
+        assert self.intent_calls, "intent classification was never called"
+        return self.intent_calls[-1]
 
 
 # --- Settings ---------------------------------------------------------------
