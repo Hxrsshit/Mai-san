@@ -17,6 +17,9 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# How long a SQLite connection waits for a competing writer before failing.
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
 _engine: Optional[AsyncEngine] = None
 _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 
@@ -30,22 +33,59 @@ def _engine_kwargs(settings: Settings) -> dict:
     return kwargs
 
 
-def _enforce_sqlite_foreign_keys(engine: AsyncEngine) -> None:
-    """Turn on foreign key enforcement for SQLite connections.
+def configure_sqlite(engine: AsyncEngine) -> None:
+    """Apply the pragmas SQLite needs to behave like the PostgreSQL target.
 
-    PostgreSQL (the deployment target) enforces ON DELETE CASCADE natively, but
-    SQLite ignores foreign keys unless this pragma is set per connection --
-    which would silently orphan a deleted conversation's messages. Setting it
-    keeps behaviour identical across both engines.
+    Three settings, each fixing a real defect observed in this application:
+
+    - ``foreign_keys``: SQLite ignores foreign keys unless asked, which would
+      silently orphan a deleted conversation's messages and memories.
+    - ``busy_timeout``: SQLite permits a single writer. Post-turn memory
+      extraction runs on its own connection, so it can collide with a chat
+      request writing a message. Without a timeout the loser fails instantly
+      with "database is locked"; with it, the loser waits. (The main cause of
+      that collision was fixed separately -- the chat route now commits before
+      queueing extraction -- but concurrent requests can still overlap.)
+    - ``journal_mode=WAL``: lets readers proceed during a write, which removes
+      most of the remaining contention. Not available for in-memory databases,
+      which is harmless -- they have a single connection anyway.
     """
     if engine.dialect.name != "sqlite":
         return
 
     @event.listens_for(engine.sync_engine, "connect")
-    def _set_pragma(dbapi_connection, _record):  # pragma: no cover - driver hook
+    def _set_pragmas(dbapi_connection, _record):  # pragma: no cover - driver hook
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+        except Exception:  # noqa: BLE001 - unsupported for :memory:, not fatal
+            pass
         cursor.close()
+        # Required for SAVEPOINT to work. The pysqlite driver emits its own
+        # implicit BEGIN at the wrong moments, which silently breaks nested
+        # transactions -- a savepoint that should have been discarded ends up
+        # persisted. Memory storage uses savepoints so one rejected candidate
+        # cannot abort the rest of the batch, so this is not optional.
+        # See SQLAlchemy's "Serializable isolation / Savepoints" note.
+        dbapi_connection.isolation_level = None
+
+    @event.listens_for(engine.sync_engine, "begin")
+    def _begin_immediate(connection):  # pragma: no cover - driver hook
+        """Emit the BEGIN the driver is no longer emitting -- as a writer.
+
+        A plain deferred BEGIN starts the transaction as a reader that must
+        later upgrade to a writer, and SQLite refuses to wait on that upgrade:
+        it returns SQLITE_BUSY immediately rather than risk deadlock, ignoring
+        busy_timeout. Taking the write lock up front makes busy_timeout apply,
+        so a competing writer waits instead of failing.
+
+        This serialises SQLite transactions, which is an acceptable trade for a
+        single-user development database. PostgreSQL uses MVCC and never
+        reaches this hook.
+        """
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def init_engine(settings: Optional[Settings] = None) -> AsyncEngine:
@@ -55,7 +95,7 @@ def init_engine(settings: Optional[Settings] = None) -> AsyncEngine:
     settings = settings or get_settings()
     if _engine is None:
         _engine = create_async_engine(settings.DATABASE_URL, **_engine_kwargs(settings))
-        _enforce_sqlite_foreign_keys(_engine)
+        configure_sqlite(_engine)
         _session_factory = async_sessionmaker(
             bind=_engine,
             class_=AsyncSession,
@@ -127,6 +167,14 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+        if not session.in_transaction():
+            # The handler already committed (the chat route does, so that the
+            # turn is durable before background work starts). Committing again
+            # would autobegin an empty transaction, and on SQLite -- where
+            # pooled sessions can share one connection -- that collides with
+            # whatever else is using it.
+            return
 
         try:
             await session.commit()

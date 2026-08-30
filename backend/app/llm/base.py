@@ -60,8 +60,15 @@ class LLMProvider(ABC):
         messages: List[LLMMessage],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        json_mode: bool = False,
     ) -> LLMResponse:
         """Generate a single, non-streaming completion.
+
+        `json_mode` asks the provider to emit a JSON object. It is a
+        capability request, not a vendor format: providers that support a
+        native JSON mode should use it, and providers that do not may ignore
+        it and rely on the prompt. Callers must parse and validate the result
+        either way, so ignoring it is always safe.
 
         Implementations must raise the errors in `app.core.errors`
         (LLMTimeoutError, LLMAuthError, LLMRateLimitError, LLMResponseError,

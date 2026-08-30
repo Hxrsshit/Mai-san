@@ -7,7 +7,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import register_exception_handlers
 from app.api.middleware import RequestContextMiddleware
-from app.api.routes import conversations_router, health_router
+from app.api.routes import (
+    conversations_router,
+    entities_router,
+    entity_relationships_router,
+    health_router,
+    memories_router,
+    relationships_router,
+    retrieval_router,
+)
+from app.api.routes import context_preview_router, context_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.database.session import (
@@ -79,6 +88,22 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(conversations_router)
+
+    # The memory subsystem can be disabled entirely; when it is, the
+    # inspection routes are not registered at all.
+    if settings.MEMORY_ENABLED:
+        app.include_router(memories_router)
+        # Entities are derived from memories, so they share the master switch.
+        app.include_router(entities_router)
+        app.include_router(relationships_router)
+        app.include_router(entity_relationships_router)
+        # Retrieval reads memories/entities/relationships, so it shares their
+        # master switch.
+        app.include_router(retrieval_router)
+        app.include_router(context_preview_router)
+        # Stage 3A assembly reads memories/entities/relationships, so it
+        # shares their master switch.
+        app.include_router(context_router)
 
     return app
 

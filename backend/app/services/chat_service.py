@@ -9,8 +9,9 @@ Implements the Stage 1 flow:
       -> store assistant reply
       -> return both
 
-Context is drawn from the current conversation only. Cross-conversation
-memory is explicitly out of scope for Stage 1.
+Recent conversation is drawn from the current conversation. Stage 2D adds
+retrieved long-term knowledge alongside it, assembled on the request path with
+no additional model call.
 """
 
 import uuid
@@ -23,6 +24,8 @@ from app.core.errors import LLMError
 from app.core.logging import get_logger
 from app.database.models import Conversation, Message, MessageRole
 from app.llm.base import LLMMessage, LLMProvider
+from app.retrieval.schemas import RetrievalResult
+from app.retrieval.service import RetrievalService
 from app.services.conversation_service import ConversationService
 
 logger = get_logger(__name__)
@@ -35,11 +38,15 @@ class ChatService:
         provider: LLMProvider,
         settings: Optional[Settings] = None,
         conversation_service: Optional[ConversationService] = None,
+        retrieval_service: Optional[RetrievalService] = None,
     ) -> None:
         self._session = session
         self._provider = provider
         self._settings = settings or get_settings()
         self._conversations = conversation_service or ConversationService(session)
+        self._retrieval = retrieval_service or RetrievalService(
+            session, self._settings
+        )
 
     async def send_message(
         self, conversation_id: uuid.UUID, content: str
@@ -62,13 +69,20 @@ class ChatService:
         history = await self._conversations.get_messages(
             conversation_id, limit=self._settings.MAX_CONTEXT_MESSAGES
         )
-        context = self._build_context(history)
+
+        # Retrieval runs here, on the request path, and adds no model call.
+        # It never raises: a failure yields an empty package and the turn
+        # proceeds on recent conversation alone.
+        knowledge = await self._retrieve(content)
+        context = self._build_context(history, knowledge)
 
         logger.info(
             "Chat turn started",
             extra={
                 "conversation_id": str(conversation_id),
                 "context_messages": len(context),
+                "retrieved_memories": knowledge.metadata.selected_memories,
+                "retrieved_relationships": knowledge.metadata.selected_relationships,
             },
         )
 
@@ -113,17 +127,39 @@ class ChatService:
 
     # --- Internals ----------------------------------------------------------
 
-    def _build_context(self, history: List[Message]) -> List[LLMMessage]:
+    async def _retrieve(self, content: str) -> RetrievalResult:
+        """Assemble relevant long-term knowledge. Never raises."""
+        try:
+            return await self._retrieval.retrieve(content)
+        except Exception as exc:  # noqa: BLE001 - retrieval must never break chat
+            logger.error(
+                "Context retrieval failed; continuing without it",
+                extra={"error": str(exc)},
+                exc_info=exc,
+            )
+            return RetrievalResult(query=content)
+
+    def _build_context(
+        self, history: List[Message], knowledge: Optional[RetrievalResult] = None
+    ) -> List[LLMMessage]:
         """Turn stored rows into the message list sent to the model.
 
-        A system prompt is always prepended; any system messages that happen to
-        be stored in the conversation are preserved in place after it.
+        Order matters. Retrieved knowledge sits between the system prompt and
+        the conversation, so the recent turns -- and the user's current message
+        -- come last and stay closest to the model's attention. The knowledge
+        block states in its own text that the current message wins if the two
+        disagree.
         """
         context: List[LLMMessage] = []
 
         system_prompt = self._settings.MAI_SYSTEM_PROMPT.strip()
         if system_prompt:
             context.append(LLMMessage(role="system", content=system_prompt))
+
+        if knowledge is not None and not knowledge.is_empty:
+            rendered = self._retrieval.render(knowledge)
+            if rendered:
+                context.append(LLMMessage(role="system", content=rendered))
 
         for message in history:
             context.append(

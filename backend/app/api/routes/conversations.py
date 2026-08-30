@@ -2,9 +2,16 @@
 
 import uuid
 
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Query, Response, status
 
-from app.api.deps import Chat, Conversations
+from app.api.deps import (
+    AppSettings,
+    Chat,
+    Conversations,
+    DbSession,
+    Provider,
+    SessionFactory,
+)
 from app.schemas.common import ErrorResponse
 from app.schemas.conversation import (
     ConversationCreate,
@@ -13,6 +20,7 @@ from app.schemas.conversation import (
     ConversationRead,
     ConversationUpdate,
 )
+from app.memory.tasks import run_memory_extraction
 from app.schemas.message import ChatResponse, MessageCreate, MessageRead
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -105,11 +113,41 @@ async def delete_conversation(
     summary="Send a message and get Mai's reply",
 )
 async def send_message(
-    conversation_id: uuid.UUID, payload: MessageCreate, chat: Chat
+    conversation_id: uuid.UUID,
+    payload: MessageCreate,
+    chat: Chat,
+    background_tasks: BackgroundTasks,
+    settings: AppSettings,
+    provider: Provider,
+    session_factory: SessionFactory,
+    session: DbSession,
 ) -> ChatResponse:
     user_message, assistant_message = await chat.send_message(
         conversation_id=conversation_id, content=payload.content
     )
+
+    # Commit the turn before queueing extraction. FastAPI closes dependency
+    # scopes *after* background tasks run, so without this the request's
+    # transaction would still be open when extraction starts: on PostgreSQL
+    # the task would not see the messages it is meant to analyse, and on
+    # SQLite the two connections deadlock until the busy timeout expires.
+    await session.commit()
+
+    # Memory extraction runs after this response is sent, on its own session.
+    # It cannot delay, alter or fail the chat turn -- see app/memory/tasks.py.
+    if settings.MEMORY_ENABLED and settings.MEMORY_EXTRACTION_ENABLED:
+        background_tasks.add_task(
+            run_memory_extraction,
+            conversation_id=conversation_id,
+            user_message=user_message.content,
+            assistant_message=assistant_message.content,
+            source_message_id=user_message.id,
+            settings=settings,
+            # Passed explicitly so dependency overrides are honoured.
+            provider=provider,
+            session_factory=session_factory,
+        )
+
     return ChatResponse(
         conversation_id=conversation_id,
         user_message=MessageRead.model_validate(user_message),

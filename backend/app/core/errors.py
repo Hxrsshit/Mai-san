@@ -33,6 +33,11 @@ class ConversationNotFoundError(NotFoundError):
     message = "Conversation not found."
 
 
+class MemoryNotFoundError(NotFoundError):
+    code = "memory_not_found"
+    message = "Memory not found."
+
+
 class ValidationError(MaiError):
     status_code = 422
     code = "validation_error"

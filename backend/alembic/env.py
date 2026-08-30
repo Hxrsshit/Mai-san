@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
 
-# Importing the models package registers every table on Base.metadata,
-# which is what autogenerate compares against.
-from app.database.models import Base
+# Importing the metadata registry pulls in every model module, which is what
+# autogenerate compares against.
+from app.database.metadata import Base
 
 config = context.config
 

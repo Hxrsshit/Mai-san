@@ -6,6 +6,32 @@ foundation for everything that comes later.
 
 ## Stage 1 scope
 
+**Stage 2A adds** a memory foundation: Mai analyses each completed turn and
+selectively stores meaningful information as structured, validated,
+deduplicated memories. See
+[docs/stage2a_memory_architecture.md](docs/stage2a_memory_architecture.md).
+
+**Stage 2B adds** an entity system: the people, projects, companies,
+technologies and concepts named inside those memories are extracted,
+normalized, deduplicated and linked back to the memories that mention them.
+See [docs/stage2b_entity_architecture.md](docs/stage2b_entity_architecture.md).
+
+**Stage 2C adds** a relationship system: directional connections between those
+entities (`Mai —USES→ PostgreSQL`), each traceable to the memories that support
+it. See
+[docs/stage2c_relationship_architecture.md](docs/stage2c_relationship_architecture.md).
+
+**Stage 2D adds** context retrieval: before each reply, Mai deterministically
+retrieves relevant memories, entities and relationships and assembles them into
+a bounded context package — with **no additional model calls**. See
+[docs/stage2d_context_retrieval_architecture.md](docs/stage2d_context_retrieval_architecture.md).
+
+**Stage 3A adds** a context assembly layer: it consumes Stage 2D's ranked
+result and combines it with the current message and recent conversation into a
+bounded, structured `ContextPackage` — categories kept separate, budgets
+enforced, nothing mutated. See
+[docs/stage3a_context_assembly_architecture.md](docs/stage3a_context_assembly_architecture.md).
+
 **In scope, and working:**
 
 - Next.js chat interface (sidebar, message list, input, loading state)
@@ -15,6 +41,11 @@ foundation for everything that comes later.
 - Groq integration behind a provider-agnostic abstraction (adding a provider is one file plus one registry line)
 - Conversation history replayed as model context
 - Structured logging, error handling, and a health endpoint
+- **Stage 2A:** memory extraction, validation, deduplication, and inspection API
+- **Stage 2B:** entity extraction, normalization, resolution, aliases, and memory links
+- **Stage 2C:** directional entity relationships with evidence and deduplication
+- **Stage 2D:** deterministic context retrieval, ranking and knowledge assembly
+- **Stage 3A:** context assembly into a bounded, structured `ContextPackage`
 - Docker development environment
 - Test suite with the LLM mocked
 
@@ -103,6 +134,23 @@ Available chat models: `openai/gpt-oss-120b` (default), `openai/gpt-oss-20b`,
 | `LOG_LEVEL`            | No       | `INFO`                         | Log threshold.                              |
 | `LOG_FORMAT`           | No       | `json`                         | `json` or `console`.                        |
 | `CORS_ORIGINS`         | No       | `http://localhost:3000`        | Comma-separated allowed origins.            |
+| `MEMORY_ENABLED`       | No       | `true`                         | Memory subsystem master switch.             |
+| `MEMORY_EXTRACTION_ENABLED` | No  | `true`                         | Automatic extraction after each turn.       |
+| `MEMORY_MIN_IMPORTANCE`| No       | `5`                            | Minimum importance to store (1-10).         |
+| `MEMORY_MIN_CONFIDENCE`| No       | `0.7`                          | Minimum confidence to store (0.0-1.0).      |
+| `ENTITY_EXTRACTION_ENABLED` | No  | `true`                         | Extract entities after each stored memory.  |
+| `ENTITY_MIN_CONFIDENCE`| No       | `0.7`                          | Minimum confidence to store an entity.      |
+| `ENTITY_EXTRACTION_MAX_PER_MEMORY` | No | `10`                  | Cap on entities per memory.                 |
+| `RELATIONSHIP_EXTRACTION_ENABLED` | No | `true`                  | Extract relationships after entities.       |
+| `RELATIONSHIP_MIN_CONFIDENCE` | No | `0.7`                       | Minimum confidence to store a relationship. |
+| `RELATIONSHIP_EXTRACTION_MAX_PER_MEMORY` | No | `10`             | Cap on relationships per memory.            |
+| `RETRIEVAL_ENABLED`    | No       | `true`                         | Retrieve knowledge before each reply.       |
+| `RETRIEVAL_MAX_MEMORIES` | No     | `10`                           | Memories in the assembled context.          |
+| `RETRIEVAL_MAX_CONTEXT_CHARS` | No | `8000`                        | Hard cap on assembled context size.         |
+| `RETRIEVAL_CANDIDATE_POOL_SIZE` | No | `50`                        | Rows considered before ranking.             |
+| `CONTEXT_RECENT_MESSAGE_LIMIT` | No | `12`                         | Recent messages in the context package.     |
+| `CONTEXT_MAX_MEMORY_ITEMS` | No  | `10`                            | Memories in the context package.            |
+| `CONTEXT_MAX_TOTAL_CHARS` | No   | `10000`                         | Final authority over all category limits.   |
 | `NEXT_PUBLIC_API_URL`  | Yes      | `http://localhost:8000`        | Backend URL used by the browser.            |
 
 Secrets are only ever read from the environment. Nothing is hardcoded, and the
@@ -120,6 +168,21 @@ API key is never written to logs.
 | `DELETE` | `/api/conversations/{id}`                  | Delete a conversation            |
 | `POST`   | `/api/conversations/{id}/messages`         | Send a message, get Mai's reply  |
 | `GET`    | `/api/conversations/{id}/messages`         | List a conversation's messages   |
+| `GET`    | `/api/memories`                            | List memories (filter, paginate) |
+| `GET`    | `/api/memories/{id}`                       | Retrieve one memory              |
+| `DELETE` | `/api/memories/{id}`                       | Delete a memory                  |
+| `GET`    | `/api/entities`                            | List entities (filter, paginate) |
+| `GET`    | `/api/entities/{id}`                       | Entity with aliases + memory count |
+| `GET`    | `/api/entities/{id}/memories`              | Memories referencing an entity   |
+| `DELETE` | `/api/entities/{id}`                       | Delete an entity (memories kept) |
+| `GET`    | `/api/entities/{id}/relationships`         | Incoming + outgoing relationships |
+| `GET`    | `/api/relationships`                       | List relationships (filter, paginate) |
+| `GET`    | `/api/relationships/{id}`                  | One relationship with evidence count |
+| `GET`    | `/api/relationships/{id}/evidence`         | Memories supporting the claim    |
+| `DELETE` | `/api/relationships/{id}`                  | Delete a relationship (entities kept) |
+| `POST`   | `/api/retrieval/debug`                     | Explain what retrieval returns for a query |
+| `GET`    | `/api/conversations/{id}/context-preview`  | Knowledge that would be assembled now |
+| `POST`   | `/api/context/debug`                       | The assembled `ContextPackage` for a message |
 
 Errors always use one envelope:
 
@@ -142,7 +205,17 @@ needs no database, no network, and no API key.
 
 - [docs/architecture.md](docs/architecture.md) — system design, request flow, database, LLM abstraction
 - [docs/setup.md](docs/setup.md) — detailed local setup
+- [docs/stage2a_memory_architecture.md](docs/stage2a_memory_architecture.md) — memory pipeline, schema, deduplication
 - [docs/stage1_acceptance_report.md](docs/stage1_acceptance_report.md) — Stage 1 verification results
+- [docs/stage2b_entity_architecture.md](docs/stage2b_entity_architecture.md) — entity pipeline, normalization, resolution
+- [docs/stage2a_acceptance_report.md](docs/stage2a_acceptance_report.md) — Stage 2A verification results
+- [docs/stage2c_relationship_architecture.md](docs/stage2c_relationship_architecture.md) — relationship pipeline, direction, evidence
+- [docs/stage2b_acceptance_report.md](docs/stage2b_acceptance_report.md) — Stage 2B verification results
+- [docs/stage2d_context_retrieval_architecture.md](docs/stage2d_context_retrieval_architecture.md) — retrieval, ranking, assembly
+- [docs/stage2c_acceptance_report.md](docs/stage2c_acceptance_report.md) — Stage 2C verification results
+- [docs/stage3a_context_assembly_architecture.md](docs/stage3a_context_assembly_architecture.md) — context assembly and budgeting
+- [docs/stage2d_acceptance_report.md](docs/stage2d_acceptance_report.md) — Stage 2D verification results
+- [docs/stage3a_acceptance_report.md](docs/stage3a_acceptance_report.md) — Stage 3A verification results
 
 ## Project layout
 
@@ -154,6 +227,11 @@ mai/
 │   │   ├── core/         config, logging, error types
 │   │   ├── database/     engine, session, ORM models
 │   │   ├── llm/          provider abstraction + Groq implementation
+│   │   ├── memory/       Stage 2A: extraction, validation, dedup, storage
+│   │   ├── entities/     Stage 2B: entity extraction, normalization, resolution
+│   │   ├── relationships/ Stage 2C: relationship extraction, evidence, direction
+│   │   ├── retrieval/    Stage 2D: query analysis, ranking, retrieval result
+│   │   ├── context/      Stage 3A: context assembly, budgeting, ContextPackage
 │   │   ├── schemas/      Pydantic request/response models
 │   │   ├── services/     conversation and chat orchestration
 │   │   └── main.py

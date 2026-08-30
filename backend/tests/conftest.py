@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import Settings, get_settings
-from app.database.models import Base
-from app.database.session import get_db_session
+from app.database.metadata import Base
+from app.database.session import get_db_session, get_session_factory
 from app.llm.base import LLMMessage, LLMProvider, LLMResponse, ProviderHealth
 from app.llm.factory import get_llm_provider
 from app.main import create_app
@@ -32,14 +32,44 @@ class FakeLLMProvider(LLMProvider):
 
     Set `raise_error` to make the next call fail, which is how the error-path
     tests exercise the API without touching the network.
+
+    Calls made with `json_mode=True` are extraction calls. They are recorded
+    separately and answered with a canned payload, so one fake serves the chat
+    turn, the memory extraction that follows it, the entity extraction after
+    that, and the relationship extraction after that. The three extraction
+    kinds are told apart by their system prompt.
     """
 
     name = "fake"
 
+    #: Returned for json_mode calls when nothing else is configured.
+    NO_MEMORIES = '{"should_store_memory": false, "memories": []}'
+    NO_ENTITIES = '{"entities": []}'
+    NO_RELATIONSHIPS = '{"relationships": []}'
+
     def __init__(self, reply: str = "Hello from Mai.") -> None:
         self.reply = reply
         self.calls: List[List[LLMMessage]] = []
+        self.extraction_calls: List[List[LLMMessage]] = []
+        self.entity_calls: List[List[LLMMessage]] = []
+        self.relationship_calls: List[List[LLMMessage]] = []
+        self.extraction_reply: str = self.NO_MEMORIES
+        self.entity_reply: str = self.NO_ENTITIES
+        self.relationship_reply: str = self.NO_RELATIONSHIPS
         self.raise_error: Optional[Exception] = None
+        self.extraction_error: Optional[Exception] = None
+        self.entity_error: Optional[Exception] = None
+        self.relationship_error: Optional[Exception] = None
+
+    @staticmethod
+    def _is_entity_call(messages: List[LLMMessage]) -> bool:
+        system = messages[0].content if messages else ""
+        return "identifiable entities" in system
+
+    @staticmethod
+    def _is_relationship_call(messages: List[LLMMessage]) -> bool:
+        system = messages[0].content if messages else ""
+        return "directional relationships" in system
 
     @property
     def model(self) -> str:
@@ -50,12 +80,31 @@ class FakeLLMProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        json_mode: bool = False,
     ) -> LLMResponse:
-        self.calls.append(list(messages))
-        if self.raise_error is not None:
-            raise self.raise_error
+        if json_mode and self._is_relationship_call(messages):
+            self.relationship_calls.append(list(messages))
+            if self.relationship_error is not None:
+                raise self.relationship_error
+            content = self.relationship_reply
+        elif json_mode and self._is_entity_call(messages):
+            self.entity_calls.append(list(messages))
+            if self.entity_error is not None:
+                raise self.entity_error
+            content = self.entity_reply
+        elif json_mode:
+            self.extraction_calls.append(list(messages))
+            if self.extraction_error is not None:
+                raise self.extraction_error
+            content = self.extraction_reply
+        else:
+            self.calls.append(list(messages))
+            if self.raise_error is not None:
+                raise self.raise_error
+            content = self.reply
+
         return LLMResponse(
-            content=self.reply,
+            content=content,
             model=self.model,
             finish_reason="stop",
             usage={"total_tokens": 42},
@@ -69,6 +118,21 @@ class FakeLLMProvider(LLMProvider):
         assert self.calls, "provider was never called"
         return self.calls[-1]
 
+    @property
+    def last_extraction_call(self) -> List[LLMMessage]:
+        assert self.extraction_calls, "extraction was never called"
+        return self.extraction_calls[-1]
+
+    @property
+    def last_entity_call(self) -> List[LLMMessage]:
+        assert self.entity_calls, "entity extraction was never called"
+        return self.entity_calls[-1]
+
+    @property
+    def last_relationship_call(self) -> List[LLMMessage]:
+        assert self.relationship_calls, "relationship extraction was never called"
+        return self.relationship_calls[-1]
+
 
 # --- Settings ---------------------------------------------------------------
 
@@ -81,7 +145,10 @@ def settings() -> Settings:
         LLM_PROVIDER="groq",
         GROQ_API_KEY="test-key",
         GLM_API_KEY="test-key",
-        LOG_LEVEL="WARNING",
+        # INFO, not WARNING: logging paths must actually execute in tests.
+        # A reserved-attribute collision in `extra` only raises when the
+        # level is enabled, so WARNING hid a real bug.
+        LOG_LEVEL="INFO",
         MAI_SYSTEM_PROMPT="You are Mai.",
         MAX_CONTEXT_MESSAGES=40,
     )
@@ -96,8 +163,9 @@ async def session_factory() -> AsyncIterator["async_sessionmaker[AsyncSession]"]
 
     StaticPool keeps every connection pointed at the same in-memory database.
     """
-    from sqlalchemy import event
     from sqlalchemy.pool import StaticPool
+
+    from app.database.session import configure_sqlite
 
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
@@ -105,14 +173,11 @@ async def session_factory() -> AsyncIterator["async_sessionmaker[AsyncSession]"]
         poolclass=StaticPool,
     )
 
-    # SQLite ignores foreign keys unless this is switched on per connection.
-    # Without it, ON DELETE CASCADE would silently not happen and the cascade
-    # test would pass without testing anything.
-    @event.listens_for(engine.sync_engine, "connect")
-    def _enable_sqlite_foreign_keys(dbapi_connection, _record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
+    # Apply the *same* configuration production uses -- foreign key
+    # enforcement, busy timeout, and the driver settings SAVEPOINT depends on.
+    # A fixture that configures its connection differently from the real engine
+    # hides exactly the bugs these tests exist to catch.
+    configure_sqlite(engine)
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -148,17 +213,22 @@ async def client(
     app = create_app()
 
     async def override_session() -> AsyncIterator[AsyncSession]:
+        # Mirrors get_db_session, including its "already committed" guard.
         async with session_factory() as session:
             try:
                 yield session
-                await session.commit()
             except Exception:
                 await session.rollback()
                 raise
+            if session.in_transaction():
+                await session.commit()
 
     app.dependency_overrides[get_db_session] = override_session
     app.dependency_overrides[get_llm_provider] = lambda: fake_provider
     app.dependency_overrides[get_settings] = lambda: settings
+    # Post-turn memory extraction opens its own session; point it at the
+    # in-memory test database rather than the process-wide engine.
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http_client:

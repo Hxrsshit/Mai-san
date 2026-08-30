@@ -97,6 +97,81 @@ class Settings(BaseSettings):
     # Upper bound on how many stored messages are replayed to the model.
     MAX_CONTEXT_MESSAGES: int = 40
 
+    # --- Memory (Stage 2A) ---
+    # Master switch for the memory subsystem (storage + inspection API).
+    MEMORY_ENABLED: bool = True
+    # Automatic extraction after each completed turn. Can be disabled
+    # independently to stop writing new memories while keeping existing ones
+    # readable.
+    MEMORY_EXTRACTION_ENABLED: bool = True
+    # Candidates scoring below either threshold are discarded.
+    MEMORY_MIN_IMPORTANCE: int = 5
+    MEMORY_MIN_CONFIDENCE: float = 0.7
+    # Lexical similarity at or above this counts as a duplicate. Raising it
+    # stores more near-duplicates; lowering it risks merging distinct facts.
+    MEMORY_DEDUP_THRESHOLD: float = 0.82
+    # How many recent same-type memories a candidate is compared against.
+    MEMORY_DEDUP_CANDIDATES: int = 50
+    # Extraction is a classification task, so temperature stays low.
+    MEMORY_EXTRACTION_TEMPERATURE: float = 0.1
+    MEMORY_EXTRACTION_MAX_TOKENS: int = 1024
+
+    # --- Entities (Stage 2B) ---
+    # Entity extraction runs after a memory is stored. Disabling it leaves
+    # conversations and memories untouched.
+    ENTITY_EXTRACTION_ENABLED: bool = True
+    # Candidates the model is unsure about are discarded.
+    ENTITY_MIN_CONFIDENCE: float = 0.7
+    # Upper bound per memory; a longer list means over-extraction.
+    ENTITY_EXTRACTION_MAX_PER_MEMORY: int = 10
+    ENTITY_EXTRACTION_TEMPERATURE: float = 0.1
+    ENTITY_EXTRACTION_MAX_TOKENS: int = 1024
+
+    # --- Relationships (Stage 2C) ---
+    # Relationship extraction runs after entity extraction, and only when a
+    # memory has at least two entities to relate.
+    RELATIONSHIP_EXTRACTION_ENABLED: bool = True
+    RELATIONSHIP_MIN_CONFIDENCE: float = 0.7
+    RELATIONSHIP_EXTRACTION_MAX_PER_MEMORY: int = 10
+    RELATIONSHIP_EXTRACTION_TEMPERATURE: float = 0.1
+    RELATIONSHIP_EXTRACTION_MAX_TOKENS: int = 1024
+
+    # --- Context retrieval (Stage 2D) ---
+    # Retrieval runs on the request path before the chat call. It adds no
+    # model calls -- every step is a bounded database query.
+    RETRIEVAL_ENABLED: bool = True
+    # Budgets. Ranking happens first; these decide how much survives.
+    RETRIEVAL_MAX_MEMORIES: int = 10
+    RETRIEVAL_MAX_ENTITIES: int = 10
+    RETRIEVAL_MAX_RELATIONSHIPS: int = 10
+    RETRIEVAL_MAX_CONTEXT_CHARS: int = 8000
+    # Upper bound on rows considered before ranking, so cost stays predictable
+    # as the knowledge base grows.
+    RETRIEVAL_CANDIDATE_POOL_SIZE: int = 50
+
+    # Ranking weights. They sum to 1.0, and relevance (text + entity +
+    # relationship = 0.70) deliberately outweighs metadata (importance +
+    # confidence + recency = 0.30), so an important but irrelevant memory
+    # cannot outrank a directly relevant one.
+    RETRIEVAL_WEIGHT_TEXT: float = 0.30
+    RETRIEVAL_WEIGHT_ENTITY: float = 0.25
+    RETRIEVAL_WEIGHT_RELATIONSHIP: float = 0.15
+    RETRIEVAL_WEIGHT_IMPORTANCE: float = 0.15
+    RETRIEVAL_WEIGHT_CONFIDENCE: float = 0.10
+    RETRIEVAL_WEIGHT_RECENCY: float = 0.05
+
+    # --- Context assembly (Stage 3A) ---
+    # Stage 3A combines the current message, recent conversation and Stage 2D's
+    # ranked retrieval into one bounded package. It adds no model calls and
+    # mutates nothing.
+    CONTEXT_RECENT_MESSAGE_LIMIT: int = 12
+    CONTEXT_MAX_MEMORY_ITEMS: int = 10
+    CONTEXT_MAX_ENTITY_ITEMS: int = 10
+    CONTEXT_MAX_RELATIONSHIP_ITEMS: int = 10
+    # Final authority over every category limit. Characters for now; the
+    # accounting is isolated so token budgeting can replace it.
+    CONTEXT_MAX_TOTAL_CHARS: int = 10000
+
     # --- CORS ---
     # NoDecode is required: without it pydantic-settings tries to JSON-decode
     # any complex-typed value coming from the environment, so a plain

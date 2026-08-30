@@ -111,6 +111,7 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: List[LLMMessage],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        json_mode: bool = False,
     ) -> LLMResponse:
         if not self._api_key:
             raise LLMNotConfiguredError(
@@ -129,6 +130,11 @@ class OpenAICompatibleProvider(LLMProvider):
             "max_tokens": self._max_tokens if max_tokens is None else max_tokens,
             "stream": False,
         }
+        if json_mode:
+            # Supported by every OpenAI-compatible gateway used so far. The
+            # caller still parses and validates, so a provider that silently
+            # ignores this loses nothing.
+            payload["response_format"] = {"type": "json_object"}
 
         logger.info(
             "LLM request started",
