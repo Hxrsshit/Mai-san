@@ -28,6 +28,26 @@ from app.retrieval.schemas import RetrievalResult
 logger = get_logger(__name__)
 
 
+def to_recent_messages(messages: Sequence) -> List[RecentMessage]:
+    """Narrow stored `Message` rows to the package's compact shape.
+
+    Original chronological order is preserved exactly. Exposed at module level
+    because the chat service's failure path needs the same conversion when
+    assembly never completed -- one implementation, not two.
+    """
+    converted: List[RecentMessage] = []
+    for message in messages:
+        role = getattr(message, "role", None)
+        converted.append(
+            RecentMessage(
+                role=getattr(role, "value", role),
+                content=message.content,
+                created_at=getattr(message, "created_at", None),
+            )
+        )
+    return converted
+
+
 class ContextAssembler:
     """Combines the three context sources into one structured package."""
 
@@ -108,17 +128,7 @@ class ContextAssembler:
     @staticmethod
     def _convert_messages(messages: Sequence) -> List[RecentMessage]:
         """Preserve original chronological order exactly."""
-        converted: List[RecentMessage] = []
-        for message in messages:
-            role = getattr(message, "role", None)
-            converted.append(
-                RecentMessage(
-                    role=getattr(role, "value", role),
-                    content=message.content,
-                    created_at=getattr(message, "created_at", None),
-                )
-            )
-        return converted
+        return to_recent_messages(messages)
 
     @staticmethod
     def _convert_memories(retrieval: Optional[RetrievalResult]) -> List[ContextMemory]:

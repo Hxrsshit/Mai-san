@@ -1,31 +1,43 @@
 """Chat orchestration.
 
-Implements the Stage 1 flow:
+One user turn, end to end:
 
-    store user message
-      -> load this conversation's history
-      -> build model context
-      -> call the LLM provider
-      -> store assistant reply
-      -> return both
+    load conversation (404 first)
+      -> Stage 3A assembles context   (recent conversation + Stage 2D retrieval)
+      -> Stage 3B formats the prompt  (the only knowledge-to-prompt path)
+      -> store the user message
+      -> ONE synchronous LLM generation call
+      -> store the assistant reply
 
-Recent conversation is drawn from the current conversation. Stage 2D adds
-retrieved long-term knowledge alongside it, assembled on the request path with
-no additional model call.
+This service **orchestrates and does not format**. It never appends memories,
+entities, relationships or system text to a message list; every message the
+provider sees is produced by `PromptFormatter`. Stage 2D's inline rendering,
+which used to be spliced in here as a second system message, was removed in
+Stage 3B -- `RetrievalService.render` no longer has a caller on the request
+path, and the fallback below deliberately does not resurrect it.
+
+Exactly one synchronous model call happens per turn: the response generation
+at the end. Retrieval, assembly and formatting are all deterministic and add
+none. Post-turn memory, entity and relationship extraction still run in the
+background, on their own session, after the response has been returned.
 """
 
+import time
 import uuid
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.context.assembler import to_recent_messages
+from app.context.schemas import ContextPackage, RecentMessage
+from app.context.service import ContextService
 from app.core.config import Settings, get_settings
 from app.core.errors import LLMError
 from app.core.logging import get_logger
 from app.database.models import Conversation, Message, MessageRole
-from app.llm.base import LLMMessage, LLMProvider
-from app.retrieval.schemas import RetrievalResult
-from app.retrieval.service import RetrievalService
+from app.llm.base import LLMProvider
+from app.prompt.formatter import PromptFormatter
+from app.prompt.schemas import FormattedPrompt
 from app.services.conversation_service import ConversationService
 
 logger = get_logger(__name__)
@@ -38,14 +50,16 @@ class ChatService:
         provider: LLMProvider,
         settings: Optional[Settings] = None,
         conversation_service: Optional[ConversationService] = None,
-        retrieval_service: Optional[RetrievalService] = None,
+        context_service: Optional[ContextService] = None,
+        prompt_formatter: Optional[PromptFormatter] = None,
     ) -> None:
         self._session = session
         self._provider = provider
         self._settings = settings or get_settings()
         self._conversations = conversation_service or ConversationService(session)
-        self._retrieval = retrieval_service or RetrievalService(
-            session, self._settings
+        self._context = context_service or ContextService(session, self._settings)
+        self._formatter = prompt_formatter or PromptFormatter(
+            self._settings.MAI_SYSTEM_PROMPT
         )
 
     async def send_message(
@@ -54,10 +68,20 @@ class ChatService:
         """Handle one user turn. Returns (user_message, assistant_message).
 
         Raises ConversationNotFoundError if the conversation does not exist,
-        or an LLMError subclass if the model call fails.
+        or an LLMError subclass if the model call fails. Nothing between those
+        two points can fail the turn: retrieval, assembly and formatting all
+        degrade to a smaller prompt rather than raising.
         """
         # 404 before writing anything.
         conversation = await self._conversations.get_conversation(conversation_id)
+
+        # Context is assembled *before* the user message is persisted, so the
+        # recent conversation Stage 3A selects is genuine history. Assembling
+        # afterwards would put the current message into the prompt twice and
+        # charge it to the budget twice.
+        started = time.perf_counter()
+        prompt, timings = await self._build_prompt(conversation_id, content)
+        prepare_ms = round((time.perf_counter() - started) * 1000, 2)
 
         user_message = await self._conversations.add_message(
             conversation_id=conversation_id,
@@ -66,28 +90,30 @@ class ChatService:
         )
         await self._conversations.maybe_autotitle(conversation, content)
 
-        history = await self._conversations.get_messages(
-            conversation_id, limit=self._settings.MAX_CONTEXT_MESSAGES
-        )
-
-        # Retrieval runs here, on the request path, and adds no model call.
-        # It never raises: a failure yields an empty package and the turn
-        # proceeds on recent conversation alone.
-        knowledge = await self._retrieve(content)
-        context = self._build_context(history, knowledge)
-
         logger.info(
             "Chat turn started",
             extra={
                 "conversation_id": str(conversation_id),
-                "context_messages": len(context),
-                "retrieved_memories": knowledge.metadata.selected_memories,
-                "retrieved_relationships": knowledge.metadata.selected_relationships,
+                "prompt_messages": prompt.stats.total_messages,
+                "conversation_messages": prompt.stats.conversation_messages,
+                "memories": prompt.stats.memories_rendered,
+                "entities": prompt.stats.entities_rendered,
+                "relationships": prompt.stats.relationships_rendered,
+                "reference_chars": prompt.stats.reference_chars,
+                "prompt_chars": prompt.stats.total_chars,
+                "fallback_prompt": prompt.stats.fallback_used,
+                # The Stage 3B guarantee, recorded on every turn.
+                "request_path_llm_calls": 1,
+                # Retrieval and assembly time is reported in more detail by
+                # their own log lines; these are the totals as chat sees them.
+                "assembly_ms": timings.get("assembly_ms"),
+                "format_ms": timings.get("format_ms"),
+                "pre_llm_ms": prepare_ms,
             },
         )
 
         try:
-            llm_response = await self._provider.generate_response(context)
+            llm_response = await self._provider.generate_response(prompt.messages)
         except LLMError:
             # The user message is already persisted. The session is rolled back
             # by the request dependency, so the failed turn leaves no partial
@@ -126,43 +152,106 @@ class ChatService:
         return conversation, user_message, assistant_message
 
     # --- Internals ----------------------------------------------------------
+    # Orchestration only. Everything below chooses *which* inputs reach the
+    # formatter; none of it decides how a message is worded or ordered.
 
-    async def _retrieve(self, content: str) -> RetrievalResult:
-        """Assemble relevant long-term knowledge. Never raises."""
+    async def _build_prompt(
+        self, conversation_id: uuid.UUID, content: str
+    ) -> Tuple[FormattedPrompt, Dict[str, float]]:
+        """Assemble, then format. Never raises.
+
+        Returns the prompt and per-stage timings, so a slow turn can be
+        attributed to retrieval, assembly or formatting without guessing.
+
+        Degradation is layered, and no layer reintroduces long-term knowledge
+        by another route:
+
+        - assembly failed          -> fallback on freshly loaded conversation
+        - formatting failed        -> fallback on the conversation already
+                                      assembled, without any knowledge
+        - everything failed        -> the current message alone
+
+        `PromptFormatter.fallback` is itself total, so the last line always
+        produces something to send.
+        """
+        timings: Dict[str, float] = {}
+
+        started = time.perf_counter()
+        package = await self._assemble(conversation_id, content)
+        # Retrieval runs inside assembly and logs its own duration; this is the
+        # combined cost of Stage 2D plus Stage 3A as the request path sees it.
+        timings["assembly_ms"] = round((time.perf_counter() - started) * 1000, 2)
+
+        started = time.perf_counter()
         try:
-            return await self._retrieval.retrieve(content)
-        except Exception as exc:  # noqa: BLE001 - retrieval must never break chat
+            if package is not None:
+                try:
+                    return self._formatter.format(package), timings
+                except Exception as exc:  # noqa: BLE001 - chat must still answer
+                    logger.error(
+                        "Prompt formatting failed; falling back to a minimal prompt",
+                        extra={
+                            "conversation_id": str(conversation_id),
+                            "error": str(exc),
+                        },
+                        exc_info=exc,
+                    )
+                    return (
+                        self._formatter.fallback(
+                            content, self._safe_recent_of(package)
+                        ),
+                        timings,
+                    )
+
+            return (
+                self._formatter.fallback(
+                    content, await self._load_recent(conversation_id)
+                ),
+                timings,
+            )
+        finally:
+            timings["format_ms"] = round((time.perf_counter() - started) * 1000, 2)
+
+    async def _assemble(
+        self, conversation_id: uuid.UUID, content: str
+    ) -> Optional[ContextPackage]:
+        """Stage 3A's package, or None if assembly failed outright.
+
+        `ContextService.build` already degrades internally; this guard covers
+        the case where it fails before it can degrade.
+        """
+        try:
+            return await self._context.build(
+                current_message=content, conversation_id=conversation_id
+            )
+        except Exception as exc:  # noqa: BLE001 - assembly must never break chat
             logger.error(
-                "Context retrieval failed; continuing without it",
-                extra={"error": str(exc)},
+                "Context assembly failed; continuing without it",
+                extra={"conversation_id": str(conversation_id), "error": str(exc)},
                 exc_info=exc,
             )
-            return RetrievalResult(query=content)
+            return None
 
-    def _build_context(
-        self, history: List[Message], knowledge: Optional[RetrievalResult] = None
-    ) -> List[LLMMessage]:
-        """Turn stored rows into the message list sent to the model.
-
-        Order matters. Retrieved knowledge sits between the system prompt and
-        the conversation, so the recent turns -- and the user's current message
-        -- come last and stay closest to the model's attention. The knowledge
-        block states in its own text that the current message wins if the two
-        disagree.
-        """
-        context: List[LLMMessage] = []
-
-        system_prompt = self._settings.MAI_SYSTEM_PROMPT.strip()
-        if system_prompt:
-            context.append(LLMMessage(role="system", content=system_prompt))
-
-        if knowledge is not None and not knowledge.is_empty:
-            rendered = self._retrieval.render(knowledge)
-            if rendered:
-                context.append(LLMMessage(role="system", content=rendered))
-
-        for message in history:
-            context.append(
-                LLMMessage(role=message.role.value, content=message.content)
+    async def _load_recent(
+        self, conversation_id: uuid.UUID
+    ) -> List[RecentMessage]:
+        """Recent conversation for the fallback path, bounded by the same limit."""
+        try:
+            stored = await self._conversations.get_messages(
+                conversation_id,
+                limit=self._context.limits.recent_message_limit,
             )
-        return context
+            return to_recent_messages(stored)
+        except Exception as exc:  # noqa: BLE001 - the current message is enough
+            logger.error(
+                "Recent conversation unavailable for the fallback prompt",
+                extra={"conversation_id": str(conversation_id), "error": str(exc)},
+            )
+            return []
+
+    @staticmethod
+    def _safe_recent_of(package: ContextPackage) -> Sequence[RecentMessage]:
+        try:
+            return package.recent_conversation
+        except Exception:  # noqa: BLE001 - a broken package must not cascade
+            return []

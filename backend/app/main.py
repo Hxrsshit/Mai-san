@@ -16,7 +16,7 @@ from app.api.routes import (
     relationships_router,
     retrieval_router,
 )
-from app.api.routes import context_preview_router, context_router
+from app.api.routes import context_preview_router, context_router, prompt_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.database.session import (
@@ -88,6 +88,11 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(conversations_router)
+    # Prompt inspection is registered unconditionally: it describes the chat
+    # request path itself, which exists whether or not the memory subsystem
+    # does. With memory off it is how you confirm no knowledge reaches the
+    # model.
+    app.include_router(prompt_router)
 
     # The memory subsystem can be disabled entirely; when it is, the
     # inspection routes are not registered at all.

@@ -169,10 +169,16 @@ class ContextBuilder:
         memories: Sequence[RetrievedMemory],
         relationships: Sequence[RetrievedRelationship],
     ) -> str:
-        """Render the package as compact prose for the model.
+        """Render the package as compact prose.
+
+        **No longer part of any prompt.** Stage 3B made
+        `app.prompt.formatter.render_reference_block` the single owner of
+        knowledge-to-prompt rendering; what remains here measures the Stage 2D
+        character budget and answers the retrieval debug endpoints.
 
         Database rows are never dumped: only the fields a reader needs. Scores
-        and signals stay out -- they are for debugging, not for the model.
+        and signals stay out -- they were never useful to a model, and are not
+        useful to a human reading the debug output either.
         """
         if not (entities or memories or relationships):
             return ""

@@ -12,6 +12,7 @@ from app.llm.base import LLMProvider
 from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
 from app.memory.service import MemoryService
+from app.prompt.formatter import PromptFormatter
 from app.relationships.service import RelationshipService
 from app.retrieval.service import RetrievalService
 from app.services.chat_service import ChatService
@@ -41,14 +42,28 @@ def get_retrieval_service(
     return RetrievalService(session=session, settings=settings)
 
 
+def get_prompt_formatter(settings: AppSettings) -> PromptFormatter:
+    """The Stage 3B formatter, configured with the application instructions.
+
+    Shared by the chat request path and the prompt debug endpoint, so what
+    debug shows is produced by the same code that talks to the model.
+    """
+    return PromptFormatter(system_prompt=settings.MAI_SYSTEM_PROMPT)
+
+
 def get_chat_service(
-    session: DbSession, provider: Provider, settings: AppSettings
+    session: DbSession,
+    provider: Provider,
+    settings: AppSettings,
+    context_service: "Context",
+    formatter: "Formatter",
 ) -> ChatService:
     return ChatService(
         session=session,
         provider=provider,
         settings=settings,
-        retrieval_service=RetrievalService(session=session, settings=settings),
+        context_service=context_service,
+        prompt_formatter=formatter,
     )
 
 
@@ -77,3 +92,4 @@ Entities = Annotated[EntityService, Depends(get_entity_service)]
 Relationships = Annotated[RelationshipService, Depends(get_relationship_service)]
 Retrieval = Annotated[RetrievalService, Depends(get_retrieval_service)]
 Context = Annotated[ContextService, Depends(get_context_service)]
+Formatter = Annotated[PromptFormatter, Depends(get_prompt_formatter)]

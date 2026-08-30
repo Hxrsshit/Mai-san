@@ -6,7 +6,7 @@ retrieval result into a bounded, structured `ContextPackage`.
 Stage 3A stops at the package. Rendering it into a prompt is Stage 3B.
 """
 
-from app.context.assembler import ContextAssembler
+from app.context.assembler import ContextAssembler, to_recent_messages
 from app.context.budget import BudgetLimits, ContextBudgeter, character_sizer
 from app.context.schemas import (
     ContextEntity,
@@ -34,4 +34,5 @@ __all__ = [
     "DroppedItem",
     "RecentMessage",
     "ContextService",
+    "to_recent_messages",
 ]

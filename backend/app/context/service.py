@@ -47,7 +47,16 @@ class ContextService:
     @property
     def limits(self) -> BudgetLimits:
         return BudgetLimits(
-            recent_message_limit=self._settings.CONTEXT_RECENT_MESSAGE_LIMIT,
+            # Two settings govern the conversation window: Stage 1's
+            # MAX_CONTEXT_MESSAGES, the hard ceiling on how much history is
+            # ever replayed, and Stage 3A's own limit. Stage 3B routes the
+            # chat request path through here, so the stricter of the two wins
+            # -- otherwise lowering MAX_CONTEXT_MESSAGES would silently stop
+            # having any effect.
+            recent_message_limit=min(
+                self._settings.CONTEXT_RECENT_MESSAGE_LIMIT,
+                self._settings.MAX_CONTEXT_MESSAGES,
+            ),
             max_memory_items=self._settings.CONTEXT_MAX_MEMORY_ITEMS,
             max_entity_items=self._settings.CONTEXT_MAX_ENTITY_ITEMS,
             max_relationship_items=self._settings.CONTEXT_MAX_RELATIONSHIP_ITEMS,
@@ -112,7 +121,7 @@ class ContextService:
         try:
             return await self._conversations.get_messages(
                 conversation_id,
-                limit=self._settings.CONTEXT_RECENT_MESSAGE_LIMIT,
+                limit=self.limits.recent_message_limit,
             )
         except Exception as exc:  # noqa: BLE001 - degrade, never fail
             logger.error(

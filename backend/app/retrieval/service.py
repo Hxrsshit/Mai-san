@@ -179,7 +179,24 @@ class RetrievalService:
         return package
 
     def render(self, package: RetrievalResult) -> str:
-        """The prose block that goes into the chat prompt."""
+        """Debug-only rendering of a retrieval result.
+
+        **Retired from the chat prompt in Stage 3B.** Until then `ChatService`
+        called this and spliced the result into the message list as a second
+        system message -- Stage 2D both retrieved knowledge and decided how it
+        appeared to the model. Stage 3B moved that responsibility to
+        `app.prompt.formatter`, and this method now has exactly two callers,
+        neither of which reaches a model:
+
+        - `/api/retrieval/debug` and the conversation context preview, which
+          show a human what was retrieved;
+        - `ContextBuilder.build`, which measures the rendered length to apply
+          `RETRIEVAL_MAX_CONTEXT_CHARS`.
+
+        Nothing it returns is sent to an LLM. Do not call it from a service on
+        the request path: long-term knowledge has one production route into a
+        prompt, and it runs through `PromptFormatter.format`.
+        """
         return self._builder.render(
             package.matched_entities, package.memories, package.relationships
         )

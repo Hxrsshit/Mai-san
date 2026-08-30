@@ -89,6 +89,15 @@ async def test_context_is_scoped_to_one_conversation(
 async def test_context_window_is_capped(
     client: AsyncClient, conversation_id, fake_provider, settings
 ) -> None:
+    """MAX_CONTEXT_MESSAGES still bounds replayed history after Stage 3B.
+
+    The window means something slightly different now. Stage 3B assembles
+    context *before* the user's message is stored, so the cap applies to
+    history alone and the current message is always sent on top of it -- it is
+    the one thing no budget may drop. Before Stage 3B the current message was
+    counted inside the window, so the same setting produced one fewer
+    historical message.
+    """
     settings.MAX_CONTEXT_MESSAGES = 4
 
     for index in range(5):
@@ -98,9 +107,11 @@ async def test_context_window_is_capped(
         )
 
     sent = fake_provider.last_call
-    # 1 system prompt + the 4 most recent stored messages.
-    assert len(sent) == 5
+    # 1 system prompt + the 4 most recent stored messages + the current one.
+    assert len(sent) == 6
     assert sent[-1].content == "msg-4"
+    # The cap is real: 8 messages were stored by the time of the last turn.
+    assert len([m for m in sent if m.role != "system"]) == 5
 
 
 async def test_first_message_titles_the_conversation(

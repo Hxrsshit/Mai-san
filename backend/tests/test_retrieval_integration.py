@@ -1,4 +1,11 @@
-"""Chat integration, failure isolation, and the zero-extra-call guarantee."""
+"""Chat integration, failure isolation, and the zero-extra-call guarantee.
+
+These assert Stage 2D's *behaviour* -- what is retrieved, what degrades, and
+that retrieval costs no model call. The knowledge they look for now arrives in
+the prompt through Stage 3B's reference block rather than Stage 2D's retired
+inline rendering, so the marker they search for moved accordingly. Nothing
+else about what is being verified changed.
+"""
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -13,20 +20,20 @@ from app.relationships.models import (
     RelationshipStatus,
     RelationshipType,
 )
-from app.retrieval.context_builder import CONTEXT_HEADER
+from app.prompt.formatter import REFERENCE_HEADER
+from app.prompt.formatter import knowledge_block as reference_block
 from app.services.conversation_service import ConversationService
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
 
 def knowledge_block(provider):
-    """The assembled context sent to the model, or None.
+    """The reference block the model actually received, or None.
 
-    A bare next() would raise StopIteration inside a coroutine, which Python
-    converts to an opaque RuntimeError and hides the real failure.
+    Reads the provider's recorded messages through the same helper the rest of
+    the application uses, so this checks what was *sent*, not what was meant.
     """
-    blocks = [m.content for m in provider.last_call if CONTEXT_HEADER in m.content]
-    return blocks[0] if blocks else None
+    return reference_block(provider.last_call)
 
 
 async def seed_knowledge(session_factory):
@@ -147,7 +154,7 @@ async def test_retrieved_knowledge_is_sent_to_the_model(
     )
 
     sent = fake_provider.last_call
-    knowledge = [m for m in sent if CONTEXT_HEADER in m.content]
+    knowledge = [m for m in sent if REFERENCE_HEADER in m.content]
     assert len(knowledge) == 1, "knowledge block missing from the prompt"
     block = knowledge[0].content
     assert "PostgreSQL" in block
@@ -170,7 +177,7 @@ async def test_context_order_puts_the_user_message_last(
     roles = [m.role for m in sent]
     # system prompt, knowledge block, then the conversation.
     assert roles[0] == "system"
-    assert CONTEXT_HEADER in sent[1].content
+    assert REFERENCE_HEADER in sent[1].content
     assert sent[-1].role == "user"
     assert sent[-1].content == "What database does Mai use?"
 
@@ -203,7 +210,7 @@ async def test_no_knowledge_block_when_nothing_matches(
         json={"content": "Hello there!"},
     )
 
-    assert not any(CONTEXT_HEADER in m.content for m in fake_provider.last_call)
+    assert not any(REFERENCE_HEADER in m.content for m in fake_provider.last_call)
 
 
 async def test_retrieval_disabled_sends_no_knowledge(
@@ -219,7 +226,7 @@ async def test_retrieval_disabled_sends_no_knowledge(
     )
 
     assert response.status_code == 201
-    assert not any(CONTEXT_HEADER in m.content for m in fake_provider.last_call)
+    assert not any(REFERENCE_HEADER in m.content for m in fake_provider.last_call)
     # The conversation itself still reaches the model.
     assert fake_provider.last_call[-1].content == "What database does Mai use?"
 
@@ -335,7 +342,7 @@ async def test_total_retrieval_failure_falls_back_to_conversation(
         "Answering from recent conversation."
     )
     # No knowledge block, but the conversation still reached the model.
-    assert not any(CONTEXT_HEADER in m.content for m in fake_provider.last_call)
+    assert not any(REFERENCE_HEADER in m.content for m in fake_provider.last_call)
     assert fake_provider.last_call[-1].content == "What database does Mai use?"
 
 
