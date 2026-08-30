@@ -21,6 +21,7 @@ from app.schemas.conversation import (
     ConversationUpdate,
 )
 from app.intent.schemas import IntentRead
+from app.planning.schemas import PlanningRead
 from app.memory.tasks import run_memory_extraction
 from app.schemas.message import ChatResponse, MessageCreate, MessageRead
 
@@ -123,7 +124,7 @@ async def send_message(
     session_factory: SessionFactory,
     session: DbSession,
 ) -> ChatResponse:
-    user_message, assistant_message, intent = await chat.send_message(
+    user_message, assistant_message, intent, planning = await chat.send_message(
         conversation_id=conversation_id, content=payload.content
     )
 
@@ -156,6 +157,9 @@ async def send_message(
         # Stage 4A understanding, reported alongside the turn. Application
         # state: it never reached the prompt, and it authorises nothing.
         intent=IntentRead.model_validate(intent, from_attributes=True),
+        # Stage 4B plan, reported alongside the turn. Inert data: it never
+        # reached the prompt, and there is nothing here that could run it.
+        planning=PlanningRead.from_result(planning),
     )
 
 

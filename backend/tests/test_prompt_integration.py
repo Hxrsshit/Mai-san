@@ -153,6 +153,7 @@ def test_only_the_formatter_builds_prompt_messages() -> None:
         "entities/extractor.py",     # background extraction
         "relationships/extractor.py",  # background extraction
         "intent/classifier.py",  # Stage 4A: classification, not the chat prompt
+        "planning/planner.py",  # Stage 4B: plan generation, not the chat prompt
         "llm/providers/openai_compatible.py",  # health probe ping
     }
 

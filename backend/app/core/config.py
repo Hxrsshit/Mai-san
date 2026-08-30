@@ -152,6 +152,20 @@ class Settings(BaseSettings):
     # system.
     INTENT_CONTEXT_MESSAGES: int = 4
 
+    # --- Planning (Stage 4B) ---
+    # Planning runs only for messages Stage 4A classified as planning, task,
+    # research or action -- so ordinary conversation costs nothing. An
+    # eligible message costs ONE additional structured model call. Disabling
+    # this restores the exact pre-4B call profile.
+    PLANNING_ENABLED: bool = True
+    # Low but not zero. Decomposing work benefits from a little variation
+    # where classification does not, but a plan should still be broadly
+    # reproducible for the same goal.
+    PLANNING_TEMPERATURE: float = 0.2
+    # A bounded plan is a few thousand tokens of JSON; the schema limits cap
+    # what can survive validation regardless.
+    PLANNING_MAX_TOKENS: int = 2048
+
     # --- Knowledge lifecycle (Stage 3C) ---
     # Conflict evaluation runs in the background pipeline after relationship
     # extraction. It adds no model calls anywhere. Disabling it stops new

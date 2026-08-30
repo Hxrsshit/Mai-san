@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.database.models.message import MessageRole
 from app.intent.schemas import IntentRead
+from app.planning.schemas import PlanningRead
 
 
 class MessageCreate(BaseModel):
@@ -63,3 +64,13 @@ class ChatResponse(BaseModel):
     #: Nothing here authorises anything. `requires_execution` records that a
     #: future stage would have to arrange execution; Stage 4A has no executor.
     intent: Optional[IntentRead] = None
+
+    #: Stage 4B. The plan, when the intent warranted one.
+    #:
+    #: A sibling of `intent`, for the same reason: application state about the
+    #: turn, kept out of the messages so it cannot be mistaken for something
+    #: the user or the model said. `None` when planning is disabled.
+    #:
+    #: Inert. A task reading "Send the outreach email" is a sentence about
+    #: future work; nothing in this codebase can act on it.
+    planning: Optional[PlanningRead] = None

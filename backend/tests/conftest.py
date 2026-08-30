@@ -35,9 +35,9 @@ class FakeLLMProvider(LLMProvider):
 
     Calls made with `json_mode=True` are structured calls. They are recorded
     separately and answered with a canned payload, so one fake serves the chat
-    turn, the Stage 4A intent classification that precedes it, and the memory,
-    entity and relationship extraction that follow it. The kinds are told apart
-    by their system prompt.
+    turn, the Stage 4A intent classification and Stage 4B planning that precede
+    it, and the memory, entity and relationship extraction that follow it. The
+    kinds are told apart by their system prompt.
 
     `calls` therefore holds *generation* calls only -- the single synchronous
     response call per turn. Classification and extraction never appear there,
@@ -51,6 +51,14 @@ class FakeLLMProvider(LLMProvider):
     NO_MEMORIES = '{"should_store_memory": false, "memories": []}'
     NO_ENTITIES = '{"entities": []}'
     NO_RELATIONSHIPS = '{"relationships": []}'
+    #: A minimal valid Stage 4B plan, for turns that reach the planner.
+    SIMPLE_PLAN = (
+        '{"goal_summary": "A goal", "desired_outcome": null, "scope": null,'
+        ' "tasks": [{"id": "step-one", "title": "First step",'
+        ' "description": null, "priority": "medium", "dependencies": [],'
+        ' "expected_outcome": null, "completion_criteria": []}],'
+        ' "assumptions": [], "risks": [], "success_criteria": []}'
+    )
     #: A neutral Stage 4A answer: ordinary conversation, nothing required.
     CONVERSATION_INTENT = (
         '{"intent_type": "conversation", "confidence": 0.9, "goal": null,'
@@ -66,15 +74,23 @@ class FakeLLMProvider(LLMProvider):
         self.entity_calls: List[List[LLMMessage]] = []
         self.relationship_calls: List[List[LLMMessage]] = []
         self.intent_calls: List[List[LLMMessage]] = []
+        self.planning_calls: List[List[LLMMessage]] = []
         self.extraction_reply: str = self.NO_MEMORIES
         self.entity_reply: str = self.NO_ENTITIES
         self.relationship_reply: str = self.NO_RELATIONSHIPS
         self.intent_reply: str = self.CONVERSATION_INTENT
+        self.planning_reply: str = self.SIMPLE_PLAN
         self.raise_error: Optional[Exception] = None
         self.extraction_error: Optional[Exception] = None
         self.entity_error: Optional[Exception] = None
         self.relationship_error: Optional[Exception] = None
         self.intent_error: Optional[Exception] = None
+        self.planning_error: Optional[Exception] = None
+
+    @staticmethod
+    def _is_planning_call(messages: List[LLMMessage]) -> bool:
+        system = messages[0].content if messages else ""
+        return "You turn a user's goal into a structured plan" in system
 
     @staticmethod
     def _is_intent_call(messages: List[LLMMessage]) -> bool:
@@ -102,7 +118,12 @@ class FakeLLMProvider(LLMProvider):
         max_tokens: Optional[int] = None,
         json_mode: bool = False,
     ) -> LLMResponse:
-        if json_mode and self._is_intent_call(messages):
+        if json_mode and self._is_planning_call(messages):
+            self.planning_calls.append(list(messages))
+            if self.planning_error is not None:
+                raise self.planning_error
+            content = self.planning_reply
+        elif json_mode and self._is_intent_call(messages):
             self.intent_calls.append(list(messages))
             if self.intent_error is not None:
                 raise self.intent_error
@@ -162,6 +183,11 @@ class FakeLLMProvider(LLMProvider):
     def last_intent_call(self) -> List[LLMMessage]:
         assert self.intent_calls, "intent classification was never called"
         return self.intent_calls[-1]
+
+    @property
+    def last_planning_call(self) -> List[LLMMessage]:
+        assert self.planning_calls, "planning was never called"
+        return self.planning_calls[-1]
 
 
 # --- Settings ---------------------------------------------------------------

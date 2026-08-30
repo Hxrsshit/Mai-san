@@ -37,6 +37,8 @@ from app.core.logging import get_logger
 from app.database.models import Conversation, Message, MessageRole
 from app.intent.schemas import IntentResult
 from app.intent.service import IntentService
+from app.planning.schemas import PlanningResult
+from app.planning.service import PlanningService
 from app.llm.base import LLMProvider
 from app.prompt.formatter import PromptFormatter
 from app.prompt.schemas import FormattedPrompt
@@ -55,6 +57,7 @@ class ChatService:
         context_service: Optional[ContextService] = None,
         prompt_formatter: Optional[PromptFormatter] = None,
         intent_service: Optional[IntentService] = None,
+        planning_service: Optional[PlanningService] = None,
     ) -> None:
         self._session = session
         self._provider = provider
@@ -67,13 +70,16 @@ class ChatService:
         self._intent = intent_service or IntentService(
             session=session, provider=provider, settings=self._settings
         )
+        self._planning = planning_service or PlanningService(
+            provider=provider, settings=self._settings
+        )
 
     async def send_message(
         self, conversation_id: uuid.UUID, content: str
-    ) -> Tuple[Message, Message, IntentResult]:
+    ) -> Tuple[Message, Message, IntentResult, PlanningResult]:
         """Handle one user turn.
 
-        Returns (user_message, assistant_message, intent).
+        Returns (user_message, assistant_message, intent, planning).
 
         Raises ConversationNotFoundError if the conversation does not exist,
         or an LLMError subclass if the model call fails. Nothing between those
@@ -98,6 +104,16 @@ class ChatService:
         # influence the prompt the model is then given.
         intent = await self._intent.understand(content, conversation_id)
 
+        # Stage 4B. Consumes the intent above -- the message is never
+        # classified twice. Whether to plan is decided deterministically
+        # from that intent, so an ordinary message makes no planning call
+        # at all and costs exactly what it did before Stage 4B.
+        #
+        # Like intent, the plan is application state: returned to the
+        # caller, never handed to the formatter. A plan cannot steer the
+        # reply, and the reply is byte-identical with planning on or off.
+        planning = await self._planning.plan_for(content, intent)
+
         prompt, timings = await self._build_prompt(conversation_id, content)
         prepare_ms = round((time.perf_counter() - started) * 1000, 2)
 
@@ -121,12 +137,15 @@ class ChatService:
                 "prompt_chars": prompt.stats.total_chars,
                 "fallback_prompt": prompt.stats.fallback_used,
                 "intent_type": intent.intent_type.value,
+                "planning_status": planning.status.value,
+                "plan_tasks": planning.plan.task_count if planning.plan else 0,
                 # The Stage 3B guarantee, recorded on every turn: exactly
                 # one response *generation* call. Stage 4A adds at most one
                 # structured classification call, counted separately so the
                 # two bounds stay independently checkable.
                 "request_path_generation_calls": 1,
                 "request_path_classification_calls": intent.model_calls,
+                "request_path_planning_calls": planning.model_calls,
                 # Retrieval and assembly time is reported in more detail by
                 # their own log lines; these are the totals as chat sees them.
                 "assembly_ms": timings.get("assembly_ms"),
@@ -162,17 +181,17 @@ class ChatService:
                 "total_tokens": llm_response.usage.get("total_tokens"),
             },
         )
-        return user_message, assistant_message, intent
+        return user_message, assistant_message, intent, planning
 
     async def start_conversation_with_message(
         self, content: str, title: Optional[str] = None
-    ) -> Tuple[Conversation, Message, Message, IntentResult]:
+    ) -> Tuple[Conversation, Message, Message, IntentResult, PlanningResult]:
         """Convenience path: create a conversation and send its first message."""
         conversation = await self._conversations.create_conversation(title=title)
-        user_message, assistant_message, intent = await self.send_message(
+        user_message, assistant_message, intent, planning = await self.send_message(
             conversation.id, content
         )
-        return conversation, user_message, assistant_message, intent
+        return conversation, user_message, assistant_message, intent, planning
 
     # --- Internals ----------------------------------------------------------
     # Orchestration only. Everything below chooses *which* inputs reach the

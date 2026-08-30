@@ -14,6 +14,7 @@ from app.entities.service import EntityService
 from app.intent.service import IntentService
 from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
+from app.planning.service import PlanningService
 from app.prompt.formatter import PromptFormatter
 from app.relationships.service import RelationshipService
 from app.retrieval.service import RetrievalService
@@ -60,6 +61,13 @@ def get_intent_service(
     return IntentService(session=session, provider=provider, settings=settings)
 
 
+def get_planning_service(
+    provider: Provider, settings: AppSettings
+) -> PlanningService:
+    """Stage 4B planning. Takes no session: planning writes nothing."""
+    return PlanningService(provider=provider, settings=settings)
+
+
 def get_chat_service(
     session: DbSession,
     provider: Provider,
@@ -67,6 +75,7 @@ def get_chat_service(
     context_service: "Context",
     formatter: "Formatter",
     intent_service: "Intent",
+    planning_service: "Planning",
 ) -> ChatService:
     return ChatService(
         session=session,
@@ -75,6 +84,7 @@ def get_chat_service(
         context_service=context_service,
         prompt_formatter=formatter,
         intent_service=intent_service,
+        planning_service=planning_service,
     )
 
 
@@ -114,3 +124,4 @@ Context = Annotated[ContextService, Depends(get_context_service)]
 Formatter = Annotated[PromptFormatter, Depends(get_prompt_formatter)]
 Knowledge = Annotated[KnowledgeService, Depends(get_knowledge_service)]
 Intent = Annotated[IntentService, Depends(get_intent_service)]
+Planning = Annotated[PlanningService, Depends(get_planning_service)]

@@ -21,6 +21,7 @@ from app.api.routes import (
     context_router,
     intent_router,
     knowledge_router,
+    planning_router,
     prompt_router,
 )
 from app.core.config import get_settings
@@ -120,6 +121,9 @@ def create_app() -> FastAPI:
     # chat path it describes: it reads no memory and needs no knowledge
     # subsystem, and with memory disabled it is how you confirm that.
     app.include_router(intent_router)
+    # Stage 4B planning. Like intent, it reads no memory and needs no
+    # knowledge subsystem, so it is registered unconditionally.
+    app.include_router(planning_router)
 
     # The memory subsystem can be disabled entirely; when it is, the
     # inspection routes are not registered at all.
