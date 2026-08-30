@@ -23,6 +23,7 @@ from app.api.routes import (
     knowledge_router,
     planning_router,
     prompt_router,
+    tools_router,
 )
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
@@ -124,6 +125,9 @@ def create_app() -> FastAPI:
     # Stage 4B planning. Like intent, it reads no memory and needs no
     # knowledge subsystem, so it is registered unconditionally.
     app.include_router(planning_router)
+    # Stage 4C authorization. Read-only: it lists declarations and answers
+    # whether an action would be permitted. Nothing here runs anything.
+    app.include_router(tools_router)
 
     # The memory subsystem can be disabled entirely; when it is, the
     # inspection routes are not registered at all.

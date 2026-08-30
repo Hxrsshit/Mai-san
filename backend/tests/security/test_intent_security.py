@@ -118,22 +118,36 @@ def test_the_intent_package_writes_to_no_table() -> None:
             assert writer not in source, f"{path.name} contains {writer}"
 
 
-def test_nothing_downstream_branches_on_a_capability_flag() -> None:
-    """No code anywhere reads `requires_execution` to decide to do something.
+def test_only_known_consumers_read_a_capability_flag() -> None:
+    """Every reader of `requires_execution` is deliberate and accounted for.
 
-    Stage 4A produces the flag for stages that do not exist yet. If a caller
-    ever starts acting on it, this test is where that shows up.
+    Stage 4A produced the flag for stages that did not exist yet. Stage 4C is
+    the first real consumer: `tools/policy.py` reads it to *tighten* a
+    decision -- a turn Stage 4A read as conversational carries no execution
+    capability, so a tool proposal arriving inside one is forbidden.
+
+    It can only tighten. The rule returns FORBIDDEN or abstains, and the
+    policy takes the most restrictive outcome over all rules, so no value of
+    this flag can make anything more permissible.
+
+    A reader outside this list means a new consumer appeared without being
+    thought about.
     """
-    readers = []
+    expected = {
+        "schemas/message.py",      # serialises it onto the chat response
+        "tools/policy.py",         # Stage 4C: tightens, never permits
+        "tools/schemas.py",        # names `requires_approval` on a decision
+    }
+
+    readers = set()
     for path in APP.rglob("*.py"):
         if path.parent.name == "intent":
             continue
         source = path.read_text()
         if "requires_execution" in source or "requires_user_approval" in source:
-            readers.append(str(path.relative_to(APP)))
+            readers.add(str(path.relative_to(APP)))
 
-    # Only the API view schema names them, and only to serialise them.
-    assert readers == ["schemas/message.py"] or readers == [], readers
+    assert readers <= expected, f"unexpected consumer: {readers - expected}"
 
 
 # --- Coercion through the user message --------------------------------------

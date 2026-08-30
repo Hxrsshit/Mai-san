@@ -15,6 +15,8 @@ from app.intent.service import IntentService
 from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
 from app.planning.service import PlanningService
+from app.tools.authorization import AuthorizationService
+from app.tools.registry import ToolRegistry, get_registry
 from app.prompt.formatter import PromptFormatter
 from app.relationships.service import RelationshipService
 from app.retrieval.service import RetrievalService
@@ -59,6 +61,18 @@ def get_intent_service(
 ) -> IntentService:
     """Stage 4A understanding. Read-only, and holds no executor."""
     return IntentService(session=session, provider=provider, settings=settings)
+
+
+def get_tool_registry() -> ToolRegistry:
+    """The application registry. Populated in code at import time."""
+    from app.tools import catalog  # noqa: F401  (import for registration)
+
+    return get_registry()
+
+
+def get_authorization_service() -> AuthorizationService:
+    """Stage 4C authorization. No session and no provider: it needs neither."""
+    return AuthorizationService(registry=get_tool_registry())
 
 
 def get_planning_service(
@@ -125,3 +139,5 @@ Formatter = Annotated[PromptFormatter, Depends(get_prompt_formatter)]
 Knowledge = Annotated[KnowledgeService, Depends(get_knowledge_service)]
 Intent = Annotated[IntentService, Depends(get_intent_service)]
 Planning = Annotated[PlanningService, Depends(get_planning_service)]
+Tools = Annotated[ToolRegistry, Depends(get_tool_registry)]
+Authorization = Annotated[AuthorizationService, Depends(get_authorization_service)]
