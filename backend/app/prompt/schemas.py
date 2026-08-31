@@ -30,6 +30,11 @@ class PromptSection(str, Enum):
     """
 
     SYSTEM_INSTRUCTIONS = "system_instructions"
+    #: Authoritative facts about the running system: provider, model,
+    #: database, capabilities. Application configuration, not retrieval --
+    #: ranked above reference knowledge because it *is* authoritative, and
+    #: placed immediately after the instructions for the same reason.
+    RUNTIME_FACTS = "runtime_facts"
     REFERENCE_KNOWLEDGE = "reference_knowledge"
     CONVERSATION = "conversation"
     CURRENT_MESSAGE = "current_message"
@@ -55,6 +60,7 @@ class PromptStats(BaseModel):
     total_messages: int = 0
 
     instruction_messages: int = 0
+    runtime_fact_messages: int = 0
     reference_messages: int = 0
     conversation_messages: int = 0
     current_messages: int = 0
@@ -64,6 +70,7 @@ class PromptStats(BaseModel):
     relationships_rendered: int = 0
 
     instruction_chars: int = 0
+    runtime_fact_chars: int = 0
     reference_chars: int = 0
     conversation_chars: int = 0
     current_message_chars: int = 0

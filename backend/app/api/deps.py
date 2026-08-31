@@ -16,6 +16,7 @@ from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
 from app.orchestration.service import OrchestrationService
 from app.planning.service import PlanningService
+from app.runtime.facts import build as build_runtime_facts
 from app.tools.authorization import AuthorizationService
 from app.tools.registry import ToolRegistry, get_registry
 from app.prompt.formatter import PromptFormatter
@@ -48,13 +49,22 @@ def get_retrieval_service(
     return RetrievalService(session=session, settings=settings)
 
 
-def get_prompt_formatter(settings: AppSettings) -> PromptFormatter:
-    """The Stage 3B formatter, configured with the application instructions.
+def get_prompt_formatter(
+    settings: AppSettings, provider: Provider
+) -> PromptFormatter:
+    """The Stage 3B formatter, configured with instructions and runtime facts.
 
     Shared by the chat request path and the prompt debug endpoint, so what
     debug shows is produced by the same code that talks to the model.
+
+    The facts are built here rather than inside the formatter: assembling them
+    needs `Settings` and the live provider, and the formatter is required to
+    know neither. It renders values it is handed.
     """
-    return PromptFormatter(system_prompt=settings.MAI_SYSTEM_PROMPT)
+    return PromptFormatter(
+        system_prompt=settings.MAI_SYSTEM_PROMPT,
+        runtime_facts=build_runtime_facts(settings=settings, provider=provider),
+    )
 
 
 def get_intent_service(

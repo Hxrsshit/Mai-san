@@ -14,10 +14,11 @@ Three guarantees, each covered by a test:
   `PromptFormatter.format` the chat turn calls, so what is displayed is what
   would actually be sent, not a reconstruction of it.
 
-System instruction text is reported by size only. It is application
-configuration rather than user data, and there is no reason for an inspection
-endpoint to echo it back. No credential or provider setting is exposed by any
-field here.
+System instruction and runtime fact text are reported by size only. Both are
+application configuration rather than user data, and there is no reason for an
+inspection endpoint to echo either back -- the facts section names the
+configured provider and model. No credential or provider setting is exposed by
+any field here.
 """
 
 from typing import List
@@ -32,6 +33,16 @@ from app.prompt.schemas import (
     PromptDebugRequest,
     PromptDebugResponse,
     PromptSection,
+)
+
+#: Sections whose content is reported by size only.
+#:
+#: Both are application configuration rather than user data, and the endpoint
+#: has no reason to echo either back. Runtime facts additionally name the
+#: configured provider and model, which are settings -- so the rule that
+#: already covered the system prompt covers them for the same reason.
+_CONFIGURATION_SECTIONS = frozenset(
+    {PromptSection.SYSTEM_INSTRUCTIONS, PromptSection.RUNTIME_FACTS}
 )
 
 router = APIRouter(prefix="/api/prompt", tags=["prompt"])
@@ -70,7 +81,7 @@ async def debug_prompt(
                 chars=len(part.message.content),
                 content=(
                     None
-                    if part.section is PromptSection.SYSTEM_INSTRUCTIONS
+                    if part.section in _CONFIGURATION_SECTIONS
                     else part.message.content
                 ),
             )

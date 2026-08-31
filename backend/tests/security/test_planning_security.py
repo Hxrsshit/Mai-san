@@ -22,7 +22,7 @@ from app.entities.models import Entity
 from app.knowledge.models import KnowledgeConflict
 from app.memory.models import Memory
 from app.planning.schemas import Plan, PlanStatus, PlanTask
-from app.prompt.formatter import REFERENCE_HEADER
+from app.prompt.formatter import RUNTIME_FACTS_HEADER, REFERENCE_HEADER
 from app.relationships.models import Relationship
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
@@ -397,7 +397,24 @@ async def test_the_prompt_is_identical_with_and_without_planning(
     )
     without_planning = [m.to_dict() for m in fake_provider.last_call]
 
-    assert with_planning == without_planning
+    # Stage 4D.1 note. These are no longer byte-identical, and should not be:
+    # the authoritative facts block truthfully reports which capabilities are
+    # switched on, so toggling one changes it. That is configuration state,
+    # not per-turn state.
+    #
+    # The invariant under test is the per-turn one, and it is unchanged: no
+    # result computed for *this turn* reaches the model. Compare everything
+    # except the facts section, and separately assert the facts section is the
+    # only thing that moved.
+    def without_facts(messages):
+        return [
+            message
+            for message in messages
+            if RUNTIME_FACTS_HEADER not in message["content"]
+        ]
+
+    assert without_facts(with_planning) == without_facts(without_planning)
+    assert len(with_planning) == len(without_planning)
 
 
 # --- Retrieved knowledge cannot become planner authority --------------------

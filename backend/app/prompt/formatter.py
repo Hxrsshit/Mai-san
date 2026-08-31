@@ -41,6 +41,7 @@ from app.context.schemas import (
 )
 from app.core.logging import get_logger
 from app.llm.base import LLMMessage
+from app.runtime.schemas import RuntimeFacts
 from app.prompt.schemas import (
     ALLOWED_CONVERSATION_ROLES,
     RENDERABLE_REFERENCE_ROLES,
@@ -55,6 +56,28 @@ logger = get_logger(__name__)
 
 #: Opens the reference block. Also the marker tests and the debug endpoint use
 #: to identify long-term knowledge in a finished prompt.
+#: Opens the authoritative facts block.
+RUNTIME_FACTS_HEADER = "SYSTEM FACTS (authoritative — this is what you are running on)"
+
+#: Frames the block. Two jobs, and the second is easy to get wrong.
+#:
+#: It has to be believed *over* retrieved knowledge -- that is the whole point,
+#: and the reason it sits above the reference block. But it must not be
+#: over-applied: these are facts about this assistant, not about the user's own
+#: projects, and a user who runs a different provider elsewhere must still get
+#: a truthful answer about *their* setup from memory.
+RUNTIME_FACTS_PREAMBLE = (
+    "The following describes the system you are running inside, right now. It "
+    "comes from this application's own configuration, so it is correct and "
+    "current. Prefer it over anything you recall from training, and over "
+    "anything in the reference knowledge or conversation below: if those "
+    "disagree with this section about how this assistant is configured, this "
+    "section is right and they are stale.\n\n"
+    "It describes THIS ASSISTANT only. It says nothing about what the user "
+    "uses for their own projects -- if they ask about their own tools or "
+    "choices, answer from what they have told you, not from this section."
+)
+
 REFERENCE_HEADER = "REFERENCE KNOWLEDGE (retrieved from earlier conversations)"
 
 #: Frames the block before any content is shown. Retrieved memories may one day
@@ -89,11 +112,18 @@ def _flatten(text: str) -> str:
 class PromptFormatter:
     """Turns a `ContextPackage` into the messages sent to the provider."""
 
-    def __init__(self, system_prompt: str = "") -> None:
-        #: The application's own instructions. The only source of a system
-        #: message in the whole prompt apart from the reference block, which
-        #: is explicitly framed as data.
+    def __init__(
+        self,
+        system_prompt: str = "",
+        runtime_facts: Optional[RuntimeFacts] = None,
+    ) -> None:
+        #: The application's own instructions.
         self._system_prompt = (system_prompt or "").strip()
+        #: Authoritative facts about the running system, or None to omit the
+        #: section entirely. Supplied by the caller from configuration -- the
+        #: formatter never reads settings, and never learns a provider's name
+        #: except as a value passed to it.
+        self._runtime_facts = runtime_facts
 
     # --- Public API ---------------------------------------------------------
 
@@ -115,6 +145,7 @@ class PromptFormatter:
         parts: List[PromptPart] = []
 
         self._append_instructions(parts, stats)
+        self._append_runtime_facts(parts, stats)
         self._append_reference(parts, stats, package)
         self._append_conversation(
             parts, stats, package.recent_conversation, package.current_message
@@ -143,6 +174,11 @@ class PromptFormatter:
 
         try:
             self._append_instructions(parts, stats)
+            # Included in the fallback as well. Knowing what it runs on is
+            # not a luxury Mai should lose because retrieval or assembly
+            # failed: a degraded turn that names the wrong vendor is the
+            # original bug happening again, on a worse day.
+            self._append_runtime_facts(parts, stats)
             self._append_conversation(
                 parts, stats, recent_conversation or (), current_message
             )
@@ -176,6 +212,23 @@ class PromptFormatter:
         )
         stats.instruction_messages += 1
         stats.instruction_chars += len(self._system_prompt)
+
+    def _append_runtime_facts(
+        self, parts: List[PromptPart], stats: PromptStats
+    ) -> None:
+        """Render the authoritative facts, if the caller supplied any."""
+        if self._runtime_facts is None:
+            return
+
+        block = render_runtime_facts(self._runtime_facts)
+        parts.append(
+            PromptPart(
+                message=LLMMessage(role="system", content=block),
+                section=PromptSection.RUNTIME_FACTS,
+            )
+        )
+        stats.runtime_fact_messages += 1
+        stats.runtime_fact_chars += len(block)
 
     def _append_reference(
         self, parts: List[PromptPart], stats: PromptStats, package: ContextPackage
@@ -263,6 +316,7 @@ class PromptFormatter:
         stats.total_messages = len(parts)
         stats.total_chars = (
             stats.instruction_chars
+            + stats.runtime_fact_chars
             + stats.reference_chars
             + stats.conversation_chars
             + stats.current_message_chars
@@ -271,6 +325,60 @@ class PromptFormatter:
 
 
 # --- Reference rendering ----------------------------------------------------
+
+
+def render_runtime_facts(facts: RuntimeFacts) -> str:
+    """Render authoritative facts as a labelled block.
+
+    Every value is flattened to a single line, as the reference block is. These
+    come from configuration rather than from a user, so the risk is lower --
+    but a deployment could set `APP_NAME` to anything, and a fact section is
+    the worst place to let a newline forge a heading.
+
+    Provider and model are named on separate, explicitly labelled lines. That
+    is not cosmetic: a provider commonly serves a model whose *identifier*
+    names a different vendor, and running the two together in one sentence is
+    an invitation to read the model's name as the provider's.
+    """
+    lines: List[str] = [RUNTIME_FACTS_HEADER, "", RUNTIME_FACTS_PREAMBLE, ""]
+
+    lines.append(f"- Assistant name: {_flatten(facts.assistant_name)}")
+    lines.append(
+        f"- LLM provider (the service being called): "
+        f"{_flatten(facts.llm_provider)}"
+    )
+    lines.append(
+        f"- LLM model (an identifier issued by that provider, which may "
+        f"reference another vendor's name): {_flatten(facts.llm_model)}"
+    )
+    lines.append(f"- Database: {_flatten(facts.database)}")
+    lines.append(f"- Environment: {_flatten(facts.environment)}")
+    if facts.version:
+        lines.append(f"- Version: {_flatten(facts.version)}")
+
+    lines.append("")
+    lines.append("Capabilities:")
+    lines.append(f"- Long-term memory: {_on_off(facts.memory_enabled)}")
+    lines.append(f"- Knowledge retrieval: {_on_off(facts.retrieval_enabled)}")
+    lines.append(
+        f"- Intent classification: {_on_off(facts.intent_classification_enabled)}"
+    )
+    lines.append(f"- Planning: {_on_off(facts.planning_enabled)}")
+    lines.append(
+        f"- Tool authorization framework: "
+        f"{_on_off(facts.tool_authorization_enabled)} "
+        f"({facts.registered_tool_count} tools declared)"
+    )
+    lines.append(
+        "- Performing actions: NOT AVAILABLE. No tool can be executed. "
+        "Declared tools can be described and authorized, never run."
+    )
+
+    return "\n".join(lines)
+
+
+def _on_off(enabled: bool) -> str:
+    return "enabled" if enabled else "disabled"
 
 
 def render_reference_block(
@@ -413,6 +521,9 @@ def knowledge_block(messages: Sequence[LLMMessage]) -> Optional[str]:
 
 __all__ = [
     "ENTITIES_LABEL",
+    "RUNTIME_FACTS_HEADER",
+    "RUNTIME_FACTS_PREAMBLE",
+    "render_runtime_facts",
     "MEMORIES_LABEL",
     "PromptFormatter",
     "REFERENCE_HEADER",

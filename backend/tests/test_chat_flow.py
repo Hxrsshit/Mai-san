@@ -6,6 +6,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.core.errors import LLMRateLimitError, LLMTimeoutError
+from app.prompt.formatter import RUNTIME_FACTS_HEADER
 
 
 async def test_send_message_stores_both_turns_and_returns_them(
@@ -62,8 +63,15 @@ async def test_context_includes_the_system_prompt_and_full_history(
 
     assert sent[0].role == "system"
     assert sent[0].content == "You are Mai."
-    # system + (user, assistant) + user
-    assert [m.role for m in sent] == ["system", "user", "assistant", "user"]
+    # Stage 4D.1 added a second system message: the authoritative facts block,
+    # which sits immediately after the instructions and above everything
+    # retrieved.
+    assert sent[1].role == "system"
+    assert RUNTIME_FACTS_HEADER in sent[1].content
+    # instructions + facts + (user, assistant) + user
+    assert [m.role for m in sent] == [
+        "system", "system", "user", "assistant", "user",
+    ]
     assert sent[-1].content == "Second"
 
 
@@ -107,8 +115,9 @@ async def test_context_window_is_capped(
         )
 
     sent = fake_provider.last_call
-    # 1 system prompt + the 4 most recent stored messages + the current one.
-    assert len(sent) == 6
+    # 2 system messages (instructions + runtime facts) + the 4 most recent
+    # stored messages + the current one.
+    assert len(sent) == 7
     assert sent[-1].content == "msg-4"
     # The cap is real: 8 messages were stored by the time of the last turn.
     assert len([m for m in sent if m.role != "system"]) == 5

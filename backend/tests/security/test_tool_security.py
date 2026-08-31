@@ -313,9 +313,12 @@ def test_no_module_anywhere_dispatches_a_tool() -> None:
         if path.parent.name == "tools":
             continue
         source = path.read_text()
+        # Call syntax, not substrings. `RuntimeFacts.can_execute_actions` is a
+        # read-only property that always returns False -- the opposite of a
+        # dispatcher -- and a bare "execute_action" matched it.
         for pattern in (
-            "tool.execute", "tool.run(", "tool.invoke", "tool.call(",
-            "dispatch_tool", "run_tool", "execute_tool", "execute_action",
+            "tool.execute(", "tool.run(", "tool.invoke(", "tool.call(",
+            "dispatch_tool(", "run_tool(", "execute_tool(", "execute_action(",
         ):
             if pattern in source:
                 offenders.append(f"{path.relative_to(APP)}:{pattern}")

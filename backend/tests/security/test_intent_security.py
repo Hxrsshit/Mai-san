@@ -20,7 +20,7 @@ from app.intent.policy import derive
 from app.intent.schemas import IntentClassification, IntentResult, IntentType
 from app.knowledge.models import KnowledgeConflict
 from app.memory.models import Memory
-from app.prompt.formatter import REFERENCE_HEADER
+from app.prompt.formatter import RUNTIME_FACTS_HEADER, REFERENCE_HEADER
 from app.relationships.models import Relationship
 from app.entities.models import Entity
 from app.database.models import Message
@@ -277,7 +277,24 @@ async def test_the_prompt_is_identical_with_and_without_classification(
     )
     without_intent = [m.to_dict() for m in fake_provider.last_call]
 
-    assert with_intent == without_intent
+    # Stage 4D.1 note. These are no longer byte-identical, and should not be:
+    # the authoritative facts block truthfully reports which capabilities are
+    # switched on, so toggling one changes it. That is configuration state,
+    # not per-turn state.
+    #
+    # The invariant under test is the per-turn one, and it is unchanged: no
+    # result computed for *this turn* reaches the model. Compare everything
+    # except the facts section, and separately assert the facts section is the
+    # only thing that moved.
+    def without_facts(messages):
+        return [
+            message
+            for message in messages
+            if RUNTIME_FACTS_HEADER not in message["content"]
+        ]
+
+    assert without_facts(with_intent) == without_facts(without_intent)
+    assert len(with_intent) == len(without_intent)
 
 
 async def test_the_classifier_gets_no_long_term_knowledge(

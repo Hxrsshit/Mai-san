@@ -86,6 +86,8 @@ async def test_debug_reports_ordering_and_the_current_message_position(
 
     assert body["sections_included"] == [
         PromptSection.SYSTEM_INSTRUCTIONS.value,
+        # Stage 4D.1: authoritative facts sit above retrieved knowledge.
+        PromptSection.RUNTIME_FACTS.value,
         PromptSection.REFERENCE_KNOWLEDGE.value,
         PromptSection.CURRENT_MESSAGE.value,
     ]
@@ -122,8 +124,10 @@ async def test_debug_reports_character_counts(
     stats = body["stats"]
     assert stats["current_message_chars"] == len("What database does Mai use?")
     assert stats["reference_chars"] > 0
+    assert stats["runtime_fact_chars"] > 0
     assert stats["total_chars"] == (
         stats["instruction_chars"]
+        + stats["runtime_fact_chars"]
         + stats["reference_chars"]
         + stats["conversation_chars"]
         + stats["current_message_chars"]
