@@ -365,6 +365,9 @@ def render_runtime_facts(facts: RuntimeFacts) -> str:
     )
     lines.append(f"- Planning: {_on_off(facts.planning_enabled)}")
     lines.append(
+        f"- Action identification: {_on_off(facts.action_orchestration_enabled)}"
+    )
+    lines.append(
         f"- Tool authorization framework: "
         f"{_on_off(facts.tool_authorization_enabled)} "
         f"({facts.registered_tool_count} tools declared)"

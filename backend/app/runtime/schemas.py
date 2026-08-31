@@ -66,6 +66,8 @@ class RuntimeFacts(BaseModel):
     retrieval_enabled: bool = True
     planning_enabled: bool = True
     intent_classification_enabled: bool = True
+    #: Whether a turn is examined for a proposed action at all (Stage 4D).
+    action_orchestration_enabled: bool = True
     #: The Stage 4C authorization framework is present and reachable.
     tool_authorization_enabled: bool = True
     #: How many tools the application has declared. Registry count, not a guess.

@@ -23,6 +23,34 @@ logger = get_logger(__name__)
 #: inventing a plausible value is exactly the failure being fixed.
 UNKNOWN = "unknown"
 
+#: Capability facts, and the setting each is read from.
+#:
+#: Declared as data rather than written inline so the set can be checked
+#: against `Settings` by a test. A capability Mai reports and a capability the
+#: application has must not drift apart silently -- that drift is the same
+#: class of fault as the bug this whole layer exists to fix, just slower.
+CAPABILITY_SETTINGS = {
+    "memory_enabled": "MEMORY_ENABLED",
+    "retrieval_enabled": "RETRIEVAL_ENABLED",
+    "planning_enabled": "PLANNING_ENABLED",
+    "intent_classification_enabled": "INTENT_CLASSIFICATION_ENABLED",
+    "action_orchestration_enabled": "ORCHESTRATION_ENABLED",
+}
+
+#: Settings deliberately *not* surfaced, each with the reason.
+#:
+#: Every one is a sub-switch of a capability that is already reported. Listing
+#: them keeps the omission a decision rather than an oversight: a test asserts
+#: every `*_ENABLED` setting appears here or in `CAPABILITY_SETTINGS`, so a new
+#: one forces a choice.
+SETTINGS_NOT_SURFACED = {
+    "MEMORY_EXTRACTION_ENABLED": "sub-switch of memory_enabled",
+    "ENTITY_EXTRACTION_ENABLED": "sub-switch of memory_enabled",
+    "RELATIONSHIP_EXTRACTION_ENABLED": "sub-switch of memory_enabled",
+    "CONFLICT_DETECTION_ENABLED": "sub-switch of memory_enabled",
+    "HISTORICAL_RETRIEVAL_ENABLED": "sub-switch of retrieval_enabled",
+}
+
 
 def database_dialect(database_url: str) -> str:
     """The dialect from a SQLAlchemy URL, and nothing else.
@@ -54,7 +82,12 @@ def _safe(read, label: str) -> str:
             extra={"fact": label, "error": str(exc)},
         )
         return UNKNOWN
-    return (value or UNKNOWN) if isinstance(value, str) else UNKNOWN
+    if not isinstance(value, str):
+        return UNKNOWN
+    # Stripped before the emptiness check: whitespace is not a provider name,
+    # and reporting "   " as the configured provider is the same kind of
+    # confidently-wrong answer as reporting the wrong vendor.
+    return value.strip() or UNKNOWN
 
 
 def build(
@@ -98,10 +131,10 @@ def build(
         llm_provider=llm_provider,
         llm_model=llm_model,
         database=database_dialect(settings.DATABASE_URL),
-        memory_enabled=settings.MEMORY_ENABLED,
-        retrieval_enabled=settings.RETRIEVAL_ENABLED,
-        planning_enabled=settings.PLANNING_ENABLED,
-        intent_classification_enabled=settings.INTENT_CLASSIFICATION_ENABLED,
+        **{
+            fact: bool(getattr(settings, setting))
+            for fact, setting in CAPABILITY_SETTINGS.items()
+        },
         tool_authorization_enabled=True,
         registered_tool_count=registered_tool_count,
     )

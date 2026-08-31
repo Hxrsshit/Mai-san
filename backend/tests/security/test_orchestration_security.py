@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from app.entities.models import Entity
 from app.knowledge.models import KnowledgeConflict
 from app.memory.models import Memory, MemoryStatus, MemoryType
+from app.prompt.formatter import RUNTIME_FACTS_HEADER
 from app.orchestration import matching
 from app.orchestration.schemas import (
     ActionCandidate,
@@ -417,7 +418,23 @@ async def test_the_prompt_is_identical_with_and_without_orchestration(
     )
     without = [m.to_dict() for m in fake_provider.last_call]
 
-    assert with_orchestration == without
+    # Stage 4D.1 note, and the same narrowing applied to the intent and
+    # planning versions of this test. These are no longer byte-identical, and
+    # should not be: the authoritative facts block truthfully reports whether
+    # action identification is switched on, so toggling it changes that block.
+    # That is configuration state, not per-turn state.
+    #
+    # The invariant under test is the per-turn one, and it is unchanged: no
+    # orchestration result computed for *this turn* reaches the model.
+    def without_facts(messages):
+        return [
+            message
+            for message in messages
+            if RUNTIME_FACTS_HEADER not in message["content"]
+        ]
+
+    assert without_facts(with_orchestration) == without_facts(without)
+    assert len(with_orchestration) == len(without)
 
 
 # --- No execution -----------------------------------------------------------
