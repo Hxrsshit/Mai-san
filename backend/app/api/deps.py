@@ -14,6 +14,7 @@ from app.entities.service import EntityService
 from app.intent.service import IntentService
 from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
+from app.orchestration.service import OrchestrationService
 from app.planning.service import PlanningService
 from app.tools.authorization import AuthorizationService
 from app.tools.registry import ToolRegistry, get_registry
@@ -75,6 +76,13 @@ def get_authorization_service() -> AuthorizationService:
     return AuthorizationService(registry=get_tool_registry())
 
 
+def get_orchestration_service(settings: AppSettings) -> OrchestrationService:
+    """Stage 4D orchestration. No session and no provider: it needs neither."""
+    return OrchestrationService(
+        authorization=get_authorization_service(), settings=settings
+    )
+
+
 def get_planning_service(
     provider: Provider, settings: AppSettings
 ) -> PlanningService:
@@ -90,6 +98,7 @@ def get_chat_service(
     formatter: "Formatter",
     intent_service: "Intent",
     planning_service: "Planning",
+    orchestration_service: "Orchestration",
 ) -> ChatService:
     return ChatService(
         session=session,
@@ -99,6 +108,7 @@ def get_chat_service(
         prompt_formatter=formatter,
         intent_service=intent_service,
         planning_service=planning_service,
+        orchestration_service=orchestration_service,
     )
 
 
@@ -141,3 +151,6 @@ Intent = Annotated[IntentService, Depends(get_intent_service)]
 Planning = Annotated[PlanningService, Depends(get_planning_service)]
 Tools = Annotated[ToolRegistry, Depends(get_tool_registry)]
 Authorization = Annotated[AuthorizationService, Depends(get_authorization_service)]
+Orchestration = Annotated[
+    OrchestrationService, Depends(get_orchestration_service)
+]

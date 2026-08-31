@@ -90,9 +90,22 @@ class Settings(BaseSettings):
     # --- Chat behaviour ---
     # System prompt prepended to every request. Stage 1 keeps this deliberately plain;
     # personality lives in a later stage.
+    # Stage 4D added the capability statement. Mai can now *recognise* an
+    # action and have it authorized, and has no way to perform one -- so
+    # without this the model would cheerfully report having sent the email.
+    #
+    # It belongs here rather than in the per-turn prompt: it is a standing
+    # fact about the application, not state about this turn. Orchestration
+    # results stay out of the prompt entirely, exactly as intent and plans do.
     MAI_SYSTEM_PROMPT: str = (
         "You are Mai, a helpful personal AI assistant. "
-        "Answer clearly and concisely."
+        "Answer clearly and concisely.\n\n"
+        "You cannot perform actions outside this conversation. You have no "
+        "tools: you cannot search the web, send email, read or write files, "
+        "run code, or change anything in any external system. Never say or "
+        "imply that you have done any of those things. If the user asks for "
+        "one, say plainly that you can help think it through but cannot carry "
+        "it out."
     )
     # Upper bound on how many stored messages are replayed to the model.
     MAX_CONTEXT_MESSAGES: int = 40
@@ -165,6 +178,16 @@ class Settings(BaseSettings):
     # A bounded plan is a few thousand tokens of JSON; the schema limits cap
     # what can survive validation regardless.
     PLANNING_MAX_TOKENS: int = 2048
+
+    # --- Action orchestration (Stage 4D) ---
+    # Orchestration examines a turn for a proposed action, resolves it against
+    # the Stage 4C registry and authorizes it. It adds ZERO model calls:
+    # identification is a deterministic phrase lookup, and only turns Stage 4A
+    # classified as ACTION are examined at all.
+    #
+    # Nothing it produces can execute. Disabling it removes the orchestration
+    # field from chat responses and changes nothing else.
+    ORCHESTRATION_ENABLED: bool = True
 
     # --- Knowledge lifecycle (Stage 3C) ---
     # Conflict evaluation runs in the background pipeline after relationship

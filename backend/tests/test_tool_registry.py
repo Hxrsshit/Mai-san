@@ -212,12 +212,12 @@ def test_mutating_a_retrieved_definition_cannot_change_the_registry(
     with pytest.raises(ValidationError):
         retrieved.requires_approval = False
     with pytest.raises(ValidationError):
-        retrieved.enabled = True
+        retrieved.execution_mode = ExecutionMode.SYNCHRONOUS
 
     fresh = registry.definition("future_send_email")
     assert fresh.risk_level is RiskLevel.HIGH
     assert fresh.requires_approval is True
-    assert fresh.enabled is False
+    assert fresh.execution_mode is ExecutionMode.UNAVAILABLE
 
 
 # --- The catalogue ----------------------------------------------------------
@@ -233,12 +233,39 @@ def test_the_catalogue_registers_the_expected_tools(registry) -> None:
     )
 
 
-def test_every_declared_future_tool_is_disabled(registry) -> None:
-    """They are declarations. None has an implementation, so none is available."""
+def test_every_declared_future_tool_still_requires_approval(registry) -> None:
+    """None is an implementation, so none may pass without a human.
+
+    Stage 4D turned the operator switch on for three of these so that
+    `APPROVAL_REQUIRED` is reachable. `enabled` and `execution_mode` answer
+    different questions: the first is "would we permit this?", the second is
+    "can it run?". Only the first changed.
+    """
+    for name in registry.names():
+        if not name.startswith("future_"):
+            continue
+        definition_ = registry.definition(name)
+        assert definition_.requires_approval is True, name
+        assert definition_.execution_mode is ExecutionMode.UNAVAILABLE, name
+
+
+def test_the_critical_tool_is_refused_twice_over(registry) -> None:
+    """Belt and braces: removing either guard does not quietly permit it."""
+    definition_ = registry.definition("future_delete_file")
+    assert definition_.enabled is False
+    assert definition_.risk_level is RiskLevel.CRITICAL
+
+
+def test_only_a_diagnostic_tool_may_skip_approval(registry) -> None:
+    """The invariant that keeps the operator switch safe.
+
+    An enabled tool that also opts out of approval is one nothing would stop
+    once execution exists. Only the inert framework tool may be both.
+    """
     for name in registry.names():
         definition_ = registry.definition(name)
-        if name.startswith("future_"):
-            assert definition_.enabled is False, name
+        if definition_.enabled and not definition_.requires_approval:
+            assert definition_.category is ToolCategory.DIAGNOSTIC, name
 
 
 def test_no_registered_tool_claims_to_be_executable(registry) -> None:

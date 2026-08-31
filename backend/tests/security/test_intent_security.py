@@ -134,9 +134,11 @@ def test_only_known_consumers_read_a_capability_flag() -> None:
     thought about.
     """
     expected = {
-        "schemas/message.py",      # serialises it onto the chat response
-        "tools/policy.py",         # Stage 4C: tightens, never permits
-        "tools/schemas.py",        # names `requires_approval` on a decision
+        "schemas/message.py",         # serialises it onto the chat response
+        "tools/policy.py",            # Stage 4C: tightens, never permits
+        "tools/schemas.py",           # names `requires_approval` on a decision
+        "orchestration/eligibility.py",  # Stage 4D: documents the coupling
+        "orchestration/schemas.py",   # carries `requires_approval` on an outcome
     }
 
     readers = set()

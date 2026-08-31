@@ -69,11 +69,21 @@ def test_an_unknown_tool_is_refused(authorize) -> None:
 
 
 def test_a_disabled_tool_is_forbidden(authorize) -> None:
-    decision = authorize("future_web_search")
+    """`future_delete_file` is the disabled one, and also above the ceiling."""
+    decision = authorize("future_delete_file")
 
     assert decision.status is AuthorizationStatus.FORBIDDEN
     assert decision.reason == DenialReason.TOOL_DISABLED
     assert decision.is_refused
+
+
+def test_an_enabled_declared_tool_is_gated_not_permitted(authorize) -> None:
+    """Stage 4D turned the operator switch on; approval still stands."""
+    decision = authorize("future_web_search")
+
+    assert decision.status is AuthorizationStatus.APPROVAL_REQUIRED
+    assert decision.requires_approval is True
+    assert not decision.is_allowed
 
 
 def test_an_approval_required_tool_is_gated(registry) -> None:
@@ -283,6 +293,9 @@ def test_an_action_turn_does_not_loosen_anything(authorize) -> None:
     )
     assert authorize("future_delete_file", intent=action).status is (
         AuthorizationStatus.FORBIDDEN
+    )
+    assert authorize("future_send_email", intent=action).status is (
+        AuthorizationStatus.APPROVAL_REQUIRED
     )
     assert authorize("nope", intent=action).status is (
         AuthorizationStatus.UNKNOWN_TOOL

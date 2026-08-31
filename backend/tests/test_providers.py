@@ -143,7 +143,13 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
     conversation = await conversations.create_conversation()
 
     chat = ChatService(session=db_session, provider=provider, settings=settings)
-    user_message, assistant_message, intent, planning = await chat.send_message(
+    (
+        user_message,
+        assistant_message,
+        intent,
+        planning,
+        orchestration,
+    ) = await chat.send_message(
         conversation.id, "hello from the test"
     )
 
@@ -162,6 +168,11 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
     # Conversation warrants no plan, so Stage 4B made no call at all.
     assert planning.status.value == "not_eligible"
     assert planning.model_calls == 0
+    # Stage 4D: a conversational turn is not action-capable, so nothing
+    # was examined and nothing could have run.
+    assert orchestration.outcome.value == "not_eligible"
+    assert orchestration.model_calls == 0
+    assert orchestration.acted is False
 
 
 async def test_switching_providers_changes_the_endpoint_called() -> None:

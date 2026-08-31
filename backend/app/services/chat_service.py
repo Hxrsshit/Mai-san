@@ -37,6 +37,8 @@ from app.core.logging import get_logger
 from app.database.models import Conversation, Message, MessageRole
 from app.intent.schemas import IntentResult
 from app.intent.service import IntentService
+from app.orchestration.schemas import OrchestrationResult
+from app.orchestration.service import OrchestrationService
 from app.planning.schemas import PlanningResult
 from app.planning.service import PlanningService
 from app.llm.base import LLMProvider
@@ -58,6 +60,7 @@ class ChatService:
         prompt_formatter: Optional[PromptFormatter] = None,
         intent_service: Optional[IntentService] = None,
         planning_service: Optional[PlanningService] = None,
+        orchestration_service: Optional[OrchestrationService] = None,
     ) -> None:
         self._session = session
         self._provider = provider
@@ -73,13 +76,17 @@ class ChatService:
         self._planning = planning_service or PlanningService(
             provider=provider, settings=self._settings
         )
+        self._orchestration = orchestration_service or OrchestrationService(
+            settings=self._settings
+        )
 
     async def send_message(
         self, conversation_id: uuid.UUID, content: str
-    ) -> Tuple[Message, Message, IntentResult, PlanningResult]:
+    ) -> Tuple[Message, Message, IntentResult, PlanningResult, OrchestrationResult]:
         """Handle one user turn.
 
-        Returns (user_message, assistant_message, intent, planning).
+        Returns (user_message, assistant_message, intent, planning,
+        orchestration).
 
         Raises ConversationNotFoundError if the conversation does not exist,
         or an LLMError subclass if the model call fails. Nothing between those
@@ -114,6 +121,15 @@ class ChatService:
         # reply, and the reply is byte-identical with planning on or off.
         planning = await self._planning.plan_for(content, intent)
 
+        # Stage 4D. Consumes the same intent -- the message is classified
+        # once. Only an ACTION turn is examined, and identification is a
+        # deterministic phrase lookup, so this adds no model call at all.
+        #
+        # Like intent and planning, the result is application state: it is
+        # returned to the caller and never handed to the formatter. It also
+        # cannot be acted on -- there is no executor anywhere below it.
+        orchestration = self._orchestration.orchestrate(content, intent)
+
         prompt, timings = await self._build_prompt(conversation_id, content)
         prepare_ms = round((time.perf_counter() - started) * 1000, 2)
 
@@ -138,6 +154,8 @@ class ChatService:
                 "fallback_prompt": prompt.stats.fallback_used,
                 "intent_type": intent.intent_type.value,
                 "planning_status": planning.status.value,
+                "action_outcome": orchestration.outcome.value,
+                "action_proposals": len(orchestration.proposals),
                 "plan_tasks": planning.plan.task_count if planning.plan else 0,
                 # The Stage 3B guarantee, recorded on every turn: exactly
                 # one response *generation* call. Stage 4A adds at most one
@@ -146,6 +164,10 @@ class ChatService:
                 "request_path_generation_calls": 1,
                 "request_path_classification_calls": intent.model_calls,
                 "request_path_planning_calls": planning.model_calls,
+                # Stage 4D adds none: identification is deterministic.
+                "request_path_orchestration_calls": orchestration.model_calls,
+                # Nothing was executed, on any turn, ever.
+                "actions_executed": 0,
                 # Retrieval and assembly time is reported in more detail by
                 # their own log lines; these are the totals as chat sees them.
                 "assembly_ms": timings.get("assembly_ms"),
@@ -181,17 +203,27 @@ class ChatService:
                 "total_tokens": llm_response.usage.get("total_tokens"),
             },
         )
-        return user_message, assistant_message, intent, planning
+        return user_message, assistant_message, intent, planning, orchestration
 
     async def start_conversation_with_message(
         self, content: str, title: Optional[str] = None
-    ) -> Tuple[Conversation, Message, Message, IntentResult, PlanningResult]:
+    ) -> Tuple[
+        Conversation, Message, Message, IntentResult, PlanningResult,
+        OrchestrationResult,
+    ]:
         """Convenience path: create a conversation and send its first message."""
         conversation = await self._conversations.create_conversation(title=title)
-        user_message, assistant_message, intent, planning = await self.send_message(
-            conversation.id, content
+        (
+            user_message,
+            assistant_message,
+            intent,
+            planning,
+            orchestration,
+        ) = await self.send_message(conversation.id, content)
+        return (
+            conversation, user_message, assistant_message, intent, planning,
+            orchestration,
         )
-        return conversation, user_message, assistant_message, intent, planning
 
     # --- Internals ----------------------------------------------------------
     # Orchestration only. Everything below chooses *which* inputs reach the

@@ -88,7 +88,28 @@ def _declare(
     category: ToolCategory,
     risk_level: RiskLevel,
     requires_approval: bool = True,
+    enabled: bool = True,
 ) -> Tool:
+    """Declare a capability that does not exist.
+
+    `enabled` and `execution_mode` answer different questions, and Stage 4D
+    is where the difference starts to matter:
+
+    - `enabled` is the **operator's** switch: would we permit this capability?
+    - `execution_mode` is the **application's** statement of fact: can it run?
+      It is `unavailable` for every tool, and no definition may say otherwise.
+
+    Stage 4C set `enabled=False` on all of these because nothing consumed the
+    registry, so the switch had no meaning. Stage 4D introduces the consumer,
+    and leaving every switch off would make `APPROVAL_REQUIRED` unreachable --
+    collapsing a required outcome into a vestigial one and hiding the
+    difference between "we do not permit this" and "a human would have to
+    confirm it".
+
+    So the operator switch now reflects a real position, and nothing about
+    executability changed: every tool here is still `unavailable`, still has
+    no implementation, and still cannot run.
+    """
     tool = _DeclaredTool()
     tool._definition = ToolDefinition(
         name=name,
@@ -96,9 +117,7 @@ def _declare(
         category=category,
         risk_level=risk_level,
         requires_approval=requires_approval,
-        # Declared but not permitted: a capability can sit in the catalogue
-        # while the architecture that would make it safe is still being built.
-        enabled=False,
+        enabled=enabled,
     )
     return tool
 
@@ -137,6 +156,10 @@ def build_catalog(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
             "Delete a file from local storage. Not implemented.",
             ToolCategory.FILE_OPERATION,
             RiskLevel.CRITICAL,
+            # Refused twice over: the operator switch is off *and* the risk
+            # level is above the ceiling. Either alone would forbid it; both
+            # is deliberate, so removing one does not quietly permit it.
+            enabled=False,
         ),
     ):
         target.register(tool)

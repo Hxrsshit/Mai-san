@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.database.models.message import MessageRole
 from app.intent.schemas import IntentRead
+from app.orchestration.schemas import OrchestrationRead
 from app.planning.schemas import PlanningRead
 
 
@@ -74,3 +75,14 @@ class ChatResponse(BaseModel):
     #: Inert. A task reading "Send the outreach email" is a sentence about
     #: future work; nothing in this codebase can act on it.
     planning: Optional[PlanningRead] = None
+
+    #: Stage 4D. What Mai identified as a possible action, and what the
+    #: authorization layer decided about it.
+    #:
+    #: A third sibling of `intent` and `planning`, for the same reason.
+    #:
+    #: **Nothing here ran.** `executed` is false on the result and on every
+    #: proposal, and there is no state in which it could be true: Stage 4D has
+    #: no executor. An outcome of `action_allowed_not_executed` is named that
+    #: way so a client cannot read permission as completion.
+    orchestration: Optional[OrchestrationRead] = None

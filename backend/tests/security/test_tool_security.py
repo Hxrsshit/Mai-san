@@ -98,7 +98,9 @@ def test_a_proposal_cannot_carry_authority(service, extra) -> None:
         assert not hasattr(proposal, key), f"{key} became a field"
 
     decision = service.authorize(proposal)
-    assert decision.status is AuthorizationStatus.FORBIDDEN
+    # Gated, not permitted. What the spoofed fields tried to remove is the
+    # approval requirement, and it is still there.
+    assert decision.status is AuthorizationStatus.APPROVAL_REQUIRED
     assert decision.requires_approval is True
 
 
@@ -178,7 +180,7 @@ def test_the_source_grants_nothing(service) -> None:
         ).status
         for source in ActionSource
     }
-    assert outcomes == {AuthorizationStatus.FORBIDDEN}
+    assert outcomes == {AuthorizationStatus.APPROVAL_REQUIRED}
 
 
 # --- Attack 7: similar-name confusion ---------------------------------------
@@ -546,7 +548,7 @@ async def test_the_authorize_endpoint_drops_spoofed_authority(
     )
 
     body = response.json()
-    assert body["status"] == "forbidden"
+    assert body["status"] == "approval_required"
     assert body["requires_approval"] is True
     assert body["risk_level"] == "high"
 

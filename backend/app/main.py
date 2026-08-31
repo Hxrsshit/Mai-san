@@ -21,6 +21,7 @@ from app.api.routes import (
     context_router,
     intent_router,
     knowledge_router,
+    orchestration_router,
     planning_router,
     prompt_router,
     tools_router,
@@ -128,6 +129,8 @@ def create_app() -> FastAPI:
     # Stage 4C authorization. Read-only: it lists declarations and answers
     # whether an action would be permitted. Nothing here runs anything.
     app.include_router(tools_router)
+    # Stage 4D orchestration. Propose, authorize, return -- never execute.
+    app.include_router(orchestration_router)
 
     # The memory subsystem can be disabled entirely; when it is, the
     # inspection routes are not registered at all.
