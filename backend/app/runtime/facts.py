@@ -15,6 +15,7 @@ from typing import Optional
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.llm.base import LLMProvider
+from app.runtime.capabilities import build as capability_facts
 from app.runtime.schemas import RuntimeFacts
 
 logger = get_logger(__name__)
@@ -96,6 +97,7 @@ def build(
     provider: Optional[LLMProvider] = None,
     registered_tool_count: Optional[int] = None,
     executable_tool_count: Optional[int] = None,
+    capabilities: Optional[tuple] = None,
 ) -> RuntimeFacts:
     """Assemble the authoritative facts for this process. Never raises."""
     settings = settings or get_settings()
@@ -138,6 +140,14 @@ def build(
             # must not be reported as a capability.
             executable_tool_count = 0
 
+    if capabilities is None:
+        try:
+            capabilities = capability_facts(settings=settings)
+        except Exception:  # noqa: BLE001
+            # An empty tuple renders as "no tools", which is the conservative
+            # answer. This layer fails towards claiming less, never more.
+            capabilities = ()
+
     return RuntimeFacts(
         assistant_name=settings.APP_NAME or "Mai",
         environment=settings.APP_ENV or UNKNOWN,
@@ -151,6 +161,7 @@ def build(
         tool_authorization_enabled=True,
         registered_tool_count=registered_tool_count,
         executable_tool_count=executable_tool_count,
+        capabilities=capabilities,
     )
 
 

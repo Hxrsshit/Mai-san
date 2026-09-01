@@ -25,9 +25,56 @@ relationship extraction, or conversation history. A `RuntimeFacts` is built
 from `Settings` and the live provider object and from nothing else.
 """
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.runtime.capabilities import CapabilityState, USABLE_STATES
+
+
+class ToolCapability(BaseModel):
+    """One registered tool, as the application describes it to itself.
+
+    Every field is copied from a `ToolDefinition` or computed from the two
+    registries. None is settable by a request, none comes from a model, and
+    none is read from the database -- so a memory claiming "Mai can send
+    email" cannot produce an entry here, because entries are not produced
+    from text at all.
+
+    No field can carry a secret. There is no URL, no path, no key, no
+    connection string and no argument value: a name, a sentence, two
+    enumerated labels and three booleans. A test asserts the field set, so a
+    future addition has to be a deliberate one.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The canonical registry name. What an execution request would carry.
+    identifier: str
+    #: `create_text_file` -> `Create text file`. Derived, never stored twice.
+    display_name: str
+    #: The declaration's own description. Application text, not user text.
+    description: str
+    category: str
+    risk_level: str
+
+    #: The operator switch on this specific tool.
+    enabled: bool
+    #: Whether a human must approve each use.
+    requires_approval: bool
+
+    #: Where this tool sits on the availability ladder. See `CapabilityState`.
+    state: CapabilityState
+
+    @property
+    def usable(self) -> bool:
+        """Whether Mai can actually perform this, with or without approval.
+
+        A property rather than a field, for the reason every load-bearing
+        fact in this package is: a value that must never be wrong should not
+        be one a caller can set.
+        """
+        return self.state in USABLE_STATES
 
 
 class RuntimeFacts(BaseModel):
@@ -85,8 +132,19 @@ class RuntimeFacts(BaseModel):
     #: count again -- the length of the executable registry, not a guess.
     executable_tool_count: int = 0
 
+    #: Every registered tool and how available it is. Derived from the
+    #: registries by `app.runtime.capabilities.build`, never enumerated by
+    #: hand -- which is what makes the rendered section follow the catalogue
+    #: without anyone editing prompt text.
+    capabilities: Tuple[ToolCapability, ...] = ()
+
     #: Optional, when the deployment supplies one.
     version: Optional[str] = None
+
+    @property
+    def usable_capabilities(self) -> Tuple[ToolCapability, ...]:
+        """The tools Mai can actually perform right now."""
+        return tuple(item for item in self.capabilities if item.usable)
 
     @property
     def can_execute_actions(self) -> bool:
@@ -116,4 +174,4 @@ class RuntimeFacts(BaseModel):
         return self.execution_enabled and self.executable_tool_count > 0
 
 
-__all__ = ["RuntimeFacts"]
+__all__ = ["RuntimeFacts", "ToolCapability"]

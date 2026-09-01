@@ -740,6 +740,11 @@ def test_the_facts_builder_accepts_no_request_shaped_argument() -> None:
         "provider",
         "registered_tool_count",
         "executable_tool_count",
+        # Stage 4E.1. An injection point for tests, like the two counts above
+        # -- and like them it takes application objects, not request data:
+        # there is no string, no dict and no model here for user input to
+        # arrive in.
+        "capabilities",
     }
     for forbidden in ("message", "request", "content", "body", "user"):
         assert forbidden not in parameters

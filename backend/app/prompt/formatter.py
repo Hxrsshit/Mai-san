@@ -41,7 +41,8 @@ from app.context.schemas import (
 )
 from app.core.logging import get_logger
 from app.llm.base import LLMMessage
-from app.runtime.schemas import RuntimeFacts
+from app.runtime.capabilities import CapabilityState
+from app.runtime.schemas import RuntimeFacts, ToolCapability
 from app.prompt.schemas import (
     ALLOWED_CONVERSATION_ROLES,
     RENDERABLE_REFERENCE_ROLES,
@@ -76,6 +77,39 @@ RUNTIME_FACTS_PREAMBLE = (
     "It describes THIS ASSISTANT only. It says nothing about what the user "
     "uses for their own projects -- if they ask about their own tools or "
     "choices, answer from what they have told you, not from this section."
+)
+
+CAPABILITY_HEADER = "RUNTIME CAPABILITIES (authoritative — what this Mai instance can do)"
+
+#: The closed-world rule, and the reason this section works at all.
+#:
+#: Two failures are being prevented, and they need different sentences. The
+#: first is the model answering from pretraining -- listing a calculator, a
+#: web search and an email tool because assistants generally have those. The
+#: second is subtler: knowing *about* a capability and shading that into being
+#: able to use it. The preamble separates the two explicitly, because "I can
+#: explain how email sending works" and "I can send this email" are different
+#: claims and only the second one this section governs.
+CAPABILITY_PREAMBLE = (
+    "The list below is the complete and authoritative set of tools this Mai "
+    "instance has. It is generated from the application's own tool registry, "
+    "so it is correct and current.\n\n"
+    "Do not claim that you can execute, access, send, modify, search, browse, "
+    "or otherwise perform any operation unless that capability appears below "
+    "as available. Knowing how something works does not mean you can do it: "
+    "you may explain email, web search, code execution or any other subject "
+    "freely, but you must not offer to perform one, imply you have performed "
+    "one, or describe it as something you could do."
+)
+
+#: Closes the section. Stated as a rule rather than a list, because the set of
+#: capabilities Mai does *not* have is unbounded and enumerating it would be
+#: both endless and stale the moment a tool was added.
+CAPABILITY_RULE = (
+    "RULE: Any capability not listed above is NOT available in this Mai "
+    "instance, whatever you may recall from training. If the user asks for "
+    "one, say plainly that this instance does not have it. Never invent a "
+    "tool, an approval step, or a completed action."
 )
 
 REFERENCE_HEADER = "REFERENCE KNOWLEDGE (retrieved from earlier conversations)"
@@ -391,7 +425,56 @@ def render_runtime_facts(facts: RuntimeFacts) -> str:
             "Declared tools can be described and authorized, never run."
         )
 
+    lines.append("")
+    lines.extend(render_capabilities(facts.capabilities))
+
     return "\n".join(lines)
+
+
+def render_capabilities(capabilities: Sequence["ToolCapability"]) -> List[str]:
+    """Render the authoritative capability list, grouped by availability.
+
+    Generated entirely from what was registered. No tool name appears in this
+    function, and none can: the loop below has nothing to enumerate but the
+    tuple it is handed, which is why adding, removing, enabling or disabling
+    a tool changes this section without anyone editing prompt text.
+
+    The closing rule is the load-bearing part. Listing what exists cannot by
+    itself stop the model reaching for a capability it remembers from
+    pretraining -- an absent thing has no line to read. So the section states
+    the closed-world rule explicitly: anything not listed is unavailable.
+    That single sentence covers email, web search, code execution, calendars
+    and everything else nobody thought to enumerate, which is the only way
+    this can work without becoming a catalogue of every capability an AI
+    might be imagined to have.
+    """
+    lines: List[str] = [CAPABILITY_HEADER, "", CAPABILITY_PREAMBLE, ""]
+
+    groups = (
+        ("Available now", CapabilityState.AVAILABLE),
+        ("Available only with the user's explicit approval",
+         CapabilityState.AVAILABLE_WITH_APPROVAL),
+        ("Implemented, but execution is switched off for this deployment",
+         CapabilityState.IMPLEMENTED_UNAVAILABLE),
+        ("Implemented, but currently forbidden by policy",
+         CapabilityState.IMPLEMENTED_DISABLED),
+        ("Declared, but NOT implemented -- these cannot be performed",
+         CapabilityState.NOT_IMPLEMENTED),
+    )
+
+    for label, state in groups:
+        members = [item for item in capabilities if item.state is state]
+        lines.append(f"{label}:")
+        if not members:
+            lines.append("- None")
+        for item in members:
+            lines.append(
+                f"- {_flatten(item.display_name)}: {_flatten(item.description)}"
+            )
+        lines.append("")
+
+    lines.append(CAPABILITY_RULE)
+    return lines
 
 
 def _on_off(enabled: bool) -> str:

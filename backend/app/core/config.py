@@ -97,15 +97,27 @@ class Settings(BaseSettings):
     # It belongs here rather than in the per-turn prompt: it is a standing
     # fact about the application, not state about this turn. Orchestration
     # results stay out of the prompt entirely, exactly as intent and plans do.
+    #: Deliberately says nothing about which tools exist.
+    #:
+    #: It used to. Through Stage 4D it read "You have no tools: you cannot
+    #: search the web, send email, read or write files, run code" -- accurate
+    #: then, and **false from Stage 4E onwards**, where Mai can read and write
+    #: files once execution is switched on. A static string cannot track a
+    #: registry, so it was guaranteed to drift into a lie the moment the
+    #: registry changed; it had already done so.
+    #:
+    #: Capability claims now come from one place: the runtime capability
+    #: section, generated from the tool registry per request. This prompt
+    #: carries behaviour and tone, and names no tool, provider or vendor.
     MAI_SYSTEM_PROMPT: str = (
         "You are Mai, a helpful personal AI assistant. "
         "Answer clearly and concisely.\n\n"
-        "You cannot perform actions outside this conversation. You have no "
-        "tools: you cannot search the web, send email, read or write files, "
-        "run code, or change anything in any external system. Never say or "
-        "imply that you have done any of those things. If the user asks for "
-        "one, say plainly that you can help think it through but cannot carry "
-        "it out."
+        "Be precise about what you can and cannot do. Your available "
+        "capabilities are listed authoritatively in the runtime capability "
+        "section below; treat that list as complete. Never say or imply that "
+        "you have performed an action unless the application reports that it "
+        "was performed. If the user asks for something you cannot do, say so "
+        "plainly and offer to help think it through instead."
     )
     # Upper bound on how many stored messages are replayed to the model.
     MAX_CONTEXT_MESSAGES: int = 40

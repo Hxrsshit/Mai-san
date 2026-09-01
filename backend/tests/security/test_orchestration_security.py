@@ -358,22 +358,57 @@ async def test_the_wire_format_states_that_nothing_ran(
     assert all(proposal["executed"] is False for proposal in body["proposals"])
 
 
-def test_the_system_prompt_states_the_capability_boundary() -> None:
-    """The model's own claims are governed here, not by orchestration data.
+def test_the_system_prompt_names_no_tool_and_no_vendor() -> None:
+    """The capability boundary moved; this asserts it is no longer *here*.
 
-    Orchestration results never enter the prompt -- so without a standing
-    statement of what Mai cannot do, the model would report having sent the
-    email. The statement is an application fact, not per-turn state.
+    Stage 4D's version of this test required the system prompt to enumerate
+    what Mai could not do -- "you cannot search the web, send email, read or
+    write files, run code". That was accurate when written and **false from
+    Stage 4E onwards**, where Mai can read and write files once execution is
+    on. A static string cannot track a registry; it was guaranteed to drift
+    into a lie, and had.
+
+    So the enumeration was removed rather than corrected, and Stage 4E.1
+    generates capability claims from the registry per request. What this test
+    now protects is that the static prompt does not start making capability
+    claims again -- naming a tool here would create a second authority that
+    could disagree with the registry.
     """
     from app.core.config import Settings
 
     prompt = Settings(_env_file=None, GROQ_API_KEY="x").MAI_SYSTEM_PROMPT.lower()
 
-    assert "cannot perform actions" in prompt
-    assert "no tools" in prompt
-    for capability in ("search the web", "send email", "run code"):
-        assert capability in prompt
+    # No tool name, no vendor, no capability verb presented as a fact.
+    for forbidden in (
+        "search the web", "send email", "read or write files", "run code",
+        "no tools", "browse", "calculator", "python",
+        "groq", "openai", "anthropic", "gpt",
+        "create_text_file", "read_text_file", "list_workspace_files",
+    ):
+        assert forbidden not in prompt, forbidden
+
+    # What it does still carry: the honesty rule, which is behaviour rather
+    # than a capability claim, and a pointer to the authoritative section.
+    assert "runtime capability" in prompt
     assert "never say or imply" in prompt
+
+
+def test_the_capability_boundary_is_stated_in_the_generated_section() -> None:
+    """And the guarantee the test above used to cover now lives here.
+
+    Removing an assertion is only safe if the thing it protected is asserted
+    somewhere else. The standing statement that governs the model's claims is
+    now generated, so this checks the generated text carries it.
+    """
+    from app.core.config import Settings
+    from app.prompt.formatter import render_runtime_facts
+    from app.runtime.facts import build
+
+    block = render_runtime_facts(build(Settings(_env_file=None, GROQ_API_KEY="x")))
+
+    assert "authoritative" in block.lower()
+    assert "not available in this mai instance" in block.lower()
+    assert "never invent a tool" in block.lower()
 
 
 async def test_orchestration_never_enters_the_prompt(
