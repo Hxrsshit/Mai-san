@@ -572,9 +572,22 @@ def test_no_persistence_was_added_for_orchestration() -> None:
     tables = set(Base.metadata.tables)
     for forbidden in (
         "actions", "action_proposals", "approvals", "approval_grants",
-        "executions", "tool_runs", "orchestrations",
+        "tool_runs", "orchestrations",
     ):
         assert forbidden not in tables
+
+    # `executions` and `execution_events` arrived in Stage 4E and are owned
+    # entirely by `app/execution/models.py`. Orchestration still persists
+    # nothing: identifying a possible action writes no row, and the two tables
+    # below are only reachable through an explicit execution request.
+    assert "executions" in tables
+    assert "execution_events" in tables
+
+    orchestration = pathlib.Path(__file__).resolve().parents[2] / "app" / "orchestration"
+    for path in orchestration.rglob("*.py"):
+        source = path.read_text()
+        for pattern in ("session.add(", "Execution(", "flush(", "commit("):
+            assert pattern not in source, f"{path.name} persists via {pattern}"
 
 
 # --- Logging ----------------------------------------------------------------

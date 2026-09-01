@@ -77,13 +77,16 @@ def risk_rank(level: RiskLevel) -> int:
 class ExecutionMode(str, Enum):
     """How a tool would run -- once anything can run.
 
-    In Stage 4C the only value a registered tool may carry is `UNAVAILABLE`,
-    enforced by a validator on `ToolDefinition`. The other members exist so
-    the field has a meaning to grow into; a later stage lifts the restriction
-    when it also supplies something capable of honouring it.
+    Stage 4C admitted only `UNAVAILABLE`: nothing could run, so a definition
+    claiming otherwise would have been false. Stage 4E supplies an executor
+    for three workspace tools, so `SYNCHRONOUS` became true for those and the
+    validator was relaxed exactly that far.
 
-    This makes "no tool can execute" a property of the *data*, not only of the
-    missing code: no registered tool can even claim to be executable.
+    `BACKGROUND` is still refused, and not merely because it is unimplemented.
+    Background execution means an action that runs without someone waiting for
+    it, which is the shape of an autonomous loop; Stage 4E forbids that
+    outright. It stays unreachable until a stage argues for it on its own
+    merits rather than inheriting permission from this one.
     """
 
     UNAVAILABLE = "unavailable"
@@ -112,7 +115,8 @@ class ToolDefinition(BaseModel):
     #: may raise this to true; nothing can lower it.
     requires_approval: bool = True
 
-    #: Stage 4C: always UNAVAILABLE. See `ExecutionMode`.
+    #: UNAVAILABLE unless an executor exists for this tool. See
+    #: `ExecutionMode`; BACKGROUND is refused by the validator below.
     execution_mode: ExecutionMode = ExecutionMode.UNAVAILABLE
 
     #: An operator switch. A disabled tool is registered but forbidden, which
@@ -133,16 +137,22 @@ class ToolDefinition(BaseModel):
 
     @field_validator("execution_mode")
     @classmethod
-    def _no_executable_tools_yet(cls, value: ExecutionMode) -> ExecutionMode:
-        """Stage 4C registers declarations, never implementations.
+    def _no_background_execution(cls, value: ExecutionMode) -> ExecutionMode:
+        """A definition may not claim a mode the application cannot honour.
 
-        Nothing in this codebase can run a tool, so a definition claiming it
-        could would be a lie the registry then repeats to every later reader.
+        Stage 4C's rule was "only UNAVAILABLE", because nothing could run and
+        a definition saying it could would be a lie the registry then repeats
+        to every later reader. Stage 4E made `SYNCHRONOUS` true for three
+        workspace tools, so the rule narrowed to what is still false.
+
+        BACKGROUND stays refused: it describes an action running with nobody
+        waiting on it, and Stage 4E permits no autonomous or self-directed
+        execution. The invariant is unchanged -- a tool may not declare a mode
+        the application cannot honour -- only the set of honourable modes grew.
         """
-        if value is not ExecutionMode.UNAVAILABLE:
+        if value is ExecutionMode.BACKGROUND:
             raise ValueError(
-                "Stage 4C tools must declare execution_mode=unavailable; "
-                "no execution capability exists"
+                "background execution does not exist; no tool may declare it"
             )
         return value
 

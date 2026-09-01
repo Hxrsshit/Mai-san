@@ -189,6 +189,22 @@ class Settings(BaseSettings):
     # field from chat responses and changes nothing else.
     ORCHESTRATION_ENABLED: bool = True
 
+    # --- Controlled execution (Stage 4E) ---
+    # Execution defaults OFF. Turning it on is a deliberate act, and until
+    # then no executable action can run whatever else is configured.
+    EXECUTION_ENABLED: bool = False
+    # Every file operation is confined here. Relative to the process working
+    # directory by default; no vendor or machine-specific path is hardcoded.
+    MAI_WORKSPACE_ROOT: str = "./mai_workspace"
+    # How long an approval remains valid. Fifteen minutes is long enough to
+    # read a proposal and decide, short enough that an abandoned tab does not
+    # leave a live grant lying around. Never unbounded.
+    EXECUTION_APPROVAL_TTL_SECONDS: int = 900
+    # Bounds on what the workspace tools may read, write and return.
+    MAX_WORKSPACE_FILE_SIZE_BYTES: int = 1_000_000
+    MAX_WORKSPACE_LIST_RESULTS: int = 500
+    MAX_WORKSPACE_LIST_DEPTH: int = 6
+
     # --- Knowledge lifecycle (Stage 3C) ---
     # Conflict evaluation runs in the background pipeline after relationship
     # extraction. It adds no model calls anywhere. Disabling it stops new

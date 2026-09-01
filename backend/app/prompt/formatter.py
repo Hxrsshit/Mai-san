@@ -372,10 +372,24 @@ def render_runtime_facts(facts: RuntimeFacts) -> str:
         f"{_on_off(facts.tool_authorization_enabled)} "
         f"({facts.registered_tool_count} tools declared)"
     )
-    lines.append(
-        "- Performing actions: NOT AVAILABLE. No tool can be executed. "
-        "Declared tools can be described and authorized, never run."
-    )
+    # Derived from the facts, never asserted. Through Stage 4D this line was
+    # a hardcoded "NOT AVAILABLE", which was accurate because nothing could
+    # run. Stage 4E made that conditional, and a fixed string would now be a
+    # statement this layer cannot know to be true -- the exact failure the
+    # runtime facts block exists to prevent.
+    if facts.can_execute_actions:
+        lines.append(
+            f"- Performing actions: AVAILABLE, but never automatically. "
+            f"{facts.executable_tool_count} tools can be executed, each only "
+            f"after the user explicitly approves that specific action. You "
+            f"cannot execute anything yourself, and describing an action is "
+            f"not performing it."
+        )
+    else:
+        lines.append(
+            "- Performing actions: NOT AVAILABLE. No tool can be executed. "
+            "Declared tools can be described and authorized, never run."
+        )
 
     return "\n".join(lines)
 

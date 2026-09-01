@@ -35,6 +35,7 @@ CAPABILITY_SETTINGS = {
     "planning_enabled": "PLANNING_ENABLED",
     "intent_classification_enabled": "INTENT_CLASSIFICATION_ENABLED",
     "action_orchestration_enabled": "ORCHESTRATION_ENABLED",
+    "execution_enabled": "EXECUTION_ENABLED",
 }
 
 #: Settings deliberately *not* surfaced, each with the reason.
@@ -94,6 +95,7 @@ def build(
     settings: Optional[Settings] = None,
     provider: Optional[LLMProvider] = None,
     registered_tool_count: Optional[int] = None,
+    executable_tool_count: Optional[int] = None,
 ) -> RuntimeFacts:
     """Assemble the authoritative facts for this process. Never raises."""
     settings = settings or get_settings()
@@ -125,6 +127,17 @@ def build(
         except Exception:  # noqa: BLE001
             registered_tool_count = 0
 
+    if executable_tool_count is None:
+        try:
+            from app.execution.tools import get_executable_registry
+
+            executable_tool_count = len(get_executable_registry())
+        except Exception:  # noqa: BLE001
+            # Counting failed, so the honest count is zero -- and zero makes
+            # `can_execute_actions` false. A fact this layer cannot establish
+            # must not be reported as a capability.
+            executable_tool_count = 0
+
     return RuntimeFacts(
         assistant_name=settings.APP_NAME or "Mai",
         environment=settings.APP_ENV or UNKNOWN,
@@ -137,6 +150,7 @@ def build(
         },
         tool_authorization_enabled=True,
         registered_tool_count=registered_tool_count,
+        executable_tool_count=executable_tool_count,
     )
 
 

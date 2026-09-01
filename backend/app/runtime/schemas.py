@@ -41,7 +41,12 @@ class RuntimeFacts(BaseModel):
     drifting apart.
     """
 
-    model_config = ConfigDict(frozen=True)
+    #: `extra="forbid"` as well as frozen. The property already wins over any
+    #: passed value -- `can_execute_actions` is computed, so a forged one was
+    #: silently ignored rather than believed. Ignoring is safe and quiet;
+    #: refusing says the caller tried, which is what a fact this load-bearing
+    #: deserves.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     #: What this assistant is called. From `APP_NAME`.
     assistant_name: str = "Mai"
@@ -73,22 +78,42 @@ class RuntimeFacts(BaseModel):
     #: How many tools the application has declared. Registry count, not a guess.
     registered_tool_count: int = 0
 
+    #: Whether the operator has switched controlled execution on (Stage 4E).
+    #: False by default, and False is the state Mai ships in.
+    execution_enabled: bool = False
+    #: How many declared tools have an implementation behind them. Registry
+    #: count again -- the length of the executable registry, not a guess.
+    executable_tool_count: int = 0
+
     #: Optional, when the deployment supplies one.
     version: Optional[str] = None
 
     @property
     def can_execute_actions(self) -> bool:
-        """Always False, and a property rather than a field on purpose.
+        """Whether Mai can perform an action right now.
 
-        No configuration flag can make this true, because no configuration
-        creates an executor. Stage 4C defines no `execute` method on `Tool`
-        and Stage 4D added no dispatcher, so "can Mai perform an action?" has
-        one correct answer and the type refuses to represent any other.
+        **This guarantee changed in Stage 4E, and the change is a weakening.**
 
-        The same reasoning as `OrchestrationResult.acted`: a fact that must
-        never be wrong should not be a field that could be set.
+        Through Stage 4D this returned an unconditional `False`, and that was
+        not a policy -- it was a description of the code. No `Tool` defined an
+        `execute` method, no dispatcher existed, and no configuration could
+        conjure one. The answer could not be anything else.
+
+        Stage 4E built a dispatcher, so the honest answer is now conditional:
+        two things must both hold, and either alone is not enough.
+
+            execution_enabled       an operator switched it on, default off
+            executable_tool_count   an implementation actually exists
+
+        What survives: this is still a *derived* property, not a settable
+        field, so nothing -- model output, request data, a caller holding an
+        instance -- can assert it. It reports what the application is, and the
+        application decides. What is gone: the answer no longer depends only
+        on code that cannot change at runtime. `EXECUTION_ENABLED=true` in an
+        environment file is now sufficient to make it true, which is exactly
+        what "configuration-gated" means and exactly why the default is off.
         """
-        return False
+        return self.execution_enabled and self.executable_tool_count > 0
 
 
 __all__ = ["RuntimeFacts"]

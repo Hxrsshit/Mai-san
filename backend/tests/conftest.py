@@ -298,3 +298,107 @@ async def conversation_id(client: AsyncClient) -> uuid.UUID:
     response = await client.post("/api/conversations", json={})
     assert response.status_code == 201
     return uuid.UUID(response.json()["id"])
+
+# --- Stage 4E: controlled execution -----------------------------------------
+
+
+@pytest.fixture
+def workspace(tmp_path):
+    """A real, empty workspace directory, per test.
+
+    A real one rather than a mock. Every guarantee in Stage 4E is about the
+    filesystem -- symlinks, traversal, exclusive creation -- and a fake
+    filesystem would test the fake.
+    """
+    root = tmp_path / "mai_workspace"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def execution_settings(settings: Settings, workspace) -> Settings:
+    """Settings with execution switched on and confined to `workspace`.
+
+    Switched on *only here*. The default fixture leaves it off, so every other
+    test in the suite runs against a deployment that cannot execute -- which is
+    the configuration Mai ships in, and the one most tests should exercise.
+    """
+    settings.EXECUTION_ENABLED = True
+    settings.MAI_WORKSPACE_ROOT = str(workspace)
+    return settings
+
+
+@pytest_asyncio.fixture
+async def execution_client(
+    session_factory, fake_provider, execution_settings: Settings, monkeypatch
+) -> AsyncIterator[AsyncClient]:
+    """A client whose app was *built* with execution enabled.
+
+    `create_app` reads settings while registering routers, and a dependency
+    override cannot reach back in time to change that -- so the switch is
+    patched before the app is constructed. Overriding `get_settings` as well
+    keeps request-time reads consistent with build-time ones.
+    """
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: execution_settings)
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            if session.in_transaction():
+                await session.commit()
+
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    app.dependency_overrides[get_settings] = lambda: execution_settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+        yield http_client
+
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def executions(db_session, execution_settings: Settings):
+    """An `ExecutionService` on the test session, for tests below the API."""
+    from app.execution.service import ExecutionService
+
+    return ExecutionService(db_session, settings=execution_settings)
+
+
+@pytest_asyncio.fixture
+async def concurrent_session_factory(tmp_path) -> AsyncIterator[
+    "async_sessionmaker[AsyncSession]"
+]:
+    """A file-backed database where sessions really are independent.
+
+    The main `session_factory` uses StaticPool over `:memory:`, which points
+    every session at one connection -- so two "concurrent" transactions are
+    actually the same transaction, and a race test against it would prove
+    nothing (it raises "cannot start a transaction within a transaction"
+    instead).
+
+    A file gives each session its own connection and its own transaction,
+    which is what a race needs. SQLite still serialises writers, so this
+    demonstrates the *logic* -- the loser sees no matching row and refuses --
+    rather than true parallelism. PostgreSQL covers the rest.
+    """
+    from app.database.session import configure_sqlite
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'race.db'}")
+    configure_sqlite(engine)
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    yield async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+    await engine.dispose()

@@ -19,6 +19,7 @@ from app.api.routes import (
 from app.api.routes import (
     context_preview_router,
     context_router,
+    execution_router,
     intent_router,
     knowledge_router,
     orchestration_router,
@@ -131,6 +132,13 @@ def create_app() -> FastAPI:
     app.include_router(tools_router)
     # Stage 4D orchestration. Propose, authorize, return -- never execute.
     app.include_router(orchestration_router)
+
+    # Stage 4E controlled execution. Registered only when the operator has
+    # switched execution on, so a deployment that cannot run anything does not
+    # expose endpoints that talk about running things. The service refuses
+    # independently -- this is the outer of two doors, not the only one.
+    if settings.EXECUTION_ENABLED:
+        app.include_router(execution_router)
 
     # The memory subsystem can be disabled entirely; when it is, the
     # inspection routes are not registered at all.

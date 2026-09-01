@@ -11,6 +11,7 @@ from app.database.session import get_db_session, get_session_factory
 from app.llm.base import LLMProvider
 from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
+from app.execution.service import ExecutionService
 from app.intent.service import IntentService
 from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
@@ -72,6 +73,19 @@ def get_intent_service(
 ) -> IntentService:
     """Stage 4A understanding. Read-only, and holds no executor."""
     return IntentService(session=session, provider=provider, settings=settings)
+
+
+def get_execution_service(
+    session: DbSession, settings: AppSettings
+) -> ExecutionService:
+    """Built per request, and gated inside rather than here.
+
+    A dependency that raised when `EXECUTION_ENABLED` is false would make the
+    endpoints 500 rather than say why, and would leave revocation -- which must
+    work with the switch off -- unreachable. The service itself decides which
+    operations the switch covers.
+    """
+    return ExecutionService(session, settings=settings)
 
 
 def get_tool_registry() -> ToolRegistry:
@@ -164,3 +178,4 @@ Authorization = Annotated[AuthorizationService, Depends(get_authorization_servic
 Orchestration = Annotated[
     OrchestrationService, Depends(get_orchestration_service)
 ]
+Executions = Annotated[ExecutionService, Depends(get_execution_service)]

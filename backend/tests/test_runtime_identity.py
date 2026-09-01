@@ -153,22 +153,22 @@ def test_no_credential_reaches_the_facts(settings) -> None:
 # --- Execution capability cannot be misreported -----------------------------
 
 
-def test_execution_is_always_reported_as_unavailable() -> None:
-    """No configuration creates an executor, so no flag may claim one.
+def test_execution_is_reported_as_unavailable_in_the_default_deployment() -> None:
+    """The default is execution off, so the honest answer is still no.
 
-    A property rather than a field, for the same reason
-    `OrchestrationResult.acted` is: a fact that must never be wrong should not
-    be settable.
+    Through Stage 4D this was unconditional. Stage 4E built a dispatcher, so
+    the answer became derived -- but it is still a property with no field
+    behind it, and still false unless an operator switched execution on.
     """
     assert facts().can_execute_actions is False
 
     with pytest.raises(Exception):
         facts().can_execute_actions = True
 
-    revived = RuntimeFacts.model_validate(
-        {**facts().model_dump(), "can_execute_actions": True}
-    )
-    assert revived.can_execute_actions is False
+    with pytest.raises(Exception):
+        RuntimeFacts.model_validate(
+            {**facts().model_dump(), "can_execute_actions": True}
+        )
 
 
 def test_the_rendered_block_states_that_nothing_can_run() -> None:

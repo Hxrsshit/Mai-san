@@ -116,16 +116,26 @@ def test_a_definition_rejects_unknown_fields() -> None:
         )
 
 
-def test_no_tool_may_declare_itself_executable() -> None:
-    """The structural half of the no-execution guarantee, in the data.
+def test_a_tool_may_not_declare_a_mode_the_application_cannot_honour() -> None:
+    """The structural half of the execution guarantee, in the data.
 
-    A definition claiming it could run would be a lie the registry then
-    repeats to every later reader.
+    Stage 4C's version of this test asserted that *no* mode but UNAVAILABLE
+    was accepted, because nothing could run. Stage 4E built a synchronous
+    executor, so SYNCHRONOUS became true and the assertion narrowed to what is
+    still false.
+
+    BACKGROUND is still refused, and that is the part worth keeping: it
+    describes an action running with nobody waiting on it, which is an
+    autonomous loop by another name. Stage 4E forbids those, so no definition
+    may claim one.
     """
     assert definition().execution_mode is ExecutionMode.UNAVAILABLE
-    for mode in (ExecutionMode.SYNCHRONOUS, ExecutionMode.BACKGROUND):
-        with pytest.raises(ValidationError):
-            definition(execution_mode=mode)
+    assert (
+        definition(execution_mode=ExecutionMode.SYNCHRONOUS).execution_mode
+        is ExecutionMode.SYNCHRONOUS
+    )
+    with pytest.raises(ValidationError):
+        definition(execution_mode=ExecutionMode.BACKGROUND)
 
 
 def test_approval_defaults_to_required() -> None:
@@ -224,13 +234,61 @@ def test_mutating_a_retrieved_definition_cannot_change_the_registry(
 
 
 def test_the_catalogue_registers_the_expected_tools(registry) -> None:
+    """Exact, so a tool cannot appear without this list being updated."""
     assert registry.names() == (
+        "create_text_file",
         "echo",
         "future_delete_file",
         "future_generate_document",
         "future_send_email",
         "future_web_search",
+        "list_workspace_files",
+        "read_text_file",
     )
+
+
+def test_only_the_three_workspace_tools_are_executable(registry) -> None:
+    """Stage 4E added exactly three, and named them.
+
+    The pair of assertions matters more than either alone: the first pins the
+    set, the second pins the complement. Adding a fourth executable tool fails
+    this test, which is the point -- executability is not something a future
+    edit should be able to acquire quietly.
+    """
+    executable = tuple(
+        name
+        for name in registry.names()
+        if registry.definition(name).execution_mode is not ExecutionMode.UNAVAILABLE
+    )
+    assert executable == ("create_text_file", "list_workspace_files", "read_text_file")
+
+    for name in registry.names():
+        if name in executable:
+            continue
+        assert (
+            registry.definition(name).execution_mode is ExecutionMode.UNAVAILABLE
+        ), name
+
+
+def test_every_executable_tool_requires_approval(registry) -> None:
+    """Including the read-only ones. Reading is lower risk, not no risk."""
+    for name in ("create_text_file", "read_text_file", "list_workspace_files"):
+        assert registry.definition(name).requires_approval is True, name
+
+
+def test_the_dangerous_declared_tools_were_left_alone(registry) -> None:
+    """Stage 4E built an executor and pointed it at nothing dangerous.
+
+    `future_send_email` and `future_delete_file` were the two capabilities the
+    stage specification named as forbidden. Neither gained an execution mode,
+    and the critical one is still disabled outright.
+    """
+    email = registry.definition("future_send_email")
+    delete = registry.definition("future_delete_file")
+
+    assert email.execution_mode is ExecutionMode.UNAVAILABLE
+    assert delete.execution_mode is ExecutionMode.UNAVAILABLE
+    assert delete.enabled is False
 
 
 def test_every_declared_future_tool_still_requires_approval(registry) -> None:
@@ -268,9 +326,12 @@ def test_only_a_diagnostic_tool_may_skip_approval(registry) -> None:
             assert definition_.category is ToolCategory.DIAGNOSTIC, name
 
 
-def test_no_registered_tool_claims_to_be_executable(registry) -> None:
+def test_no_registered_tool_claims_background_execution(registry) -> None:
+    """No tool runs unattended, whatever else it may do."""
     for name in registry.names():
-        assert registry.definition(name).execution_mode is ExecutionMode.UNAVAILABLE
+        assert (
+            registry.definition(name).execution_mode is not ExecutionMode.BACKGROUND
+        ), name
 
 
 def test_the_process_registry_is_populated() -> None:

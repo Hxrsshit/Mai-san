@@ -4,10 +4,17 @@ This module is the *only* place `register` is called. Tool classes are
 imported by name at module scope -- there is no dynamic import, no lookup of a
 class by string, and no plugin loading. Adding a tool means editing this file.
 
-Nothing here implements a capability. Stage 4C registers **declarations**: a
-name, a category, a risk level and an approval requirement. The `future_*`
-entries exist so the risk model can be exercised end to end against realistic
-metadata, and every one of them is refused or gated by policy today.
+Most of this file is **declarations**: a name, a category, a risk level and
+an approval requirement. The `future_*` entries exist so the risk model can be
+exercised end to end against realistic metadata, and every one of them is
+refused or gated by policy today.
+
+Three entries are different. `create_text_file`, `read_text_file` and
+`list_workspace_files` have implementations, added in Stage 4E, and those
+implementations live in `app.execution.tools` -- not here. What this file
+declares about them is still only metadata and an argument schema; the
+capability to run them exists in one dispatcher, behind an approval bound to
+the exact payload, and only when execution is switched on.
 """
 
 from typing import Optional, Type
@@ -17,7 +24,12 @@ from pydantic import Field
 from app.core.logging import get_logger
 from app.tools.base import Tool, ToolArguments
 from app.tools.registry import ToolRegistry, get_registry
-from app.tools.schemas import RiskLevel, ToolCategory, ToolDefinition
+from app.tools.schemas import (
+    ExecutionMode,
+    RiskLevel,
+    ToolCategory,
+    ToolDefinition,
+)
 
 logger = get_logger(__name__)
 
@@ -62,6 +74,92 @@ class EchoTool(Tool):
         return EchoArguments
 
 
+# --- Executable workspace tools (Stage 4E) ----------------------------------
+# The first three tools in Mai with an implementation behind them. Everything
+# they can touch lives under the configured workspace root, and every one of
+# them requires an explicit human approval bound to the exact payload.
+#
+# Their argument schemas are defined **here**, in the declaration layer, and
+# imported by the executor. That is not tidiness: authorization validates a
+# proposal against the declared schema, and the dispatcher validates the same
+# arguments again before running. If those were two classes they could drift,
+# and the gap between them would be a payload that passes authorization and
+# then runs as something else. One class per tool makes the gap impossible.
+
+
+class CreateTextFileArguments(ToolArguments):
+    """Arguments for `create_text_file`."""
+
+    path: str = Field(..., min_length=1, max_length=400)
+    content: str = Field(..., max_length=100_000)
+    #: Overwriting is a materially different action from creating, so it is a
+    #: separate parameter -- and because it is part of the payload, an
+    #: approval for `overwrite=False` does not approve `overwrite=True`.
+    overwrite: bool = False
+
+
+class ReadTextFileArguments(ToolArguments):
+    """Arguments for `read_text_file`."""
+
+    path: str = Field(..., min_length=1, max_length=400)
+
+
+class ListWorkspaceFilesArguments(ToolArguments):
+    """Arguments for `list_workspace_files`."""
+
+    #: Optional subdirectory, itself resolved inside the workspace.
+    path: Optional[str] = Field(default=None, max_length=400)
+
+
+class _ExecutableDeclaration(Tool):
+    """A declaration whose implementation lives in `app.execution.tools`.
+
+    Still no `execute` method -- this class is the *description*, and Stage
+    4C's guarantee that a `Tool` cannot be run is untouched. The executor is a
+    separate object in a separate package, reached only by the dispatcher, and
+    the two are matched by name.
+    """
+
+    _definition: ToolDefinition
+    _arguments: Type[ToolArguments]
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return self._definition
+
+    @property
+    def arguments_model(self) -> Optional[Type[ToolArguments]]:
+        return self._arguments
+
+
+def _declare_executable(
+    name: str,
+    description: str,
+    risk_level: RiskLevel,
+    arguments: Type[ToolArguments],
+) -> Tool:
+    """Declare a capability that Stage 4E can actually perform.
+
+    `requires_approval=True` on every one, including the two read-only tools.
+    Reading is lower risk than writing, not zero risk -- it is the step that
+    moves file contents into a prompt -- and Stage 4E's rule is that anything
+    with a side effect is approved explicitly, per payload. The risk ladder
+    still distinguishes them; the approval requirement does not.
+    """
+    tool = _ExecutableDeclaration()
+    tool._definition = ToolDefinition(
+        name=name,
+        description=description,
+        category=ToolCategory.FILE_OPERATION,
+        risk_level=risk_level,
+        requires_approval=True,
+        execution_mode=ExecutionMode.SYNCHRONOUS,
+        enabled=True,
+    )
+    tool._arguments = arguments
+    return tool
+
+
 # --- Declared future capabilities -------------------------------------------
 # Metadata only. None of these has an implementation, and each is refused or
 # gated by policy today. They are registered so the risk ladder is exercised
@@ -97,7 +195,9 @@ def _declare(
 
     - `enabled` is the **operator's** switch: would we permit this capability?
     - `execution_mode` is the **application's** statement of fact: can it run?
-      It is `unavailable` for every tool, and no definition may say otherwise.
+      It is `unavailable` for every tool declared *here*, and a definition may
+      only say otherwise where an executor genuinely exists -- which for these
+      it does not.
 
     Stage 4C set `enabled=False` on all of these because nothing consumed the
     registry, so the switch had no meaning. Stage 4D introduces the consumer,
@@ -107,8 +207,11 @@ def _declare(
     confirm it".
 
     So the operator switch now reflects a real position, and nothing about
-    executability changed: every tool here is still `unavailable`, still has
-    no implementation, and still cannot run.
+    executability changed: every tool declared through this helper is still
+    `unavailable`, still has no implementation, and still cannot run. Stage 4E
+    did not change that -- it added three *separate* entries above with real
+    executors, and deliberately left `future_send_email` and
+    `future_delete_file` exactly as they were.
     """
     tool = _DeclaredTool()
     tool._definition = ToolDefinition(
@@ -131,6 +234,28 @@ def build_catalog(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
     target = registry if registry is not None else get_registry()
 
     target.register(EchoTool())
+
+    for tool in (
+        _declare_executable(
+            "create_text_file",
+            "Create or overwrite a text file inside the Mai workspace.",
+            RiskLevel.MEDIUM,
+            CreateTextFileArguments,
+        ),
+        _declare_executable(
+            "read_text_file",
+            "Read a text file from inside the Mai workspace.",
+            RiskLevel.LOW,
+            ReadTextFileArguments,
+        ),
+        _declare_executable(
+            "list_workspace_files",
+            "List files inside the Mai workspace.",
+            RiskLevel.LOW,
+            ListWorkspaceFilesArguments,
+        ),
+    ):
+        target.register(tool)
 
     for tool in (
         _declare(
@@ -171,4 +296,11 @@ def build_catalog(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
 build_catalog()
 
 
-__all__ = ["EchoArguments", "EchoTool", "build_catalog"]
+__all__ = [
+    "CreateTextFileArguments",
+    "EchoArguments",
+    "EchoTool",
+    "ListWorkspaceFilesArguments",
+    "ReadTextFileArguments",
+    "build_catalog",
+]

@@ -492,9 +492,15 @@ def test_facts_are_immutable(settings) -> None:
 
 
 def test_facts_reject_unknown_fields() -> None:
-    """R20 — nothing can smuggle a field in through construction."""
-    result = RuntimeFacts(llm_provider="groq", injected_authority=True)
-    assert not hasattr(result, "injected_authority")
+    """R20 — nothing can smuggle a field in through construction.
+
+    Stage 4E tightened this from ignoring an unknown field to refusing one.
+    Ignoring was safe -- the value went nowhere -- but quiet. A type whose
+    whole purpose is to be believed over the model should say when someone
+    tries to write to it.
+    """
+    with pytest.raises(ValidationError):
+        RuntimeFacts(llm_provider="groq", injected_authority=True)
 
 
 # =============================================================================
@@ -630,15 +636,29 @@ def test_the_registered_tool_count_is_read_from_the_registry(settings) -> None:
 
 
 def test_execution_cannot_be_claimed(settings) -> None:
-    """R30 — no configuration creates an executor, so no flag may claim one."""
+    """R30 — the capability is computed, and nothing may assert it.
+
+    Stage 4E weakened the *answer* -- it is now `execution_enabled and
+    executable_tool_count > 0` rather than an unconditional False -- but not
+    the authority. It remains a property with no field behind it, so the only
+    thing that can make it true is the application's own configuration.
+
+    `settings` has execution off, which is the shipped default.
+    """
     result = build(settings=settings, provider=FakeLLMProvider())
 
     assert result.can_execute_actions is False
     assert "can_execute_actions" not in RuntimeFacts.model_fields
-    revived = RuntimeFacts.model_validate(
-        {**result.model_dump(), "can_execute_actions": True}
-    )
-    assert revived.can_execute_actions is False
+
+    # Forging it is refused outright, and would not have been believed anyway.
+    with pytest.raises(ValidationError):
+        RuntimeFacts.model_validate(
+            {**result.model_dump(), "can_execute_actions": True}
+        )
+
+    # And the derived answer ignores a forged *input* value entirely: the two
+    # real inputs are the switch and the executor count.
+    assert RuntimeFacts.model_validate(result.model_dump()).can_execute_actions is False
 
 
 def test_no_capability_setting_can_drift_out_of_the_facts() -> None:
@@ -715,6 +735,11 @@ def test_the_facts_builder_accepts_no_request_shaped_argument() -> None:
     from app.runtime.facts import build
 
     parameters = set(inspect.signature(build).parameters)
-    assert parameters == {"settings", "provider", "registered_tool_count"}
+    assert parameters == {
+        "settings",
+        "provider",
+        "registered_tool_count",
+        "executable_tool_count",
+    }
     for forbidden in ("message", "request", "content", "body", "user"):
         assert forbidden not in parameters
