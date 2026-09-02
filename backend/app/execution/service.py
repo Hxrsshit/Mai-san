@@ -54,12 +54,22 @@ class ExecutionService:
         settings: Optional[Settings] = None,
         authorization: Optional[AuthorizationService] = None,
         dispatcher: Optional[Dispatcher] = None,
+        executable: Optional[object] = None,
     ) -> None:
         self._session = session
         self._settings = settings or get_settings()
         self._authorization = authorization or AuthorizationService()
+        # Injectable so a test can exercise the lifecycle against its own
+        # executors. Previously `approve` reached for the process registry
+        # directly while the dispatcher took an injectable one, so the two
+        # could disagree about what exists -- and a test tool could be
+        # dispatched but never approved.
+        self._executable = executable or get_executable_registry()
         self._dispatcher = dispatcher or Dispatcher(
-            session, settings=self._settings, authorization=self._authorization
+            session,
+            settings=self._settings,
+            authorization=self._authorization,
+            registry=self._executable,
         )
 
     # --- Propose ------------------------------------------------------------
@@ -154,7 +164,7 @@ class ExecutionService:
                 detail=f"authorization is {execution.authorization_status.value}"
             )
 
-        if not get_executable_registry().contains(execution.tool_name):
+        if not self._executable.contains(execution.tool_name):
             # Approving something with no implementation would produce a live
             # grant that can never be honoured. Refuse it as a proposal, not
             # as a surprise at dispatch.
@@ -242,7 +252,15 @@ class ExecutionService:
             execution.id,
             ExecutionEventType.EXECUTION_SUCCEEDED,
             actor="system",
-            metadata={"tool": execution.tool_name, "summary": outcome.summary},
+            metadata={
+                "tool": execution.tool_name,
+                "summary": outcome.summary,
+                # Safe operational facts from the executor -- for an
+                # integration tool this is the integration, operation,
+                # latency, attempt count and provider status. Sanitised
+                # again by `audit.record` regardless of who supplied it.
+                **dict(outcome.audit_metadata or {}),
+            },
         )
         return execution
 

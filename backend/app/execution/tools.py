@@ -57,8 +57,10 @@ ExecutableArguments = ToolArguments
 class ExecutionContext(BaseModel):
     """What a tool is allowed to know. Deliberately almost nothing.
 
-    No session, no settings object, no provider, no request. A tool receives
-    the workspace root and its own bounds, and can reach nothing else.
+    No session, no settings object, no provider, no request, no context
+    package, no conversation and no memory. A tool receives the workspace
+    root, its own bounds, and -- if it declared one -- a single integration
+    adapter. It can reach nothing else.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -67,6 +69,15 @@ class ExecutionContext(BaseModel):
     max_file_bytes: int = 1_000_000
     max_list_results: int = 500
     max_list_depth: int = 6
+
+    #: The one integration this tool declared, resolved by the dispatcher.
+    #:
+    #: Singular, and not the registry. A tool that names `example` receives
+    #: the `example` adapter and nothing else, so it cannot reach an
+    #: integration it did not declare -- least privilege as a field type
+    #: rather than as a convention. `None` for every filesystem tool, which
+    #: is why they cannot reach the network at all.
+    integration: Optional[Any] = None
 
 
 class ExecutableTool(ABC):
@@ -79,6 +90,16 @@ class ExecutableTool(ABC):
 
     #: Must match a name registered in the Stage 4C catalogue.
     name: str = ""
+
+    #: The integration this tool uses, or "" for none.
+    #:
+    #: Declared on the base rather than only on `IntegrationTool` so the
+    #: dispatcher can read it as an ordinary attribute. The alternative was
+    #: `getattr(tool, "integration_name", "")`, and `getattr` is exactly the
+    #: string-to-code primitive the dispatcher is tested for not having --
+    #: benign here, but a test that has to permit it stops being able to
+    #: refuse the dangerous uses.
+    integration_name: str = ""
 
     @property
     @abstractmethod

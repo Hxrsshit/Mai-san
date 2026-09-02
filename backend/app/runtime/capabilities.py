@@ -104,6 +104,7 @@ def build(
     settings=None,
     registry=None,
     executable=None,
+    integrations=None,
 ) -> Tuple["ToolCapability", ...]:
     """Derive one `ToolCapability` per registered tool. Never raises.
 
@@ -118,6 +119,9 @@ def build(
         registry = registry if registry is not None else _default_registry()
         executable = executable if executable is not None else _default_executable()
         settings = settings if settings is not None else _default_settings()
+        integrations = (
+            integrations if integrations is not None else _default_integrations()
+        )
     except Exception:  # noqa: BLE001
         logger.warning("Could not read the tool registries; reporting no capabilities")
         return ()
@@ -140,6 +144,9 @@ def build(
                         definition,
                         has_executor=executable.contains(definition.name),
                         execution_enabled=execution_enabled,
+                        integration_ready=_integration_ready(
+                            executable.get(definition.name), integrations
+                        ),
                     ),
                 )
             )
@@ -155,7 +162,33 @@ def build(
     return tuple(capabilities)
 
 
-def _state_for(definition, has_executor: bool, execution_enabled: bool):
+def _integration_ready(tool, integrations) -> bool:
+    """Whether this tool's external service is usable right now.
+
+    A tool with no integration is always ready -- the filesystem tools need
+    nothing external. A tool that declares one is ready only when that
+    adapter is registered and available, so a missing API key makes the
+    capability report "implemented, not available right now" instead of
+    advertising something that would fail on first use.
+
+    True when there is no tool object at all: a declaration with no executor
+    is already `NOT_IMPLEMENTED` for a more fundamental reason, and this
+    should not be what decides it.
+    """
+    name = tool.integration_name if tool is not None else ""
+    if not name:
+        return True
+
+    integration = integrations.get(name) if integrations is not None else None
+    return bool(integration is not None and integration.available)
+
+
+def _state_for(
+    definition,
+    has_executor: bool,
+    execution_enabled: bool,
+    integration_ready: bool = True,
+):
     """Map one declaration onto the ladder.
 
     Order matters, and it runs from the most fundamental obstacle to the
@@ -180,6 +213,14 @@ def _state_for(definition, has_executor: bool, execution_enabled: bool):
         return CapabilityState.IMPLEMENTED_DISABLED
 
     if not execution_enabled:
+        return CapabilityState.IMPLEMENTED_UNAVAILABLE
+
+    if not integration_ready:
+        # Implemented and permitted, but its external service is not usable.
+        # `IMPLEMENTED_UNAVAILABLE`, not `IMPLEMENTED_DISABLED`: this is
+        # availability, not permission, and reporting a missing credential as
+        # "forbidden" would send someone to look at policy instead of at
+        # configuration.
         return CapabilityState.IMPLEMENTED_UNAVAILABLE
 
     if status is AuthorizationStatus.APPROVAL_REQUIRED:
@@ -215,6 +256,12 @@ def _default_settings():
     from app.core.config import get_settings
 
     return get_settings()
+
+
+def _default_integrations():
+    from app.integrations.registry import get_integration_registry
+
+    return get_integration_registry()
 
 
 __all__ = ["CapabilityState", "USABLE_STATES", "build", "describe"]

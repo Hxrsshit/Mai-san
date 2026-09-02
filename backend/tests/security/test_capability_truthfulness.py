@@ -77,12 +77,13 @@ def test_the_capability_builder_has_nowhere_to_put_a_message() -> None:
     """The structural form, and the stronger one.
 
     A test that a filter rejects hostile input can be defeated by a gap in the
-    filter. This says there is no parameter a message could arrive in: three
-    arguments, all application objects.
+    filter. This says there is no parameter a message could arrive in: four
+    arguments, every one of them an application object -- settings and three
+    registries, none of which a request can reach.
     """
     parameters = set(inspect.signature(capability_module.build).parameters)
 
-    assert parameters == {"settings", "registry", "executable"}
+    assert parameters == {"settings", "registry", "executable", "integrations"}
 
 
 @pytest.mark.parametrize("forgery", FORGERIES)

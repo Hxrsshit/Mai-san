@@ -24,6 +24,7 @@ a name registered in code; there is no path from a string to executable code.
 A test asserts all of that structurally.
 """
 
+import inspect
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -52,6 +53,10 @@ from app.execution.tools import (
     get_executable_registry,
 )
 from app.execution import workspace
+from app.integrations.registry import (
+    IntegrationRegistry,
+    get_integration_registry,
+)
 from app.tools.authorization import AuthorizationService
 from app.tools.schemas import ActionProposal, ActionSource, AuthorizationStatus
 
@@ -75,11 +80,13 @@ class Dispatcher:
         settings: Optional[Settings] = None,
         authorization: Optional[AuthorizationService] = None,
         registry: Optional[ExecutableRegistry] = None,
+        integrations: Optional[IntegrationRegistry] = None,
     ) -> None:
         self._session = session
         self._settings = settings or get_settings()
         self._authorization = authorization or AuthorizationService()
         self._registry = registry or get_executable_registry()
+        self._integrations = integrations or get_integration_registry()
 
     async def dispatch(self, execution: Execution) -> ExecutionOutcome:
         """Run it. Raises `ExecutionError` if any gate refuses.
@@ -103,10 +110,21 @@ class Dispatcher:
             max_file_bytes=self._settings.MAX_WORKSPACE_FILE_SIZE_BYTES,
             max_list_results=self._settings.MAX_WORKSPACE_LIST_RESULTS,
             max_list_depth=self._settings.MAX_WORKSPACE_LIST_DEPTH,
+            integration=self._resolve_integration(tool),
         )
 
         # The one line in Mai that causes a side effect.
-        return tool.run(arguments, context)
+        #
+        # Awaited when the tool returns an awaitable. The three filesystem
+        # tools are synchronous and stay so; an integration tool that must do
+        # real network I/O can be `async def run` without this method or any
+        # gate above it changing. Blocking the event loop on a socket for
+        # seconds would be a far worse fault than the microseconds a local
+        # file write costs.
+        outcome = tool.run(arguments, context)
+        if inspect.isawaitable(outcome):
+            outcome = await outcome
+        return outcome
 
     # --- Gates --------------------------------------------------------------
 
@@ -130,6 +148,39 @@ class Dispatcher:
         )
         if decision.status not in _EXECUTABLE_STATUSES:
             raise NotAuthorized(detail=decision.status.value)
+
+    def _resolve_integration(self, tool):
+        """The one integration this tool declared, or None.
+
+        Resolved here rather than in the tool, for the same reason
+        authorization is re-checked here: the dispatcher is the single place
+        every side effect passes through, so it is the place where "may this
+        happen, and with what" is answered.
+
+        A tool that declares no integration gets `None` and can reach no
+        external service. A tool that declares one gets that adapter alone --
+        never the registry, so it cannot enumerate or select another.
+        """
+        name = tool.integration_name
+        if not name:
+            return None
+
+        integration = self._integrations.get(name)
+        if integration is None:
+            # A tool naming an unregistered integration. Refused here rather
+            # than left for the tool to discover, so the failure is one
+            # reason code instead of whatever the tool improvises.
+            raise NotExecutable(detail=f"integration:{name}")
+
+        if not integration.available:
+            # Configured or not, it cannot be used right now. Distinct from
+            # forbidden: this is availability, not permission.
+            raise ToolFailure(
+                reason="integration_unavailable",
+                detail=f"{name}:{integration.state().value}",
+            )
+
+        return integration
 
     def _require_executable(self, execution: Execution):
         """Registered and enabled are not executable.

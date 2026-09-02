@@ -59,6 +59,15 @@ class ExecutionOutcome(BaseModel):
     summary: str = Field(..., max_length=500)
     data: Dict[str, Any] = Field(default_factory=dict)
 
+    #: Safe operational facts for the audit journal -- an integration name,
+    #: an operation, a latency, an attempt count, a status code.
+    #:
+    #: Separate from `data` because the two go to different places and have
+    #: different rules. `data` is returned to the caller and may contain
+    #: content from outside; this is persisted forever and may not. It passes
+    #: through `audit.sanitise` regardless, so a mistake here is bounded.
+    audit_metadata: Dict[str, Any] = Field(default_factory=dict)
+
 
 # --- Requests: everything a client may send ---------------------------------
 
