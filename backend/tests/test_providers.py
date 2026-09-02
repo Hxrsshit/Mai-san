@@ -195,11 +195,11 @@ async def test_switching_providers_changes_the_endpoint_called() -> None:
 
     settings = Settings(_env_file=None, LLM_PROVIDER="groq", GROQ_API_KEY="groq-key")
     provider = build_provider(settings)
-    provider._client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
-        base_url=settings.active_base_url,
-        headers={"Authorization": f"Bearer {settings.active_api_key}"},
-    )
+    # The transport is injected, not a finished client. Stage 4F-C made the
+    # provider build a `SecureHttpClient` around whatever transport it is
+    # given, so the network policy runs here exactly as it does in
+    # production -- including the destination check on the URL asserted below.
+    provider._transport = httpx.MockTransport(handler)
 
     await provider.generate_response([LLMMessage(role="user", content="Hi")])
 

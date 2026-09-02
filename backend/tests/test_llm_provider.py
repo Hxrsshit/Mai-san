@@ -42,18 +42,21 @@ def completion_body(content: str = "Hello.", finish_reason: str = "stop") -> dic
 
 
 def make_provider(handler, **overrides) -> GroqProvider:
-    """A GroqProvider wired to a mock transport."""
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(handler),
-        base_url="https://api.groq.com/openai/v1",
-        headers={"Authorization": "Bearer test-key"},
-    )
+    """A GroqProvider wired to a mock transport.
+
+    Stage 4F-C changed the injection point from a whole `httpx.AsyncClient`
+    to a bare transport. That is not merely a signature change: the provider
+    now builds a `SecureHttpClient` around whatever transport it is given, so
+    `NetworkPolicy` runs in these tests exactly as it runs in production.
+    Injecting a finished client would have bypassed the boundary and made
+    every test here prove less than it appears to.
+    """
     kwargs = dict(
         api_key="test-key",
         base_url="https://api.groq.com/openai/v1",
         model="openai/gpt-oss-120b",
         max_retries=0,
-        client=client,
+        transport=httpx.MockTransport(handler),
     )
     kwargs.update(overrides)
     return GroqProvider(**kwargs)

@@ -400,8 +400,97 @@ async def test_no_credential_appears_in_the_request_url() -> None:
 
 
 @pytest.mark.parametrize(
-    "method", ["post", "put", "patch", "delete", "head", "options", "request", "send"]
+    "method", ["put", "patch", "delete", "head", "options", "request", "send"]
 )
-def test_the_client_offers_no_write_method(method) -> None:
-    """Research is read-only, and a client that could POST could be talked into it."""
+def test_the_client_offers_no_unused_write_verb(method) -> None:
+    """GET and POST have callers. Nothing else does, so nothing else exists."""
     assert not hasattr(SecureHttpClient, method), method
+
+
+async def test_a_read_only_policy_refuses_a_write_and_dials_nothing() -> None:
+    """The method gate at the client, not merely on the policy object.
+
+    Mutation testing found that deleting the gate changed nothing observable:
+    every test asserted `policy.permits(...)` directly, and none asked the
+    client to perform a method its policy forbids. A guard nothing exercises
+    is not a guard.
+    """
+    transport = StubTransport()
+    client = _client(transport)  # research-shaped: GET only
+
+    with pytest.raises(NetworkPolicyViolation) as refusal:
+        await client.post_json(f"https://{ALLOWED_HOST}/x", json_body={"a": 1})
+
+    assert refusal.value.detail == "method"
+    assert transport.connections == []
+
+
+async def test_a_write_only_policy_refuses_a_read_and_dials_nothing() -> None:
+    """The other direction, so the gate is not one-sided.
+
+    The provider's policy permits POST alone -- a GET through it must be
+    refused just as firmly, or the gate is only enforcing a preference.
+    """
+    transport = StubTransport()
+    policy = NetworkPolicy(
+        allowed_hosts=frozenset({ALLOWED_HOST}),
+        allowed_methods=frozenset({"POST"}),
+    )
+    client = SecureHttpClient(policy, transport=transport)
+
+    with pytest.raises(NetworkPolicyViolation) as refusal:
+        await client.get(f"https://{ALLOWED_HOST}/x")
+
+    assert refusal.value.detail == "method"
+    assert transport.connections == []
+
+
+async def test_the_method_gate_runs_before_the_destination_is_parsed() -> None:
+    """A forbidden method is refused for being forbidden, not for its URL.
+
+    Order matters here: a caller must not be able to learn anything about a
+    destination it was never allowed to address in the first place.
+    """
+    transport = StubTransport()
+    client = _client(transport)
+
+    with pytest.raises(NetworkPolicyViolation) as refusal:
+        await client.post_json("https://127.0.0.1/internal", json_body={})
+
+    assert refusal.value.detail == "method"
+    assert transport.connections == []
+
+
+async def test_a_redirect_never_carries_the_original_body() -> None:
+    """Re-POSTing to a destination the origin chose is one write becoming two.
+
+    No shipped policy both permits POST and follows redirects, so this is
+    built explicitly -- the guard exists for the integration that eventually
+    does, and it should be load-bearing before that integration arrives
+    rather than after.
+    """
+    transport = StubTransport(
+        responses=[
+            {"status_code": 307,
+             "headers": {"location": f"https://{ALLOWED_HOST}/second"}},
+            {"status_code": 200, "payload": {"ok": True}},
+        ]
+    )
+    policy = NetworkPolicy(
+        allowed_hosts=frozenset({ALLOWED_HOST}),
+        allowed_methods=frozenset({"POST", "GET"}),
+        follow_redirects=True,
+    )
+
+    def resolve(host, port):
+        return [(2, 1, 6, "", ("93.184.216.34", port))]
+
+    client = SecureHttpClient(policy, transport=transport, resolve=resolve)
+    await client.post_json(
+        f"https://{ALLOWED_HOST}/first", json_body={"secret": "prompt-content"}
+    )
+
+    assert len(transport.connections) == 2
+    # The first hop carried the body; the second carried nothing.
+    assert b"prompt-content" in transport.bodies[0]
+    assert transport.bodies[1] in (b"", None)

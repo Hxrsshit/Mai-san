@@ -32,6 +32,21 @@ ALLOWED_SCHEMES: FrozenSet[str] = frozenset({"https"})
 #: Ports an integration may reach. HTTPS only, matching the scheme list.
 ALLOWED_PORTS: FrozenSet[int] = frozenset({443})
 
+#: The default method set: read-only.
+#:
+#: Method capability belongs to the *policy instance*, not to the client
+#: class. Stage 4F-B expressed "research cannot submit a form" by having no
+#: `post` method on `SecureHttpClient` at all, which worked while research was
+#: the only caller. Stage 4F-C brings the LLM provider through the same
+#: boundary, and the provider must POST.
+#:
+#: Adding a general `post()` to the shared client would have handed the *web
+#: search* integration a write-capable client -- a real weakening. Declaring
+#: the permitted methods per policy keeps one boundary while making each
+#: caller's capability narrower than the client's: research gets {"GET"},
+#: the provider gets {"POST"}, and neither can perform the other's.
+READ_ONLY_METHODS: FrozenSet[str] = frozenset({"GET"})
+
 #: Address ranges that are never a legitimate integration destination.
 #:
 #: This is the SSRF list. The cloud metadata endpoints are the reason it
@@ -185,6 +200,9 @@ class NetworkPolicy:
     allowed_hosts: FrozenSet[str] = frozenset()
     allowed_schemes: FrozenSet[str] = ALLOWED_SCHEMES
     allowed_ports: FrozenSet[int] = ALLOWED_PORTS
+    #: HTTP methods this policy permits. Read-only by default, so a policy
+    #: that says nothing about methods cannot write. See `READ_ONLY_METHODS`.
+    allowed_methods: FrozenSet[str] = READ_ONLY_METHODS
 
     max_response_bytes: int = 2_000_000
     #: How many redirect hops may be followed. Each one is re-checked, so
@@ -199,6 +217,14 @@ class NetworkPolicy:
 
     timeouts: TimeoutPolicy = field(default_factory=TimeoutPolicy)
     retries: RetryPolicy = field(default_factory=RetryPolicy)
+
+    def permits(self, method: str) -> bool:
+        """Whether this policy allows an HTTP method.
+
+        Upper-cased and exact-matched. No normalisation beyond case, because
+        nothing else could change which method is meant.
+        """
+        return (method or "").strip().upper() in self.allowed_methods
 
     def check(self, url: str, resolve=None) -> None:
         """Raise unless this exact URL is permitted. Returns nothing.
@@ -300,6 +326,7 @@ def is_forbidden_address(address: str) -> bool:
 __all__ = [
     "ALLOWED_PORTS",
     "ALLOWED_SCHEMES",
+    "READ_ONLY_METHODS",
     "NetworkPolicy",
     "RetryPolicy",
     "TimeoutPolicy",

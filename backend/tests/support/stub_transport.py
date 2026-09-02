@@ -32,6 +32,8 @@ class StubTransport(httpx.AsyncBaseTransport):
         self.connections: List[str] = []
         #: Every request's headers, so credential handling can be asserted.
         self.request_headers: List[Dict[str, str]] = []
+        #: Every request's body, so redirect body-dropping can be asserted.
+        self.bodies: List[bytes] = []
         self._status = status_code
         self._payload = payload
         self._body = body
@@ -44,6 +46,7 @@ class StubTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.connections.append(str(request.url))
         self.request_headers.append(dict(request.headers))
+        self.bodies.append(request.content)
 
         if self._raise is not None:
             raise self._raise

@@ -16,9 +16,16 @@ import asyncio
 import random
 from typing import Any, Dict, List, Optional
 
-import httpx
 
 from app.core.config import Settings
+from app.integrations.errors import (
+    IntegrationError,
+    NetworkPolicyViolation,
+    ProviderTimeout,
+    ResponseTooLarge,
+)
+from app.integrations.http_client import SecureHttpClient
+from app.llm.transport import build_provider_client
 from app.core.errors import (
     LLMAuthError,
     LLMError,
@@ -27,7 +34,7 @@ from app.core.errors import (
     LLMResponseError,
     LLMTimeoutError,
 )
-from app.core.logging import get_logger
+from app.core.logging import get_logger, redact
 from app.llm.base import LLMMessage, LLMProvider, LLMResponse, ProviderHealth
 
 logger = get_logger(__name__)
@@ -53,8 +60,7 @@ class OpenAICompatibleProvider(LLMProvider):
         max_retries: int = 2,
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        extra_headers: Optional[Dict[str, str]] = None,
-        client: Optional[httpx.AsyncClient] = None,
+        transport: Optional[object] = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -63,9 +69,11 @@ class OpenAICompatibleProvider(LLMProvider):
         self._max_retries = max(0, max_retries)
         self._temperature = temperature
         self._max_tokens = max_tokens
-        self._extra_headers = extra_headers or {}
-        self._client = client
-        self._owns_client = client is None
+        #: Injectable for tests. It reaches `SecureHttpClient` unchanged, so
+        #: the policy runs against a stub exactly as it runs against the
+        #: network -- which is what makes a provider SSRF test meaningful.
+        self._transport = transport
+        self._client: Optional[SecureHttpClient] = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "OpenAICompatibleProvider":
@@ -85,22 +93,35 @@ class OpenAICompatibleProvider(LLMProvider):
 
     # --- HTTP plumbing ------------------------------------------------------
 
-    def _get_client(self) -> httpx.AsyncClient:
-        """Lazily build a keep-alive client shared across requests."""
+    def _get_client(self) -> SecureHttpClient:
+        """Lazily build the policed client shared across requests.
+
+        A `SecureHttpClient`, the same class web research uses, carrying a
+        policy whose host allow-list is derived from the configured base URL.
+        Stage 4F-C removed the direct `httpx.AsyncClient` that used to live
+        here: it was the last outbound path in the application that did not
+        consult `NetworkPolicy`.
+
+        The API key is **not** baked into the client's headers as it once was.
+        It is passed per request instead -- see `_post_with_retries` -- so it
+        exists on no long-lived object that could be logged, serialised or
+        inspected. Late insertion, at the transport boundary.
+        """
         if self._client is None:
-            self._client = httpx.AsyncClient(
+            # A malformed or forbidden base URL raises here, not at request
+            # time. Converted rather than allowed to escape: the API layer
+            # maps `LLMError` subclasses to HTTP responses, and an unmapped
+            # `NetworkPolicyViolation` would surface as an unhandled 500 of a
+            # different shape.
+            self._client = build_provider_client(
                 base_url=self._base_url,
-                timeout=httpx.Timeout(self._timeout, connect=10.0),
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                    **self._extra_headers,
-                },
+                timeout_seconds=self._timeout,
+                transport=self._transport,
             )
         return self._client
 
     async def close(self) -> None:
-        if self._client is not None and self._owns_client:
+        if self._client is not None:
             await self._client.aclose()
         self._client = None
 
@@ -187,7 +208,22 @@ class OpenAICompatibleProvider(LLMProvider):
         self, path: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
         """POST with bounded exponential backoff on transient failures."""
-        client = self._get_client()
+        try:
+            client = self._get_client()
+        except IntegrationError as exc:
+            # Building the client validates the configured endpoint. A
+            # refusal here means the deployment is misconfigured, and the
+            # message says so without naming the destination -- a refusal
+            # that described it would be a way to probe the network through
+            # a provider setting.
+            logger.warning(
+                "Provider endpoint refused by network policy",
+                extra={"provider": self.name, "reason": exc.reason},
+            )
+            raise LLMError(
+                f"The configured {self.name} endpoint is not permitted."
+            ) from exc
+
         last_error: Optional[LLMError] = None
         # Honoured in place of exponential backoff when the server sends it.
         retry_after: Optional[float] = None
@@ -195,15 +231,42 @@ class OpenAICompatibleProvider(LLMProvider):
         for attempt in range(self._max_retries + 1):
             retry_after = None
             try:
-                http_response = await client.post(path, json=payload)
-            except httpx.TimeoutException as exc:
+                http_response = await client.post_json(
+                    self._url_for(path),
+                    json_body=payload,
+                    # The key is supplied here, per request, rather than
+                    # living on the client. It is applied by the transport
+                    # and never returned on the response object.
+                    auth_header=("Authorization", f"Bearer {self._api_key}"),
+                )
+            except ProviderTimeout as exc:
                 last_error = LLMTimeoutError(
                     f"{self.name} request timed out after {self._timeout:.0f}s."
                 )
-                self._log_attempt_failure(attempt, "timeout", str(exc))
-            except httpx.HTTPError as exc:
-                last_error = LLMError(f"Could not reach {self.name}: {exc}")
-                self._log_attempt_failure(attempt, "transport_error", str(exc))
+                self._log_attempt_failure(attempt, "timeout", exc.reason)
+            except NetworkPolicyViolation as exc:
+                # The destination was refused. Not retryable, and not
+                # described: a refusal that named the host would be a way to
+                # probe the network through a misconfigured provider setting.
+                self._log_attempt_failure(
+                    attempt, "policy_refused", exc.reason, final=True
+                )
+                raise LLMError(
+                    f"The configured {self.name} endpoint is not permitted."
+                ) from exc
+            except ResponseTooLarge as exc:
+                self._log_attempt_failure(
+                    attempt, "oversized_response", exc.reason, final=True
+                )
+                raise LLMError(
+                    f"{self.name} returned an unexpectedly large response."
+                ) from exc
+            except IntegrationError as exc:
+                # Every remaining transport failure. `exc.reason` is an
+                # application constant; the underlying exception text is not
+                # carried, because it can name an internal host.
+                last_error = LLMError(f"Could not reach {self.name}.")
+                self._log_attempt_failure(attempt, "transport_error", exc.reason)
             else:
                 if http_response.status_code == 200:
                     return self._decode_json(http_response)
@@ -233,8 +296,18 @@ class OpenAICompatibleProvider(LLMProvider):
 
         raise last_error or LLMError()
 
+    def _url_for(self, path: str) -> str:
+        """Absolute URL from the configured base and a code-chosen path.
+
+        `path` is a literal in this module (`/chat/completions`), never a
+        value from a request, a plan or a model. The base is operator
+        configuration. Neither is user-influenced, and the policy checks the
+        result regardless.
+        """
+        return f"{self._base_url}/{path.lstrip('/')}"
+
     @staticmethod
-    def _retry_after_seconds(http_response: httpx.Response) -> Optional[float]:
+    def _retry_after_seconds(http_response) -> Optional[float]:
         """Read the Retry-After header, if the server sent a usable one.
 
         Only the delta-seconds form is handled; the HTTP-date form is rare here
@@ -273,7 +346,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 "max_attempts": self._max_retries + 1,
                 "reason": reason,
                 "retry_after": retry_after,
-                # `detail` never contains the API key: it is either an httpx
+                # `detail` never contains the API key: it is either a transport
                 # message or the provider's own error text.
                 "detail": detail,
                 "will_retry": not final and attempt < self._max_retries,
@@ -281,7 +354,7 @@ class OpenAICompatibleProvider(LLMProvider):
         )
 
     @staticmethod
-    def _decode_json(http_response: httpx.Response) -> Dict[str, Any]:
+    def _decode_json(http_response) -> Dict[str, Any]:
         try:
             data = http_response.json()
         except ValueError as exc:
@@ -290,22 +363,45 @@ class OpenAICompatibleProvider(LLMProvider):
             raise LLMResponseError("The model API returned an unexpected response shape.")
         return data
 
-    @staticmethod
-    def _provider_message(http_response: httpx.Response) -> str:
-        """Best-effort extraction of the provider's error text."""
+    def _provider_message(self, http_response) -> str:
+        """The provider's error text, bounded and stripped of the credential.
+
+        A provider's error body is text Mai did not write, and it reaches the
+        user through `LLMError.message`. Providers do sometimes echo the
+        request back for debugging, and a compromised or merely careless one
+        could include the `Authorization` header it received -- so the key is
+        removed here rather than trusted not to appear.
+
+        Cheap, and it closes the one path by which the credential could reach
+        a user-visible string.
+        """
         try:
             body = http_response.json()
         except ValueError:
-            return http_response.text[:200]
+            return self._scrub(http_response.text[:200])
+
         if isinstance(body, dict):
             error = body.get("error")
             if isinstance(error, dict) and error.get("message"):
-                return str(error["message"])
+                return self._scrub(str(error["message"]))
             if body.get("message"):
-                return str(body["message"])
-        return http_response.text[:200]
+                return self._scrub(str(body["message"]))
+        return self._scrub(http_response.text[:200])
 
-    def _error_for_status(self, http_response: httpx.Response) -> LLMError:
+    def _scrub(self, text: str) -> str:
+        """Remove the API key from provider-supplied text.
+
+        Both bare and `Bearer`-prefixed. `redact` handles the general
+        secret-shaped patterns Stage 3D defined; this handles the one secret
+        this object actually holds, which a generic pattern could miss.
+        """
+        cleaned = redact(text or "")
+        if self._api_key:
+            cleaned = cleaned.replace(f"Bearer {self._api_key}", "[redacted]")
+            cleaned = cleaned.replace(self._api_key, "[redacted]")
+        return cleaned
+
+    def _error_for_status(self, http_response) -> LLMError:
         status = http_response.status_code
         detail = self._provider_message(http_response)
 
