@@ -195,14 +195,20 @@ def test_the_integration_interface_has_no_arbitrary_request_method() -> None:
         assert not hasattr(Integration, forbidden), forbidden
 
 
-def test_no_integration_module_imports_an_http_client() -> None:
-    """Stage 4F-A ships no HTTP client at all. Nothing here can open a socket.
+def test_only_the_secure_client_imports_an_http_library() -> None:
+    """Invariant #3, structurally: one module may connect, and it enforces policy.
+
+    Stage 4F-A had no HTTP client at all. Stage 4F-B added exactly one, so the
+    claim narrowed from "nothing here can open a socket" to "one file can, and
+    that file is the one that runs `NetworkPolicy.check`". A second module
+    importing `httpx` would be a second network path, which is the thing this
+    whole stage exists to prevent.
 
     `urllib.parse` is permitted and `urllib.request` is not: the first splits
     a URL into its parts so the policy can inspect them, and the second is the
-    thing that would connect. Checking the top-level package alone would
-    conflate them.
+    thing that would connect.
     """
+    importers = []
     for path in INTEGRATIONS.rglob("*.py"):
         tree = ast.parse(path.read_text())
         modules = []
@@ -214,15 +220,32 @@ def test_no_integration_module_imports_an_http_client() -> None:
 
         for module in modules:
             root = module.split(".")[0]
+            if root == "httpx":
+                importers.append(path.name)
+                continue
             assert root not in {
-                "httpx", "requests", "urllib3", "aiohttp", "http",
+                "requests", "urllib3", "aiohttp", "http",
                 "ftplib", "smtplib", "telnetlib", "subprocess",
             }, f"{path.name} imports {module}"
-            # `urllib.parse` splits a URL into its parts and opens nothing;
-            # `urllib.request` is the client. The distinction is the point of
-            # checking the module rather than the top-level package.
             assert not module.startswith("urllib.request"), path.name
             assert module != "urllib", path.name
+
+    assert importers == ["http_client.py"], importers
+
+
+def test_the_only_http_client_enforces_the_policy() -> None:
+    """The complement, so the test above cannot pass by the client vanishing.
+
+    A confinement claim is only meaningful while the confined thing exists
+    and does its job. `check` must be called on the request path, not merely
+    imported.
+    """
+    source = (INTEGRATIONS / "http_client.py").read_text()
+
+    assert "self._policy.check(" in source
+    # And httpx's own redirect handling stays off: it would follow a hop
+    # without the policy ever seeing it.
+    assert "follow_redirects=False" in source
 
 
 def test_the_only_socket_use_is_name_resolution() -> None:

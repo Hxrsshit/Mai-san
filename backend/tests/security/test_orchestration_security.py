@@ -83,8 +83,13 @@ COERCION = [
     "name",
     [
         "delete_everything", "delete_all_files", "run_shell", "exec",
-        "future_delete", "send_email", "web_search", "rm", "bash",
+        "future_delete", "send_email", "rm", "bash",
         "future_send_emails", "echo_all",
+        # Near-misses for the tool that *is* now registered. Stage 4F-B
+        # added `web_search`, so it moved out of this list -- but everything
+        # adjacent to it must still fail closed, which is the property that
+        # mattered here all along.
+        "websearch", "search_web", "web_search_all", "web-search",
     ],
 )
 def test_an_invented_or_near_miss_name_fails_closed(

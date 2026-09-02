@@ -457,8 +457,13 @@ def test_nothing_outside_the_package_holds_a_tool_instance() -> None:
                 if "ToolArguments" in imported:
                     schema_importers.append(relative)
     assert holders == [], holders
-    # Schemas travel one hop further, and only that far.
-    assert schema_importers == ["execution/tools.py"], schema_importers
+    # Schemas travel one hop further, and only that far. Both files import a
+    # `ToolArguments` subclass -- the *shape of a payload* -- and neither
+    # imports a `Tool`, which is what keeps Stage 4C's guarantee that a
+    # `Tool` defines no way to be run untouched by anything in `app/execution`.
+    assert sorted(schema_importers) == [
+        "execution/tools.py", "execution/web_search_tool.py",
+    ], schema_importers
 
 
 def test_the_executor_subclasses_nothing_from_the_tool_hierarchy() -> None:

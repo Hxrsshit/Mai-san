@@ -187,6 +187,10 @@ class NetworkPolicy:
     allowed_ports: FrozenSet[int] = ALLOWED_PORTS
 
     max_response_bytes: int = 2_000_000
+    #: How many redirect hops may be followed. Each one is re-checked, so
+    #: this bounds work rather than trust -- but an unbounded chain is a
+    #: denial-of-service against Mai whether or not each hop is safe.
+    max_redirects: int = 3
     #: Redirects are not followed. A redirect is the provider choosing a new
     #: destination after the policy already approved the first one, which is
     #: exactly the check being bypassed. An integration that needs to follow
@@ -206,7 +210,19 @@ class NetworkPolicy:
         `resolve` is injectable so tests can exercise DNS rebinding without a
         network. In production it is `socket.getaddrinfo`.
         """
-        parsed = urlparse((url or "").strip())
+        try:
+            parsed = urlparse((url or "").strip())
+            # `.port` parses lazily and raises on a non-numeric or
+            # out-of-range port, so it is touched inside the guard too.
+            declared_port = parsed.port
+        except ValueError as exc:
+            # A URL this function cannot parse is a URL it cannot vouch for.
+            # `urlparse` raises on malformed IPv6 (`https://[::1`) and on an
+            # invalid port, and letting that escape would surface a raw
+            # ValueError instead of a refusal -- indistinguishable from a bug
+            # elsewhere, and not the fail-closed behaviour this stage
+            # requires.
+            raise NetworkPolicyViolation(detail="malformed") from exc
 
         if parsed.scheme.lower() not in self.allowed_schemes:
             raise NetworkPolicyViolation(detail="scheme")
@@ -218,7 +234,7 @@ class NetworkPolicy:
         if host in _FORBIDDEN_HOSTS:
             raise NetworkPolicyViolation(detail="host")
 
-        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 0)
+        port = declared_port or (443 if parsed.scheme.lower() == "https" else 0)
         if port not in self.allowed_ports:
             raise NetworkPolicyViolation(detail="port")
 

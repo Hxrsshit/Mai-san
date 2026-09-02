@@ -22,7 +22,9 @@ guessed at, not looked up dynamically -- refused, because the set of things an
 integration can do should be readable in one file.
 """
 
+import asyncio
 import enum
+import inspect
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
@@ -101,6 +103,52 @@ class OperationSpec:
         #: policy explicitly permits it and the provider offers idempotency.
         self.has_side_effect = has_side_effect
         self.description = description
+
+
+class _Attempts:
+    """Retry bookkeeping shared by the sync and async invoke loops.
+
+    Extracted so the two loops differ only in how they wait -- `time.sleep`
+    against `asyncio.sleep`. Every decision about *whether* to retry and *how
+    long* to wait lives here and in `RetryPolicy`, so the two paths cannot
+    drift into disagreeing about when a retry is safe.
+    """
+
+    __slots__ = ("policy", "has_side_effect", "started", "count", "last")
+
+    def __init__(self, policy, has_side_effect: bool) -> None:
+        self.policy = policy
+        self.has_side_effect = has_side_effect
+        self.started = time.monotonic()
+        self.count = 0
+        self.last: Optional[IntegrationError] = None
+
+    def begin(self) -> None:
+        self.count += 1
+
+    @property
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def delay_for(self, error: IntegrationError) -> Optional[float]:
+        """Seconds to wait before the next attempt, or None to stop.
+
+        `None` covers both "policy says no" and "the wait itself would breach
+        the total bound" -- there is no point taking a delay that ends after
+        the deadline.
+        """
+        self.last = error
+        if not self.policy.should_retry(
+            error, self.count, self.elapsed, has_side_effect=self.has_side_effect
+        ):
+            return None
+
+        delay = self.policy.backoff_for(
+            self.count, getattr(error, "retry_after", None)
+        )
+        if self.elapsed + delay >= self.policy.max_total_seconds:
+            return None
+        return delay
 
 
 class Integration(ABC):
@@ -227,31 +275,18 @@ class Integration(ABC):
                 summary="The integration is not available.",
             )
 
-        policy = self.network_policy.retries
-        started = time.monotonic()
-        attempt = 0
-        last: Optional[IntegrationError] = None
+        attempts = _Attempts(self.network_policy.retries, spec.has_side_effect)
 
         while True:
-            attempt += 1
+            attempts.begin()
             try:
                 result = spec.handler(dict(arguments))
             except IntegrationError as error:
-                last = error
-                elapsed = time.monotonic() - started
-                if policy.should_retry(
-                    error, attempt, elapsed, has_side_effect=spec.has_side_effect
-                ):
-                    delay = policy.backoff_for(
-                        attempt, getattr(error, "retry_after", None)
-                    )
-                    if elapsed + delay >= policy.max_total_seconds:
-                        # The wait alone would breach the total bound, so
-                        # there is no point taking it.
-                        break
-                    self._sleep(delay)
-                    continue
-                break
+                delay = attempts.delay_for(error)
+                if delay is None:
+                    break
+                self._sleep(delay)
+                continue
             except Exception as unexpected:  # noqa: BLE001
                 # An adapter bug or an exception type nobody converted. The
                 # message is dropped rather than reported: it may carry a URL,
@@ -269,24 +304,104 @@ class Integration(ABC):
                     ExternalResultState.UNKNOWN_ERROR,
                     reason="unconverted_error",
                     summary="The integration failed unexpectedly.",
-                    attempts=attempt,
-                    latency_ms=self._elapsed_ms(started),
+                    attempts=attempts.count,
+                    latency_ms=self._elapsed_ms(attempts.started),
                 )
             else:
                 return result.model_copy(
                     update={
-                        "attempts": attempt,
-                        "latency_ms": self._elapsed_ms(started),
+                        "attempts": attempts.count,
+                        "latency_ms": self._elapsed_ms(attempts.started),
                     }
                 )
 
         return self._failure(
             spec.name,
-            _STATE_FOR_ERROR.get(type(last), ExternalResultState.FAILED),
-            reason=last.reason if last else "failed",
+            _STATE_FOR_ERROR.get(
+                type(attempts.last), ExternalResultState.FAILED
+            ),
+            reason=attempts.last.reason if attempts.last else "failed",
             summary="The external operation did not succeed.",
-            attempts=attempt,
-            latency_ms=self._elapsed_ms(started),
+            attempts=attempts.count,
+            latency_ms=self._elapsed_ms(attempts.started),
+        )
+
+    async def ainvoke(
+        self, operation: str, arguments: Mapping[str, Any]
+    ) -> ExternalResult:
+        """The async twin of `invoke`, for operations that do real I/O.
+
+        Both exist because both are genuinely needed: an adapter over an
+        in-process resource is naturally synchronous, and one that opens a
+        socket must not block the event loop for seconds. The Stage 4E
+        dispatcher awaits an awaitable result, so a tool chooses which it is
+        and no gate above it changes.
+
+        Identical guarantees to `invoke`: the operation name is checked
+        against the table, availability is checked, retries are bounded by
+        the same policy object, and every provider exception is converted to
+        a result rather than escaping.
+        """
+        spec = self._operations.get((operation or "").strip())
+        if spec is None:
+            raise UnsupportedOperation(detail=f"{self.name}:{operation}")
+
+        if not self.available:
+            return self._failure(
+                spec.name,
+                ExternalResultState.UNAVAILABLE,
+                reason=self.state().value,
+                summary="The integration is not available.",
+            )
+
+        attempts = _Attempts(self.network_policy.retries, spec.has_side_effect)
+
+        while True:
+            attempts.begin()
+            try:
+                result = spec.handler(dict(arguments))
+                if inspect.isawaitable(result):
+                    result = await result
+            except IntegrationError as error:
+                delay = attempts.delay_for(error)
+                if delay is None:
+                    break
+                await self._asleep(delay)
+                continue
+            except Exception as unexpected:  # noqa: BLE001
+                logger.warning(
+                    "Integration operation raised an unconverted exception",
+                    extra={
+                        "integration": self.name,
+                        "operation": spec.name,
+                        "error_type": type(unexpected).__name__,
+                    },
+                )
+                return self._failure(
+                    spec.name,
+                    ExternalResultState.UNKNOWN_ERROR,
+                    reason="unconverted_error",
+                    summary="The integration failed unexpectedly.",
+                    attempts=attempts.count,
+                    latency_ms=self._elapsed_ms(attempts.started),
+                )
+            else:
+                return result.model_copy(
+                    update={
+                        "attempts": attempts.count,
+                        "latency_ms": self._elapsed_ms(attempts.started),
+                    }
+                )
+
+        return self._failure(
+            spec.name,
+            _STATE_FOR_ERROR.get(
+                type(attempts.last), ExternalResultState.FAILED
+            ),
+            reason=attempts.last.reason if attempts.last else "failed",
+            summary="The external operation did not succeed.",
+            attempts=attempts.count,
+            latency_ms=self._elapsed_ms(attempts.started),
         )
 
     # --- Helpers ------------------------------------------------------------
@@ -312,6 +427,10 @@ class Integration(ABC):
     def _sleep(self, seconds: float) -> None:
         """Overridable so tests exercise backoff without waiting for it."""
         time.sleep(seconds)
+
+    async def _asleep(self, seconds: float) -> None:
+        """The async twin. Also overridable, for the same reason."""
+        await asyncio.sleep(seconds)
 
 
 #: Which result state each error converts to.

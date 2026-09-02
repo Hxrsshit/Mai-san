@@ -74,6 +74,22 @@ def _echo_arguments(message: str, normalised: str) -> Dict[str, object]:
     return {"text": text or "(empty)"}
 
 
+def _web_search_arguments(message: str, normalised: str) -> Dict[str, object]:
+    """`web_search` takes the user's own words as the query.
+
+    The whole message, bounded -- not a model-extracted "search term". The
+    difference matters twice over: extraction would need a model call on a
+    path that currently makes none, and it would let a model choose what Mai
+    searches for. What the user typed is what gets proposed, and the user sees
+    it in the approval prompt before anything is sent anywhere.
+
+    Still only a *candidate*. It goes through Stage 4C validation, Stage 4C
+    authorization and an explicit approval before any request is made.
+    """
+    query = " ".join(message.split())[:300]
+    return {"query": query or "(empty)"}
+
+
 def _no_arguments(message: str, normalised: str) -> Dict[str, object]:
     """Declared future capabilities have no argument schema, so they take none.
 
@@ -96,14 +112,23 @@ _TABLE: List[Tuple[str, Sequence[str], Callable[[str, str], Dict[str, object]]]]
         _echo_arguments,
     ),
     (
-        "future_web_search",
+        # Stage 4F-B made this real. It pointed at `future_web_search` --
+        # a declaration with no implementation -- for as long as there was no
+        # search, and pointing it at the working tool is the whole of this
+        # stage's chat integration: a research request is now *identified* as
+        # the capability that exists rather than the one that does not.
+        #
+        # Identification only. Nothing here executes: the candidate still
+        # travels the Stage 4C authorization and Stage 4E approval path, and
+        # `web_search` requires approval, so no message becomes a request.
+        "web_search",
         # Every phrase here is imperative. "web search" was removed after it
         # fired on "tell me about web search engines" -- a noun phrase is a
         # topic, not a request, and the table's own rule says a phrase broad
         # enough to catch a paraphrase is broad enough to catch a mention.
         ("search the web", "search online", "look this up online",
          "google this for me", "run a web search"),
-        _no_arguments,
+        _web_search_arguments,
     ),
     (
         "future_generate_document",

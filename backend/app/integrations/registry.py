@@ -6,10 +6,10 @@ in one file at import time". Two registries answering different questions,
 behaving the same way, is easier to reason about than one clever registry
 answering both.
 
-**Stage 4F-A registers nothing.** The catalogue below is empty, and that is
-the deliverable: the foundation exists and no external service is reachable
-through it. Adding an integration is a code change to `build_integrations`,
-reviewed like any other.
+Stage 4F-A registered nothing. Stage 4F-B registers exactly one: `web_search`,
+read-only, one endpoint. Adding another is a code change to
+`build_integrations`, imported at module scope and reviewed like any other --
+there is no dynamic loading and no configuration that can add one.
 """
 
 from typing import Dict, Optional, Tuple
@@ -17,6 +17,7 @@ from typing import Dict, Optional, Tuple
 from app.core.logging import get_logger
 from app.integrations.base import Integration
 from app.integrations.errors import UnknownIntegration
+from app.integrations.web_search import WebSearchIntegration
 
 logger = get_logger(__name__)
 
@@ -99,7 +100,7 @@ def build_integrations(
     module scope, and having that reviewed.
     """
     target = registry if registry is not None else _registry
-    # Intentionally no integrations. See the module docstring.
+    target.register(WebSearchIntegration())
     return target
 
 

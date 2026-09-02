@@ -301,13 +301,22 @@ def build_executable_registry(
 ) -> ExecutableRegistry:
     """Register the Stage 4E tools. The only place `register` is called.
 
-    Three tools, each a hand-written class imported at module scope. Adding a
-    fourth means editing this function.
+    Four tools, each a hand-written class. Adding a fifth means editing this
+    function.
+
+    `WebSearchTool` is imported here rather than at module scope to break a
+    cycle: it subclasses `AsyncIntegrationTool`, which lives in a module that
+    imports `ExecutableTool` from this one. The import is still a concrete
+    class named in code -- there is no dynamic lookup and nothing a string
+    could reach.
     """
+    from app.execution.web_search_tool import WebSearchTool
+
     target = registry if registry is not None else _registry
     target.register(CreateTextFileTool())
     target.register(ReadTextFileTool())
     target.register(ListWorkspaceFilesTool())
+    target.register(WebSearchTool())
     return target
 
 

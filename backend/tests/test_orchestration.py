@@ -129,7 +129,7 @@ def test_disabling_orchestration_does_no_work(registry, settings) -> None:
     "message,expected",
     [
         ("Please send an email to Gautam", "future_send_email"),
-        ("Search the web for competitors", "future_web_search"),
+        ("Search the web for competitors", "web_search"),
         ("Generate a document from this", "future_generate_document"),
         ("Delete the file called notes.txt", "future_delete_file"),
         ("Echo this back to me", "echo"),
@@ -182,8 +182,8 @@ def test_candidates_are_ordered_by_position() -> None:
     first = matching.find_candidates("Search the web and then send an email")
     second = matching.find_candidates("Send an email after you search the web")
 
-    assert [c.tool_name for c in first] == ["future_web_search", "future_send_email"]
-    assert [c.tool_name for c in second] == ["future_send_email", "future_web_search"]
+    assert [c.tool_name for c in first] == ["web_search", "future_send_email"]
+    assert [c.tool_name for c in second] == ["future_send_email", "web_search"]
 
 
 def test_every_mapped_tool_exists_in_the_registry(registry) -> None:

@@ -73,7 +73,21 @@ async def test_a_successful_turn_logs_no_credential(
     output = rendered(logs)
     assert settings.GROQ_API_KEY not in output
     assert "test-key" not in output
-    assert "api_key" not in output.lower()
+    # `api_key` as a *substring* is no longer a useful proxy. Stage 4F-A
+    # logs the credential identifier (`web_search.api_key`) and the setting
+    # name (`SEARCH_API_KEY`) at DEBUG, deliberately: naming what is missing
+    # is what makes a misconfiguration debuggable, and neither is a value.
+    #
+    # So the assertion moved from "the word never appears" to "only these
+    # two known names appear" -- which is stricter about the thing that
+    # matters and honest about the thing that does not.
+    lowered = output.lower()
+    known_names = ("web_search.api_key", "search_api_key")
+    residue = lowered
+    for name in known_names:
+        residue = residue.replace(name, "")
+    assert "api_key" not in residue
+    assert "apikey" not in residue
     assert settings.DATABASE_URL not in output
 
 

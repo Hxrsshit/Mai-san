@@ -111,6 +111,23 @@ class ListWorkspaceFilesArguments(ToolArguments):
     path: Optional[str] = Field(default=None, max_length=400)
 
 
+class WebSearchArguments(ToolArguments):
+    """Arguments for `web_search`.
+
+    A query and two bounded knobs. Note what is absent: no `url`, no
+    `endpoint`, no `method`, no `headers`, no `api_key`. A user cannot choose
+    a destination and cannot supply a credential, because there is no field
+    for either -- the same "a model cannot set what it cannot name" reasoning
+    the earlier stages used, applied to the network.
+    """
+
+    query: str = Field(..., min_length=1, max_length=300)
+    max_results: int = Field(default=5, ge=1, le=10)
+    #: Defaults to on. A research assistant has no reason to default to
+    #: fewer filters, and turning it off is part of the approved payload.
+    safe_search: bool = True
+
+
 class _ExecutableDeclaration(Tool):
     """A declaration whose implementation lives in `app.execution.tools`.
 
@@ -137,10 +154,11 @@ def _declare_executable(
     description: str,
     risk_level: RiskLevel,
     arguments: Type[ToolArguments],
+    category: ToolCategory = ToolCategory.FILE_OPERATION,
 ) -> Tool:
     """Declare a capability that Stage 4E can actually perform.
 
-    `requires_approval=True` on every one, including the two read-only tools.
+    `requires_approval=True` on every one, including the read-only tools.
     Reading is lower risk than writing, not zero risk -- it is the step that
     moves file contents into a prompt -- and Stage 4E's rule is that anything
     with a side effect is approved explicitly, per payload. The risk ladder
@@ -150,8 +168,12 @@ def _declare_executable(
     tool._definition = ToolDefinition(
         name=name,
         description=description,
-        category=ToolCategory.FILE_OPERATION,
+        category=category,
         risk_level=risk_level,
+        # Approval is retained for search, not waived for convenience. It is
+        # read-only, but it is the one tool that sends what the user asked
+        # about to someone else -- and a per-query approval is exactly where
+        # a person gets to decide whether that is acceptable for this query.
         requires_approval=True,
         execution_mode=ExecutionMode.SYNCHRONOUS,
         enabled=True,
@@ -254,6 +276,17 @@ def build_catalog(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
             RiskLevel.LOW,
             ListWorkspaceFilesArguments,
         ),
+        _declare_executable(
+            "web_search",
+            "Search the public web for a query and return sources.",
+            # Read-only, and still MEDIUM rather than LOW: a search sends the
+            # user's question to a third party, which the three filesystem
+            # tools do not do. The risk is a privacy one, not a destruction
+            # one, and the ladder should say so.
+            RiskLevel.MEDIUM,
+            WebSearchArguments,
+            category=ToolCategory.INFORMATION,
+        ),
     ):
         target.register(tool)
 
@@ -298,6 +331,7 @@ build_catalog()
 
 __all__ = [
     "CreateTextFileArguments",
+    "WebSearchArguments",
     "EchoArguments",
     "EchoTool",
     "ListWorkspaceFilesArguments",

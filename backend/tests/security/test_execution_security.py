@@ -319,12 +319,18 @@ def test_none_of_the_forbidden_capabilities_is_executable(forbidden) -> None:
     assert get_executable_registry().get(forbidden) is None
 
 
-def test_the_executor_offers_exactly_three_capabilities() -> None:
-    """Pinned, so a fourth cannot appear without this test being updated."""
+def test_the_executor_offers_exactly_the_expected_capabilities() -> None:
+    """Pinned, so a new one cannot appear without this test being updated.
+
+    Stage 4F-B added the fourth: `web_search`, the first that leaves the
+    machine. The list is exact rather than a minimum, which is the point --
+    executability is not something a future edit should acquire quietly.
+    """
     from app.execution.tools import get_executable_registry
 
     assert get_executable_registry().names() == (
         "create_text_file", "list_workspace_files", "read_text_file",
+        "web_search",
     )
 
 

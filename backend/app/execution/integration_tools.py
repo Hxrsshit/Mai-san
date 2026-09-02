@@ -114,4 +114,50 @@ class IntegrationTool(ExecutableTool):
         )
 
 
-__all__ = ["IntegrationTool"]
+class AsyncIntegrationTool(IntegrationTool):
+    """An integration tool whose operation does real I/O.
+
+    Identical to `IntegrationTool` except that it awaits. The split exists
+    because both are genuinely needed: an adapter over an in-process resource
+    is naturally synchronous, and one that opens a socket must not block the
+    event loop for the seconds a network round trip can take.
+
+    Stage 4E's dispatcher awaits an awaitable result, so choosing between
+    these two changes nothing above the tool -- not the gates, not the
+    approval system, not the audit.
+    """
+
+    async def run(self, arguments, context: ExecutionContext) -> ExecutionOutcome:
+        integration = context.integration
+        if integration is None:
+            raise ToolFailure(
+                reason="integration_unavailable", detail=self.integration_name
+            )
+
+        if not integration.supports(self.operation):
+            raise ToolFailure(
+                reason="unsupported_operation",
+                detail=f"{self.integration_name}:{self.operation}",
+            )
+
+        try:
+            result = await integration.ainvoke(
+                self.operation, self.build_operation_arguments(arguments)
+            )
+        except IntegrationError as error:
+            raise ToolFailure(reason=error.reason, detail=error.detail) from error
+
+        if not result.succeeded:
+            # The failure crosses as a failure. Nothing here can turn a
+            # timeout or a refusal into an outcome that reads as a completed
+            # search -- which is what stops Mai saying "I searched the web"
+            # when it did not.
+            raise ToolFailure(
+                reason=result.reason or result.state.value,
+                detail=f"{result.integration}:{result.operation}",
+            )
+
+        return self.summarise(result)
+
+
+__all__ = ["AsyncIntegrationTool", "IntegrationTool"]

@@ -185,7 +185,12 @@ def test_lookup_normalises_case_and_whitespace(registry, lookup) -> None:
 @pytest.mark.parametrize(
     "lookup",
     ["ech", "echo2", "echoo", "ec ho", "e-c-h-o", "echo_tool", "future_delete",
-     "delete_all_files", "send_email", "web_search"],
+     "delete_all_files", "send_email",
+     # `web_search` became real in Stage 4F-B, so it moved out of this list.
+     # Its near-misses replace it: the property being protected is that
+     # adjacency never resolves, and a registered name makes that testable
+     # from both sides.
+     "websearch", "web-search", "search_web", "web_search2", "web_searches"],
 )
 def test_lookup_is_never_fuzzy(registry, lookup) -> None:
     """`delete_all_files` must not find `future_delete_file`."""
@@ -244,11 +249,12 @@ def test_the_catalogue_registers_the_expected_tools(registry) -> None:
         "future_web_search",
         "list_workspace_files",
         "read_text_file",
+        "web_search",
     )
 
 
-def test_only_the_three_workspace_tools_are_executable(registry) -> None:
-    """Stage 4E added exactly three, and named them.
+def test_only_the_expected_tools_are_executable(registry) -> None:
+    """Stage 4E added three; Stage 4F-B added a fourth, and named it.
 
     The pair of assertions matters more than either alone: the first pins the
     set, the second pins the complement. Adding a fourth executable tool fails
@@ -260,7 +266,9 @@ def test_only_the_three_workspace_tools_are_executable(registry) -> None:
         for name in registry.names()
         if registry.definition(name).execution_mode is not ExecutionMode.UNAVAILABLE
     )
-    assert executable == ("create_text_file", "list_workspace_files", "read_text_file")
+    assert executable == (
+        "create_text_file", "list_workspace_files", "read_text_file", "web_search",
+    )
 
     for name in registry.names():
         if name in executable:
@@ -271,8 +279,16 @@ def test_only_the_three_workspace_tools_are_executable(registry) -> None:
 
 
 def test_every_executable_tool_requires_approval(registry) -> None:
-    """Including the read-only ones. Reading is lower risk, not no risk."""
-    for name in ("create_text_file", "read_text_file", "list_workspace_files"):
+    """Including the read-only ones. Reading is lower risk, not no risk.
+
+    `web_search` retains approval too, and that was a decision rather than an
+    oversight: it is read-only, but it is the one tool that sends what the
+    user asked about to a third party. A per-query approval is exactly where
+    a person gets to decide whether that is acceptable for this query.
+    """
+    for name in (
+        "create_text_file", "read_text_file", "list_workspace_files", "web_search",
+    ):
         assert registry.definition(name).requires_approval is True, name
 
 

@@ -112,17 +112,34 @@ def test_the_registry_is_immutable_once_sealed() -> None:
         registry.register(FakeIntegration())
 
 
-def test_the_shipped_registry_is_empty_and_sealed() -> None:
-    """Stage 4F-A connects nothing. The road exists; nothing is on it."""
+def test_the_shipped_registry_holds_exactly_one_integration() -> None:
+    """Stage 4F-A connected nothing. Stage 4F-B connects exactly one.
+
+    Exact rather than a minimum: a second integration appearing without this
+    test being updated would mean an external service became reachable
+    without anyone deciding it should.
+    """
     from app.integrations.registry import get_integration_registry
 
     registry = get_integration_registry()
-    assert registry.names() == ()
+    assert registry.names() == ("web_search",)
     assert registry.sealed is True
 
 
-def test_building_the_catalogue_registers_nothing() -> None:
-    assert len(build_integrations(IntegrationRegistry())) == 0
+def test_building_the_catalogue_registers_only_web_search() -> None:
+    registry = build_integrations(IntegrationRegistry())
+
+    assert registry.names() == ("web_search",)
+
+
+def test_the_shipped_search_integration_is_read_only() -> None:
+    """One operation, and it declares itself free of side effects."""
+    from app.integrations.registry import get_integration_registry
+
+    integration = get_integration_registry().require("web_search")
+
+    assert integration.operation_names() == ("search",)
+    assert integration._operations["search"].has_side_effect is False
 
 
 # --- The operation contract -------------------------------------------------

@@ -217,6 +217,12 @@ class Settings(BaseSettings):
     MAX_WORKSPACE_LIST_RESULTS: int = 500
     MAX_WORKSPACE_LIST_DEPTH: int = 6
 
+    # --- Web research (Stage 4F-B) ---
+    # No key ships and none is invented. Absent, the integration reports
+    # NOT_CONFIGURED and the capability reports itself unavailable -- which
+    # is the honest state of a deployment with no search provider.
+    SEARCH_API_KEY: str = ""
+
     # --- Knowledge lifecycle (Stage 3C) ---
     # Conflict evaluation runs in the background pipeline after relationship
     # extraction. It adds no model calls anywhere. Disabling it stops new
