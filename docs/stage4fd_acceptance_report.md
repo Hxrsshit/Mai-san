@@ -184,10 +184,8 @@ a human decision; it bypasses nothing.
 
 ## 10. Known limitations
 
-- **A successful live search has never been observed.** No valid
-  `SEARCH_API_KEY` exists. Every success-path test drives a stub transport
-  through the real integration, client and policy — only the socket is
-  replaced — so no real result, source or attribution has been seen end to end.
+- ~~A successful live search has never been observed.~~ **Closed** — see
+  §13. A real Tavily search was performed end to end on 2026-09-08.
 - **Only one phrase table identifies research.** "What's the latest on X?" is
   not recognised. Broadening it is a matching problem, not a security one, and
   Stage 4D's rule applies: a phrase broad enough to catch a paraphrase is
@@ -202,13 +200,134 @@ a human decision; it bypasses nothing.
 
 ## 11. Recommendation
 
-The obvious next step is not a stage. It is **obtaining a Brave Search API key
-and re-running the live verification**, because the one thing this stage
-cannot claim is that a real search has ever succeeded. Everything else is
-verified; that single gap is worth closing before building anything on top of
-research.
+The live-search gap is closed (§13). Stage 4F-E or a broader research UI are
+both reasonable next steps.
 
-After that, Stage 4F-E or a broader research UI both become reasonable.
+The one thing worth doing first is smaller: **decide whether the query should
+remain the user's whole message.** The live run searched for the literal
+string "search the web for what Groq is" and Tavily returned good results
+anyway, but that is the provider being tolerant rather than Mai being precise.
+Extracting a search term needs a model call on a path that currently makes
+none, so it is a real design decision rather than a tidy-up.
+
+---
+
+# 13. Live verification — Tavily (2026-09-08)
+
+**The Stage 4F-D acceptance gap is closed.** A real search was performed
+against Tavily, end to end, through the unmodified pipeline.
+
+The operator configured `SEARCH_PROVIDER=tavily` and `SEARCH_API_KEY` in
+`.env` themselves. The credential was never handled, printed or read back
+during verification; every check below was written to emit counts and
+booleans only.
+
+### Turn 1 — `awaiting_confirmation`, nothing sent
+
+```
+outcome:         awaiting_confirmation
+execution state: proposed
+journal:         ['proposed']
+external request made: False
+```
+
+The journal is the proof: `execution_started` is absent, so the dispatcher
+was never reached and no packet left the process.
+
+### Turn 2 — `completed`, with real results
+
+```
+outcome:         completed
+execution state: succeeded
+journal:         ['proposed', 'approved', 'execution_started', 'execution_succeeded']
+result_count:    5
+```
+
+Real titles and URLs, including `en.wikipedia.org/wiki/Groq`,
+`console.groq.com/docs/...` and `www.linkedin.com/...`. The assistant's reply
+attributed each claim to its source.
+
+Run twice: once against the service directly, and once through the real HTTP
+chat API with LLM synthesis. Both produced the same outcomes.
+
+### The transport path
+
+```
+client type:      SecureHttpClient
+allowed_hosts:    ['api.tavily.com']
+allowed_methods:  ['POST']
+follow_redirects: False        max_response_bytes: 1,000,000
+timeouts:         connect=5s read=10s total=20s
+```
+
+### POST is scoped, not a generic capability
+
+Refused at the real client boundary, with the real policy, nothing dialled:
+
+| Attempt | Result |
+|---|---|
+| `https://attacker.test/x` | refused — `destination_not_allowed` |
+| `https://127.0.0.1/x` | refused |
+| `https://169.254.169.254/latest/meta-data/` | refused |
+| `https://api.tavily.com.evil.test/search` | refused |
+| `http://api.tavily.com/search` (plain HTTP) | refused |
+| `https://api.tavily.com:22/search` | refused |
+| `file:///etc/passwd` | refused |
+| `GET` on the research client | refused — `method` |
+
+`PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, `CONNECT` and `TRACE` are
+permitted by neither policy, `SecureHttpClient` exposes no generic verb, a
+Brave deployment's client remains GET-only, and neither client can reach the
+other's host.
+
+### Credential isolation — all clear
+
+| Surface | Occurrences |
+|---|---|
+| Backend container logs (800 lines) | 0 |
+| Database logs | 0 |
+| `execution_events` (audit journal) | 0 |
+| `executions` (arguments, result summary) | 0 |
+| `messages` | 0 |
+| `memories` | 0 |
+| Assembled model prompt (`/api/prompt/debug`) | 0 |
+| Runtime facts, and the rendered facts block | 0 |
+| The results block sent to the model | 0 |
+| Conversation API, tools API, health | 0 |
+| Frontend page | 0 |
+| Error messages at HTTP 400/401/403/429/500/503 | 0 |
+
+The error check used a transport that echoes the request headers back — a
+provider behaving as badly as one plausibly could — and the key still did not
+surface.
+
+### Tavily's `answer` is not used as Mai's answer
+
+Sentinel values were injected into a stubbed response. None reached the block:
+
+| Field | In the block? |
+|---|---|
+| `answer` (`TAVILY_SYNTHESISED_ANSWER_SENTINEL`) | No |
+| `request_id` | No |
+| `raw_content` | No |
+| `score` | No |
+| `content` (the snippet) | **Yes** — as untrusted external data |
+
+`trust_level=untrusted`, `source=web_search`. Passing `answer` through would
+let the search provider write part of Mai's reply.
+
+### Frontend
+
+The full consent exchange renders in the existing UI — request, confirmation
+prompt, "yes", and the source-attributed answer — with **no frontend change**
+and zero console errors.
+
+### Conditions
+
+`EXECUTION_ENABLED=true` was set for the duration of the run and **restored to
+`false`** afterwards, which is the shipped default. No code was modified, no
+security control was weakened or bypassed, and no defect was found. The suite
+remained at 2633 passing with one expected skip.
 
 ## 12. Outstanding user actions (unchanged)
 
