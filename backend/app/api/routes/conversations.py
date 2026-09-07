@@ -24,7 +24,12 @@ from app.intent.schemas import IntentRead
 from app.orchestration.schemas import OrchestrationRead
 from app.planning.schemas import PlanningRead
 from app.memory.tasks import run_memory_extraction
-from app.schemas.message import ChatResponse, MessageCreate, MessageRead
+from app.schemas.message import (
+    ChatResponse,
+    MessageCreate,
+    MessageRead,
+    ResearchRead,
+)
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -131,6 +136,7 @@ async def send_message(
         intent,
         planning,
         orchestration,
+        research,
     ) = await chat.send_message(
         conversation_id=conversation_id, content=payload.content
     )
@@ -170,6 +176,10 @@ async def send_message(
         # Stage 4D outcome. Reported with `executed: false` on the wire so
         # a client cannot mistake an authorization decision for a result.
         orchestration=OrchestrationRead.from_result(orchestration),
+        # Stage 4F-D. Reported so a client can tell a confirmation prompt
+        # apart from an answer -- and so "did a search actually run?" is a
+        # field rather than something to infer from the reply text.
+        research=ResearchRead.from_result(research),
     )
 
 

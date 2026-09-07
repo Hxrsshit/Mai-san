@@ -86,3 +86,55 @@ class ChatResponse(BaseModel):
     #: no executor. An outcome of `action_allowed_not_executed` is named that
     #: way so a client cannot read permission as completion.
     orchestration: Optional[OrchestrationRead] = None
+
+    #: Stage 4F-D. Whether this turn proposed, ran, or declined a web search.
+    #:
+    #: The fourth sibling, and the first one where something can actually have
+    #: happened. `searched` is true only when a search genuinely ran and
+    #: returned results -- it is derived from the execution record's state,
+    #: not from the reply text, so a client can distinguish "Mai answered from
+    #: what it knows" from "Mai answered from sources" without parsing prose.
+    #:
+    #: `awaiting_confirmation` is the state that matters for a UI: the reply
+    #: is a question, and the user's next message decides whether anything is
+    #: sent to a search provider.
+    research: Optional["ResearchRead"] = None
+
+
+class ResearchRead(BaseModel):
+    """Stage 4F-D research state for one turn. Carries no result content.
+
+    Deliberately no `results` field. The retrieved content is external and
+    untrusted; it goes to the model inside a labelled, fenced prompt section
+    and is summarised in the reply. Handing the raw block to a client as
+    structured data would invite a UI to render it as though Mai had said it.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    outcome: str
+    #: True only for a search that ran and returned results.
+    searched: bool = False
+    #: Present once a query has been identified, so a UI can show exactly
+    #: what would be sent before the user confirms.
+    query: str = ""
+    result_count: int = 0
+    #: An application reason code when a search failed. Never a provider
+    #: message.
+    reason: Optional[str] = None
+
+    @classmethod
+    def from_result(cls, result) -> Optional["ResearchRead"]:
+        """Project a `ResearchResult`, or `None` for an ordinary turn."""
+        from app.research.schemas import ResearchOutcome
+
+        if result is None or result.outcome is ResearchOutcome.NOT_RESEARCH:
+            return None
+
+        return cls(
+            outcome=result.outcome.value,
+            searched=result.succeeded,
+            query=result.query,
+            result_count=result.result_count,
+            reason=result.reason,
+        )

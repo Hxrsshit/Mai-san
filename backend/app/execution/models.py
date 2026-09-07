@@ -138,6 +138,23 @@ class Execution(Base):
     #: two concurrent creates cannot see each other's uncommitted row.
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
 
+    #: The conversation this execution was proposed from, when it came from
+    #: chat. NULL for executions created through the execution API.
+    #:
+    #: Added in Stage 4F-D so a chat turn can find the proposal its own
+    #: previous turn made. It is also the right model independently: an
+    #: execution proposed from a conversation belongs to it, and an audit
+    #: reader asking "where did this come from?" should not have to guess.
+    #:
+    #: `ondelete="SET NULL"` rather than CASCADE: deleting a conversation
+    #: must not delete the record that something was executed. The journal
+    #: outlives the chat that started it.
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     #: A bounded sentence from the tool. Never raw output.
     result_summary: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     #: An application constant. Never an exception string or a traceback.
@@ -166,6 +183,7 @@ class Execution(Base):
         Index("ix_executions_state", "state"),
         Index("ix_executions_tool_name", "tool_name"),
         Index("ix_executions_created_at", "created_at"),
+        Index("ix_executions_conversation_id", "conversation_id"),
         # An approved execution must carry the fingerprint it was approved
         # against and an expiry. Without both, "is this approval still valid?"
         # has no answer, and the safe reading of no answer is no.

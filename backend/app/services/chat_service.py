@@ -34,6 +34,8 @@ from app.context.service import ContextService
 from app.core.config import Settings, get_settings
 from app.core.errors import LLMError
 from app.core.logging import get_logger
+from app.research.schemas import ResearchResult
+from app.research.service import ResearchService
 from app.database.models import Conversation, Message, MessageRole
 from app.intent.schemas import IntentResult
 from app.intent.service import IntentService
@@ -61,6 +63,7 @@ class ChatService:
         intent_service: Optional[IntentService] = None,
         planning_service: Optional[PlanningService] = None,
         orchestration_service: Optional[OrchestrationService] = None,
+        research_service: Optional["ResearchService"] = None,
     ) -> None:
         self._session = session
         self._provider = provider
@@ -69,6 +72,9 @@ class ChatService:
         self._context = context_service or ContextService(session, self._settings)
         self._formatter = prompt_formatter or PromptFormatter(
             self._settings.MAI_SYSTEM_PROMPT
+        )
+        self._research = research_service or ResearchService(
+            session, settings=self._settings
         )
         self._intent = intent_service or IntentService(
             session=session, provider=provider, settings=self._settings
@@ -82,11 +88,14 @@ class ChatService:
 
     async def send_message(
         self, conversation_id: uuid.UUID, content: str
-    ) -> Tuple[Message, Message, IntentResult, PlanningResult, OrchestrationResult]:
+    ) -> Tuple[
+        Message, Message, IntentResult, PlanningResult, OrchestrationResult,
+        ResearchResult,
+    ]:
         """Handle one user turn.
 
         Returns (user_message, assistant_message, intent, planning,
-        orchestration).
+        orchestration, research).
 
         Raises ConversationNotFoundError if the conversation does not exist,
         or an LLMError subclass if the model call fails. Nothing between those
@@ -130,7 +139,31 @@ class ChatService:
         # cannot be acted on -- there is no executor anywhere below it.
         orchestration = self._orchestration.orchestrate(content, intent)
 
-        prompt, timings = await self._build_prompt(conversation_id, content)
+        # Stage 4F-D. The one place a chat turn can cause a side effect, and
+        # only for the single read-only tool named in
+        # `CHAT_CONFIRMABLE_TOOLS`, and only after the user confirmed the
+        # exact query on the previous turn.
+        #
+        # Adds no model call: identification reuses Stage 4D's phrase table,
+        # confirmation is a phrase table, and the proposal text is written in
+        # application code. A turn that proposes a search costs *less* than an
+        # ordinary turn, because it answers without the model at all.
+        research = await self._research.handle(conversation_id, content, intent)
+
+        if research.has_reply:
+            # The application is answering. A confirmation prompt, a refusal
+            # or a "no provider configured" is application text on purpose:
+            # it must be exactly true, and a model asked to phrase it could
+            # embellish -- "I'll search now" instead of "may I search?" is a
+            # small difference that would matter a great deal.
+            return await self._answer_without_the_model(
+                conversation, conversation_id, content, research,
+                intent, planning, orchestration,
+            )
+
+        prompt, timings = await self._build_prompt(
+            conversation_id, content, research=research
+        )
         prepare_ms = round((time.perf_counter() - started) * 1000, 2)
 
         user_message = await self._conversations.add_message(
@@ -156,6 +189,9 @@ class ChatService:
                 "planning_status": planning.status.value,
                 "action_outcome": orchestration.outcome.value,
                 "action_proposals": len(orchestration.proposals),
+                "research_outcome": research.outcome.value,
+                "research_results": research.result_count,
+                "research_chars": prompt.stats.research_chars,
                 "plan_tasks": planning.plan.task_count if planning.plan else 0,
                 # The Stage 3B guarantee, recorded on every turn: exactly
                 # one response *generation* call. Stage 4A adds at most one
@@ -166,8 +202,11 @@ class ChatService:
                 "request_path_planning_calls": planning.model_calls,
                 # Stage 4D adds none: identification is deterministic.
                 "request_path_orchestration_calls": orchestration.model_calls,
-                # Nothing was executed, on any turn, ever.
-                "actions_executed": 0,
+                # Stage 4F-D adds none either.
+                "request_path_research_calls": research.model_calls,
+                # Stage 4F-D: a confirmed web search is an execution, and it
+                # is counted. Every other turn is still zero.
+                "actions_executed": 1 if research.succeeded else 0,
                 # Retrieval and assembly time is reported in more detail by
                 # their own log lines; these are the totals as chat sees them.
                 "assembly_ms": timings.get("assembly_ms"),
@@ -203,7 +242,56 @@ class ChatService:
                 "total_tokens": llm_response.usage.get("total_tokens"),
             },
         )
-        return user_message, assistant_message, intent, planning, orchestration
+        return (
+            user_message, assistant_message, intent, planning, orchestration,
+            research,
+        )
+
+    async def _answer_without_the_model(
+        self, conversation, conversation_id, content, research,
+        intent, planning, orchestration,
+    ):
+        """Persist a turn the application answered itself. No model call.
+
+        Used for a confirmation prompt, a decline, and the two "cannot search"
+        cases. The reply is written in `app/research/service.py`, so it is
+        exactly true by construction -- there is no model in the loop to
+        rephrase "may I search?" into "I searched".
+
+        Everything else about the turn is normal: the user message is stored,
+        the conversation is titled and touched, and the caller receives the
+        same shape it always does.
+        """
+        user_message = await self._conversations.add_message(
+            conversation_id=conversation_id,
+            role=MessageRole.USER,
+            content=content,
+        )
+        await self._conversations.maybe_autotitle(conversation, content)
+
+        assistant_message = await self._conversations.add_message(
+            conversation_id=conversation_id,
+            role=MessageRole.ASSISTANT,
+            content=research.reply,
+        )
+        await self._conversations.touch_conversation(conversation)
+
+        logger.info(
+            "Chat turn answered by the application",
+            extra={
+                "conversation_id": str(conversation_id),
+                "research_outcome": research.outcome.value,
+                # The guarantee worth recording: this turn cost nothing.
+                "request_path_generation_calls": 0,
+                "request_path_research_calls": research.model_calls,
+                "actions_executed": 0,
+            },
+        )
+
+        return (
+            user_message, assistant_message, intent, planning, orchestration,
+            research,
+        )
 
     async def start_conversation_with_message(
         self, content: str, title: Optional[str] = None
@@ -230,7 +318,10 @@ class ChatService:
     # formatter; none of it decides how a message is worded or ordered.
 
     async def _build_prompt(
-        self, conversation_id: uuid.UUID, content: str
+        self,
+        conversation_id: uuid.UUID,
+        content: str,
+        research: Optional[ResearchResult] = None,
     ) -> Tuple[FormattedPrompt, Dict[str, float]]:
         """Assemble, then format. Never raises.
 
@@ -256,11 +347,18 @@ class ChatService:
         # combined cost of Stage 2D plus Stage 3A as the request path sees it.
         timings["assembly_ms"] = round((time.perf_counter() - started) * 1000, 2)
 
+        # A formatter carrying this turn's results, or the shared one. Never
+        # the shared instance mutated: results left on it would appear in the
+        # next turn of an unrelated conversation.
+        formatter = self._formatter
+        if research is not None and research.results_block:
+            formatter = self._formatter.with_research(research.results_block)
+
         started = time.perf_counter()
         try:
             if package is not None:
                 try:
-                    return self._formatter.format(package), timings
+                    return formatter.format(package), timings
                 except Exception as exc:  # noqa: BLE001 - chat must still answer
                     logger.error(
                         "Prompt formatting failed; falling back to a minimal prompt",
@@ -270,6 +368,10 @@ class ChatService:
                         },
                         exc_info=exc,
                     )
+                    # The fallback deliberately carries no research block.
+                    # If formatting failed, the safest prompt is the smallest
+                    # one -- and external content is the last thing to
+                    # reintroduce through a degraded path.
                     return (
                         self._formatter.fallback(
                             content, self._safe_recent_of(package)

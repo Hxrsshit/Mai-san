@@ -12,7 +12,7 @@ path leads from a generated reply to `create()`, let alone to `run()`.
 
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -74,7 +74,11 @@ class ExecutionService:
 
     # --- Propose ------------------------------------------------------------
 
-    async def create(self, request: ExecutionRequest) -> Execution:
+    async def create(
+        self,
+        request: ExecutionRequest,
+        conversation_id: Optional[uuid.UUID] = None,
+    ) -> Execution:
         """Record a proposed execution. Runs nothing.
 
         The authorization decision is taken now and stored, so a client can be
@@ -114,6 +118,10 @@ class ExecutionService:
             authorization_status=decision.status,
             risk_level=decision.risk_level,
             idempotency_key=key,
+            # Set only when the proposal came from a chat turn. Executions
+            # created through the API leave it NULL, which is also what makes
+            # them unconfirmable from chat.
+            conversation_id=conversation_id,
         )
         self._session.add(execution)
 
@@ -224,7 +232,26 @@ class ExecutionService:
     # --- Run ----------------------------------------------------------------
 
     async def run(self, execution_id: uuid.UUID) -> Execution:
-        """Attempt the action. Every gate lives in the dispatcher.
+        """Attempt the action, discarding the tool's returned data.
+
+        The data is genuinely discarded rather than quietly persisted: it can
+        contain content from outside, and the execution record is not where
+        that belongs. A caller who needs it asks for it explicitly.
+        """
+        execution, _ = await self.run_returning_outcome(execution_id)
+        return execution
+
+    async def run_returning_outcome(
+        self, execution_id: uuid.UUID
+    ) -> Tuple[Execution, Optional[ExecutionOutcome]]:
+        """Attempt the action and return what the tool produced.
+
+        Separate from `run` so that wanting the data is a deliberate act. The
+        outcome carries external content -- for a search, whole pages of it --
+        and a caller that receives it by default is a caller that will
+        eventually log it.
+
+        Every gate lives in the dispatcher.
 
         This method's own job is bookkeeping: it records what happened,
         including the refusals. A refused attempt is a journal entry, not a
@@ -262,7 +289,7 @@ class ExecutionService:
                 **dict(outcome.audit_metadata or {}),
             },
         )
-        return execution
+        return execution, outcome
 
     async def _record_refusal(
         self, execution: Execution, refusal: ExecutionError

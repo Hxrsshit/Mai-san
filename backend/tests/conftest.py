@@ -402,3 +402,132 @@ async def concurrent_session_factory(tmp_path) -> AsyncIterator[
     yield async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def research_client(
+    session_factory, fake_provider, execution_settings, workspace, monkeypatch
+) -> AsyncIterator[AsyncClient]:
+    """A chat client with research enabled and a stubbed search provider.
+
+    The search integration is real -- real `SecureHttpClient`, real
+    `NetworkPolicy` -- with only the socket replaced by a stub transport. So
+    what these tests exercise is the code that would run against a live
+    provider, which is what makes them worth more than mocking the service.
+    """
+    import app.main as main_module
+    from app.execution.dispatcher import Dispatcher
+    from app.execution.service import ExecutionService
+    from app.execution.tools import ExecutableRegistry
+    from app.execution.web_search_tool import WebSearchTool
+    from app.integrations.credentials import EnvironmentCredentialResolver
+    from app.integrations.registry import IntegrationRegistry
+    from app.integrations.web_search import WebSearchIntegration
+    from app.prompt.formatter import PromptFormatter
+    from app.research.service import ResearchService
+    from app.runtime.facts import build as build_runtime_facts
+    from app.services.chat_service import ChatService
+    from app.tools.authorization import AuthorizationService
+    from app.tools.catalog import build_catalog
+    from app.tools.registry import ToolRegistry
+    from tests.support.stub_transport import StubTransport, brave_payload
+
+    execution_settings.SEARCH_API_KEY = "SEARCH_SECRET_123"
+    monkeypatch.setattr(main_module, "get_settings", lambda: execution_settings)
+
+    transport = StubTransport(payload=brave_payload(count=2))
+
+    def resolve(host, port):
+        return [(2, 1, 6, "", ("93.184.216.34", port))]
+
+    integration = WebSearchIntegration(
+        credentials=EnvironmentCredentialResolver(
+            environ={"SEARCH_API_KEY": "SEARCH_SECRET_123"}
+        ),
+        transport=transport,
+        resolve=resolve,
+    )
+    integrations = IntegrationRegistry()
+    integrations.register(integration)
+    integrations.seal()
+
+    tools = build_catalog(ToolRegistry())
+    executable = ExecutableRegistry()
+    executable.register(WebSearchTool())
+
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            if session.in_transaction():
+                await session.commit()
+
+    from fastapi import Depends
+
+    def override_chat(session: AsyncSession = Depends(get_db_session)):
+        """Built on the *request's* session, not a second one.
+
+        This matters more than it looks: the route commits the request
+        session, so a chat service holding a different one would write a
+        proposal that the next turn could never see. Sharing the session is
+        also what production does -- the dependency graph gives every service
+        in a request the same one.
+        """
+        authorization = AuthorizationService(registry=tools)
+        executions = ExecutionService(
+            session,
+            settings=execution_settings,
+            authorization=authorization,
+            dispatcher=Dispatcher(
+                session, settings=execution_settings,
+                authorization=authorization, registry=executable,
+                integrations=integrations,
+            ),
+            executable=executable,
+        )
+        return ChatService(
+            session=session,
+            provider=fake_provider,
+            settings=execution_settings,
+            # The same formatter production builds -- with runtime facts.
+            # Constructing a bare one here would quietly drop the authoritative
+            # facts section and make every ordering assertion below test a
+            # prompt shape that does not exist outside this fixture.
+            prompt_formatter=PromptFormatter(
+                system_prompt=execution_settings.MAI_SYSTEM_PROMPT,
+                runtime_facts=build_runtime_facts(
+                    settings=execution_settings, provider=fake_provider
+                ),
+            ),
+            research_service=ResearchService(
+                session,
+                settings=execution_settings,
+                executions=executions,
+                integrations=integrations,
+            ),
+        )
+
+    from app.api.deps import get_chat_service
+
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    app.dependency_overrides[get_settings] = lambda: execution_settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_chat_service] = override_chat
+
+    transport_holder = transport
+    transport_client = AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    )
+    transport_client.search_transport = transport_holder
+    transport_client.search_integration = integration
+
+    async with transport_client as http_client:
+        yield http_client
+
+    app.dependency_overrides.clear()

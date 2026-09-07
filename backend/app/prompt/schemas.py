@@ -37,6 +37,19 @@ class PromptSection(str, Enum):
     RUNTIME_FACTS = "runtime_facts"
     REFERENCE_KNOWLEDGE = "reference_knowledge"
     CONVERSATION = "conversation"
+    #: Web search results for *this* turn, from Stage 4F-D.
+    #:
+    #: Below the conversation and above the current message. The position is
+    #: argued rather than convenient: it is the least trusted content in the
+    #: prompt, written by strangers, so it must sit beneath the system
+    #: instructions, the runtime facts and the user's own history -- and it
+    #: pertains only to the question being asked now, so it belongs adjacent
+    #: to it rather than filed with long-term knowledge.
+    #:
+    #: The current message stays last. Stage 3B's reasoning holds: the model
+    #: should see what is being asked closest to its own turn, and results are
+    #: material for answering that question rather than the question itself.
+    RESEARCH_RESULTS = "research_results"
     CURRENT_MESSAGE = "current_message"
 
 
@@ -72,6 +85,8 @@ class PromptStats(BaseModel):
     instruction_chars: int = 0
     runtime_fact_chars: int = 0
     reference_chars: int = 0
+    #: Size of the Stage 4F-D search results section, when present.
+    research_chars: int = 0
     conversation_chars: int = 0
     current_message_chars: int = 0
     total_chars: int = 0
