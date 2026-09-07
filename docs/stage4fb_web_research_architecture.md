@@ -357,3 +357,49 @@ hand.
 None. Part 27 prefers a simple request-path implementation, and a cache would
 mean storing query content — which can be personal — with a TTL and a privacy
 story to write. Not built.
+
+---
+
+## Addendum — a second provider (Stage 4F-D live verification)
+
+This document describes the integration as originally built against **Brave**.
+Tavily was added later, and it is not a drop-in: it differs in host, HTTP verb,
+auth scheme and response shape.
+
+| | Brave | Tavily |
+|---|---|---|
+| Host | `api.search.brave.com` | `api.tavily.com` |
+| Endpoint | `/res/v1/web/search` | `/search` |
+| Method | `GET` with query parameters | **`POST`** with a JSON body |
+| Auth | `X-Subscription-Token: <key>` | `Authorization: Bearer <key>` |
+| Results at | `payload["web"]["results"]` | `payload["results"]` |
+| Snippet field | `description` | `content` |
+
+The differences live in a `SearchProvider` descriptor in `web_search.py` and
+are selected by the `SEARCH_PROVIDER` setting. An unrecognised value is
+refused rather than defaulted — silently falling back would send one
+provider's key to another.
+
+### The POST widening, stated plainly
+
+Stage 4F-C gave the research client `allowed_methods={"GET"}`, reasoning that
+a client which could POST could be talked into submitting a form. Tavily's API
+is POST-only, so **a Tavily deployment's research client holds POST**. That is
+a real widening and is recorded here rather than buried.
+
+What makes it acceptable is the line above it in the policy: `allowed_hosts`
+is a single constant taken from the descriptor, and the URL is built in
+`_search` from that same constant. The danger POST represented was submitting
+to *arbitrary* destinations, and exactly one destination is reachable. Each
+policy carries only its own provider's verb — never both — so a Brave
+deployment's client still cannot POST at all. Both properties are asserted in
+`tests/test_tavily_provider.py` and `tests/security/test_network_boundary.py`.
+
+### What Tavily returns that Mai ignores
+
+Tavily's response includes `answer`, its own synthesised summary of the
+results. Mai does not read it. Passing it through would let the search
+provider write part of Mai's reply — the external-data boundary exists
+precisely so that external text is quoted, not spoken. `score`, `raw_content`,
+`request_id` and `response_time` are ignored for the same reason they always
+were: they are not needed to attribute a claim to a source.

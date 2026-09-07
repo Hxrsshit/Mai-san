@@ -405,16 +405,29 @@ async def test_a_disabled_deployment_creates_no_execution_record(
 async def test_only_the_confirmed_query_reaches_the_provider(
     research_client: AsyncClient, conversation_id
 ) -> None:
-    """Not the conversation, not memories, not the system prompt."""
+    """Not the conversation, not memories, not the system prompt.
+
+    Checked against the **whole request** -- URL and body together -- rather
+    than the URL alone. Under a POST provider the query does not appear in
+    the URL at all, so a URL-only leak check would pass by finding nothing
+    and quietly stop testing anything.
+    """
+    from tests.support.stub_transport import sent_query
+
     await send(research_client, conversation_id, "My passport number is X1234567")
     await send(research_client, conversation_id, RESEARCH_REQUEST)
     await send(research_client, conversation_id, "yes")
 
-    dialled = research_client.search_transport.connections[0]
+    transport = research_client.search_transport
+    whole_request = (
+        transport.connections[0] + (transport.bodies[0] or b"").decode("utf-8")
+    ).lower()
 
-    assert "X1234567" not in dialled
-    assert "passport" not in dialled.lower()
-    assert "coffee" in dialled.lower()
+    assert "x1234567" not in whole_request
+    assert "passport" not in whole_request
+    # And the thing that *was* approved did travel, so the assertions above
+    # are not passing merely because nothing was sent.
+    assert "coffee" in sent_query(transport).lower()
 
 
 async def test_the_query_sent_is_the_query_the_user_was_shown(
@@ -426,7 +439,7 @@ async def test_the_query_sent_is_the_query_the_user_was_shown(
     the exact query and the fingerprint is taken over that same payload. What
     is dialled must be what was displayed.
     """
-    from urllib.parse import parse_qs, urlparse
+    from tests.support.stub_transport import sent_query
 
     body = await send(research_client, conversation_id, RESEARCH_REQUEST)
     shown = body["research"]["query"]
@@ -434,7 +447,6 @@ async def test_the_query_sent_is_the_query_the_user_was_shown(
 
     await send(research_client, conversation_id, "yes")
 
-    dialled = research_client.search_transport.connections[0]
-    sent = parse_qs(urlparse(dialled).query)["q"][0]
-
-    assert sent == shown
+    # Read whichever way the configured provider carries a query -- GET
+    # parameters or a POST body -- so this keeps checking under either.
+    assert sent_query(research_client.search_transport) == shown

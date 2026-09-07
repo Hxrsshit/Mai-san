@@ -198,8 +198,14 @@ def parse_results(
                 title=_bounded(item.get("title"), MAX_TITLE_CHARS),
                 url=url,
                 domain=_domain_of(url),
+                # Providers name this field differently: Brave sends
+                # `description`, Tavily sends `content`. Read by name, in
+                # order, so an unfamiliar provider yields a result with no
+                # snippet rather than an exception or a wrong field.
                 snippet=_bounded(
-                    item.get("description") or item.get("snippet"),
+                    item.get("description")
+                    or item.get("snippet")
+                    or item.get("content"),
                     MAX_SNIPPET_CHARS,
                 ),
             )

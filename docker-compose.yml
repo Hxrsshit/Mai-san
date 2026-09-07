@@ -51,6 +51,7 @@ services:
       # capability reports itself unavailable -- which is correct rather
       # than broken. No `:?` guard, unlike the keys the app cannot start
       # without: a deployment with no search provider is a supported one.
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-tavily}
       SEARCH_API_KEY: ${SEARCH_API_KEY:-}
       EXECUTION_ENABLED: ${EXECUTION_ENABLED:-false}
       MAX_CONTEXT_MESSAGES: ${MAX_CONTEXT_MESSAGES:-40}

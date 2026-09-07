@@ -277,7 +277,10 @@ async def test_the_credential_never_appears_in_the_request_url(
 async def test_the_credential_travels_only_in_the_provider_auth_header(
     db_session, execution_settings, workspace
 ) -> None:
-    from app.integrations.web_search import AUTH_HEADER
+    from app.integrations.web_search import PROVIDERS
+    from app.core.config import get_settings
+
+    chosen = PROVIDERS[get_settings().SEARCH_PROVIDER]
 
     transport = StubTransport(payload=brave_payload())
     environment = _environment(transport=transport)
@@ -286,11 +289,19 @@ async def test_the_credential_travels_only_in_the_provider_auth_header(
     await _search(service, key="cred-4")
 
     headers = transport.request_headers[0]
-    assert headers[AUTH_HEADER.lower()] == SECRET
-    # And in no other header.
+    # The provider's own scheme, applied by the integration. Tavily expects
+    # `Bearer <key>`, Brave expects the key bare -- what matters is that the
+    # secret appears in this header and nowhere else.
+    assert headers[chosen.auth_header.lower()] == f"{chosen.auth_prefix}{SECRET}"
     for name, value in headers.items():
-        if name.lower() != AUTH_HEADER.lower():
-            assert SECRET not in value
+        if name.lower() != chosen.auth_header.lower():
+            assert SECRET not in value, name
+
+    # Nor in the URL, nor in the request body. Tavily's API also accepts the
+    # key in the JSON body; putting it there would place it somewhere a
+    # request dump would show it.
+    assert SECRET not in transport.connections[0]
+    assert SECRET.encode() not in (transport.bodies[0] or b"")
 
 
 async def test_the_credential_never_reaches_the_model_prompt(
@@ -349,19 +360,31 @@ def test_no_tool_argument_can_carry_a_credential_or_a_url() -> None:
 async def test_the_search_receives_only_the_approved_query(
     db_session, execution_settings, workspace
 ) -> None:
-    """Not the conversation, not memories, not the context package."""
+    """Not the conversation, not memories, not the context package.
+
+    Asserted as an exact field set rather than an absence check: listing what
+    may be sent catches a new field being added, which "the memory is not in
+    here" would not.
+    """
+    import json
+    from urllib.parse import parse_qs, urlparse
+
+    from app.core.config import get_settings
+    from app.integrations.web_search import PROVIDERS
+
     transport = StubTransport(payload=brave_payload())
     environment = _environment(transport=transport)
     service = _service(db_session, execution_settings, environment)
 
     await _search(service, query="capital of France", key="min-1")
 
-    dialled = transport.connections[0]
-    query_string = dialled.split("?", 1)[1]
-    # Exactly three parameters, all of them from the approved payload.
-    assert sorted(part.split("=")[0] for part in query_string.split("&")) == [
-        "count", "q", "safesearch",
-    ]
+    chosen = PROVIDERS[get_settings().SEARCH_PROVIDER]
+    if chosen.method == "POST":
+        fields = sorted(json.loads(transport.bodies[0].decode()))
+        assert fields == ["max_results", "query", "search_depth"]
+    else:
+        sent = parse_qs(urlparse(transport.connections[0]).query)
+        assert sorted(sent) == ["count", "q", "safesearch"]
 
 
 async def test_unrelated_memories_are_not_sent_to_the_provider(

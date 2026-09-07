@@ -17,8 +17,9 @@ present the integration reports `NOT_CONFIGURED` and the capability reports
 itself unavailable. That is the honest state of this deployment.
 """
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, NamedTuple, Optional, Tuple
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.integrations.base import Integration, OperationSpec
 from app.integrations.credentials import (
@@ -49,15 +50,76 @@ from app.integrations.search import (
 
 logger = get_logger(__name__)
 
-#: The single host this integration may reach. Not configurable by anything a
-#: request can touch -- it is a constant in application code, so no setting,
-#: argument or model output can point the client somewhere else.
-SEARCH_HOST = "api.search.brave.com"
-SEARCH_URL = f"https://{SEARCH_HOST}/res/v1/web/search"
+class SearchProvider(NamedTuple):
+    """Everything that differs between one search API and another.
 
-#: The header the provider expects its key in. Applied by the HTTP client from
-#: a value the credential resolver produced; never assembled from an argument.
-AUTH_HEADER = "X-Subscription-Token"
+    A descriptor rather than a subclass, because the differences are data:
+    a host, a URL, a verb, a header name and how the query is carried. The
+    security properties -- single-host allow-list, no redirects, bounded
+    response, credential via the auth header -- are identical for every
+    provider and live in one place below.
+
+    Adding a provider means adding an entry here. It does not mean widening
+    anything: each descriptor's host is still a constant in application code,
+    so no setting, argument or model output can point the client elsewhere.
+    """
+
+    name: str
+    host: str
+    url: str
+    #: Brave takes a GET with query parameters; Tavily takes a POST with a
+    #: JSON body. This is the one difference that reaches the network policy.
+    method: str
+    auth_header: str
+    #: How the credential is formatted in that header. Brave sends the key
+    #: bare, Tavily expects the `Bearer` scheme.
+    auth_prefix: str = ""
+
+
+#: The two providers Mai can talk to. Both single-host, both read-only.
+PROVIDERS = {
+    "brave": SearchProvider(
+        name="brave",
+        host="api.search.brave.com",
+        url="https://api.search.brave.com/res/v1/web/search",
+        method="GET",
+        auth_header="X-Subscription-Token",
+    ),
+    "tavily": SearchProvider(
+        name="tavily",
+        host="api.tavily.com",
+        url="https://api.tavily.com/search",
+        method="POST",
+        auth_header="Authorization",
+        auth_prefix="Bearer ",
+    ),
+}
+
+DEFAULT_PROVIDER = "tavily"
+
+
+def resolve_provider(name: str) -> SearchProvider:
+    """The configured provider, or raise. Never guesses.
+
+    An unrecognised name is a configuration error and is refused rather than
+    defaulted: silently falling back would mean a deployment that thinks it
+    is talking to one provider is talking to another, with that provider's
+    key.
+    """
+    key = (name or "").strip().lower()
+    if key not in PROVIDERS:
+        raise ValueError(
+            f"unknown search provider {key!r}; expected one of "
+            f"{', '.join(sorted(PROVIDERS))}"
+        )
+    return PROVIDERS[key]
+
+
+#: Kept as module constants because tests and the network-boundary docs refer
+#: to them. They name the default provider's endpoint.
+SEARCH_HOST = PROVIDERS[DEFAULT_PROVIDER].host
+SEARCH_URL = PROVIDERS[DEFAULT_PROVIDER].url
+AUTH_HEADER = PROVIDERS[DEFAULT_PROVIDER].auth_header
 
 #: Read-only work, so retrying is safe in a way it is not for a send. Still
 #: bounded: three attempts, short backoff, and a hard total ceiling.
@@ -92,13 +154,20 @@ class WebSearchIntegration(Integration):
         client: Optional[SecureHttpClient] = None,
         transport=None,
         resolve=None,
+        provider: Optional[str] = None,
     ) -> None:
         # The client is built from *this integration's* policy, so the host
         # allow-list it enforces is the one declared below. Injectable so
         # tests drive it against a stub transport -- the policy still runs,
         # which is what makes an SSRF test at this boundary meaningful.
+        self._provider = resolve_provider(
+            provider
+            if provider is not None
+            else getattr(get_settings(), "SEARCH_PROVIDER", DEFAULT_PROVIDER)
+        )
         self._client = client or SecureHttpClient(
-            policy=self._policy(), transport=transport, resolve=resolve
+            policy=self._policy(self._provider), transport=transport,
+            resolve=resolve,
         )
         super().__init__(credentials=credentials, enabled=enabled)
 
@@ -118,16 +187,36 @@ class WebSearchIntegration(Integration):
     def credential_requirement(self) -> CredentialRequirement:
         return CredentialRequirement(
             identifier="web_search.api_key",
-            provider="brave",
+            provider=self._provider.name,
             credential_type=CredentialType.API_KEY,
             setting_name="SEARCH_API_KEY",
             required_scopes=frozenset({"search.read"}),
         )
 
     @staticmethod
-    def _policy() -> NetworkPolicy:
+    def _policy(provider: Optional[SearchProvider] = None) -> NetworkPolicy:
+        """One host, one verb, no redirects, bounded body.
+
+        **The verb is the provider's, and that is a widening worth naming.**
+        Stage 4F-C gave research `{"GET"}` on the reasoning that a client
+        which could POST could be talked into submitting a form. Tavily's
+        search API is POST-only, so a Tavily deployment's research client
+        holds POST.
+
+        What makes that acceptable is the line above it: `allowed_hosts` is a
+        single constant from the descriptor, and the URL is built in
+        `_search` from that same constant. The danger of POST was submitting
+        to *arbitrary* destinations, and there is exactly one destination
+        available. A test asserts the client still cannot reach anywhere
+        else, with either verb.
+
+        Each policy carries only its own provider's verb -- never both -- so
+        a Brave deployment's client remains incapable of POST.
+        """
+        chosen = provider or PROVIDERS[DEFAULT_PROVIDER]
         return NetworkPolicy(
-            allowed_hosts=frozenset({SEARCH_HOST}),
+            allowed_hosts=frozenset({chosen.host}),
+            allowed_methods=frozenset({chosen.method}),
             timeouts=SEARCH_TIMEOUTS,
             retries=SEARCH_RETRIES,
             # A search API has no reason to redirect. Refusing outright is
@@ -139,7 +228,7 @@ class WebSearchIntegration(Integration):
 
     @property
     def network_policy(self) -> NetworkPolicy:
-        return self._policy()
+        return self._policy(self._provider)
 
     async def _search(self, arguments: Dict[str, Any]) -> ExternalResult:
         """The one operation. Builds the request; never receives one.
@@ -153,27 +242,42 @@ class WebSearchIntegration(Integration):
         safe_search = "strict" if arguments.get("safe_search", True) else "moderate"
 
         secret = self._credentials.resolve_secret(self.credential_requirement)
+        chosen = self._provider
 
-        response = await self._client.get(
-            SEARCH_URL,
-            params={
-                "q": query,
-                "count": str(count),
-                "safesearch": safe_search,
-            },
-            # The credential travels as an auth header the client applies. It
-            # is never in `params` -- a query string is logged by proxies, is
-            # kept in provider access logs, and would land in any URL Mai
-            # recorded.
-            auth_header=(AUTH_HEADER, secret),
-        )
+        # The credential travels as an auth header the client applies. Never
+        # in a query string -- those are logged by proxies, kept in provider
+        # access logs, and would land in any URL Mai recorded -- and never in
+        # the JSON body, which Tavily also accepts but which would put the key
+        # somewhere a request dump would show it.
+        auth = (chosen.auth_header, f"{chosen.auth_prefix}{secret}")
+
+        if chosen.method == "POST":
+            response = await self._client.post_json(
+                chosen.url,
+                json_body={
+                    "query": query,
+                    "max_results": count,
+                    "search_depth": "basic",
+                },
+                auth_header=auth,
+            )
+        else:
+            response = await self._client.get(
+                chosen.url,
+                params={
+                    "q": query,
+                    "count": str(count),
+                    "safesearch": safe_search,
+                },
+                auth_header=auth,
+            )
 
         if response.status_code != 200:
             raise _error_for_status(response.status_code)
 
         payload = _decode(response.content)
         results = parse_results(
-            payload, query=query, provider=self.provider, max_results=count
+            payload, query=query, provider=chosen.name, max_results=count
         )
 
         logger.info(

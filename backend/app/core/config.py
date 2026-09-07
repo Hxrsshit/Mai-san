@@ -221,6 +221,14 @@ class Settings(BaseSettings):
     # No key ships and none is invented. Absent, the integration reports
     # NOT_CONFIGURED and the capability reports itself unavailable -- which
     # is the honest state of a deployment with no search provider.
+    #: Which search API `WebSearchIntegration` talks to.
+    #:
+    #: The providers differ in host, HTTP verb, auth header and response
+    #: shape, so this is not cosmetic -- it selects a descriptor in
+    #: `app.integrations.web_search.PROVIDERS`. An unrecognised value is
+    #: refused rather than defaulted, because silently falling back would
+    #: send one provider's key to another provider.
+    SEARCH_PROVIDER: str = "tavily"
     SEARCH_API_KEY: str = ""
 
     # --- Knowledge lifecycle (Stage 3C) ---

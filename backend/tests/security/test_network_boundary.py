@@ -220,37 +220,65 @@ def test_the_boundary_offers_no_unused_write_verb() -> None:
 # --- Both callers are narrower than the boundary ----------------------------
 
 
-def test_research_cannot_write_and_the_provider_cannot_read() -> None:
+def test_each_caller_permits_exactly_one_verb_and_one_host() -> None:
     """Method capability is per-policy, so each caller has only its own.
 
     Stage 4F-B expressed "research cannot submit a form" as the *absence* of a
-    `post` method on the client. Stage 4F-C needed POST for the provider, and
-    adding a general one would have handed research a write-capable client.
-    Moving the capability onto the policy keeps the guarantee and makes it
-    checkable per instance -- which is strictly stronger than the class-level
-    absence it replaces.
+    `post` method on the client. Stage 4F-C needed POST for the LLM provider,
+    and moving the capability onto the policy kept the guarantee while making
+    it checkable per instance.
+
+    Stage 4F-D's Tavily support then required POST for research too, because
+    Tavily's search API is POST-only. That is a genuine widening and is worth
+    stating rather than hiding: a Tavily deployment's research client can
+    POST.
+
+    What makes it safe is the second half of this test. Each policy is locked
+    to exactly one host, and that host is a constant in application code --
+    so the danger POST represented, submitting to *arbitrary* destinations,
+    has no destination to reach. A Brave deployment's client still cannot
+    POST at all.
     """
-    from app.integrations.web_search import WebSearchIntegration
+    from app.integrations.web_search import PROVIDERS, WebSearchIntegration
     from app.llm.transport import provider_policy
 
-    research = WebSearchIntegration.__dict__["_policy"].__func__()
-    provider = provider_policy("https://api.groq.com/openai/v1", 30.0)
+    llm = provider_policy("https://api.groq.com/openai/v1", 30.0)
+    assert llm.allowed_methods == frozenset({"POST"})
+    assert llm.allowed_hosts == frozenset({"api.groq.com"})
 
-    assert research.allowed_methods == frozenset({"GET"})
-    assert not research.permits("POST")
+    for name, descriptor in PROVIDERS.items():
+        research = WebSearchIntegration._policy(descriptor)
+        # Exactly one verb -- never a set that happens to include what it
+        # needs alongside what it does not.
+        assert research.allowed_methods == frozenset({descriptor.method}), name
+        assert research.allowed_hosts == frozenset({descriptor.host}), name
+        # And no research policy can reach the model provider, or vice versa.
+        assert "api.groq.com" not in research.allowed_hosts, name
+        assert descriptor.host not in llm.allowed_hosts, name
 
-    assert provider.allowed_methods == frozenset({"POST"})
-    assert not provider.permits("GET")
+
+def test_the_brave_research_client_still_cannot_write() -> None:
+    """The GET-only guarantee survives for the provider it was written for."""
+    from app.integrations.web_search import PROVIDERS, WebSearchIntegration
+
+    brave = WebSearchIntegration._policy(PROVIDERS["brave"])
+
+    assert brave.allowed_methods == frozenset({"GET"})
+    assert not brave.permits("POST")
 
 
 def test_neither_caller_permits_a_verb_nothing_uses() -> None:
     from app.integrations.web_search import WebSearchIntegration
     from app.llm.transport import provider_policy
 
-    for policy in (
-        WebSearchIntegration.__dict__["_policy"].__func__(),
-        provider_policy("https://api.groq.com/openai/v1", 30.0),
-    ):
+    from app.integrations.web_search import PROVIDERS
+
+    policies = [
+        WebSearchIntegration._policy(descriptor)
+        for descriptor in PROVIDERS.values()
+    ] + [provider_policy("https://api.groq.com/openai/v1", 30.0)]
+
+    for policy in policies:
         for verb in ("PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT",
                      "TRACE"):
             assert not policy.permits(verb), verb

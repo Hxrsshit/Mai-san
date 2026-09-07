@@ -103,10 +103,13 @@ async def test_the_integration_builds_the_url_itself() -> None:
 
     await integration.ainvoke("search", {"query": "what is groq"})
 
+    from tests.support.stub_transport import sent_query
+
     dialled = transport.connections[0]
     assert dialled.startswith(SEARCH_URL)
     assert SEARCH_HOST in dialled
-    assert "q=what+is+groq" in dialled or "q=what%20is%20groq" in dialled
+    # Read whichever way the configured provider carries the query.
+    assert sent_query(transport) == "what is groq"
 
 
 async def test_a_url_in_the_query_is_searched_for_not_fetched() -> None:

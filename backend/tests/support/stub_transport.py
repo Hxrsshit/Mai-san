@@ -34,6 +34,8 @@ class StubTransport(httpx.AsyncBaseTransport):
         self.request_headers: List[Dict[str, str]] = []
         #: Every request's body, so redirect body-dropping can be asserted.
         self.bodies: List[bytes] = []
+        #: The verb of each request, so a test can assert what was used.
+        self.methods: List[str] = []
         self._status = status_code
         self._payload = payload
         self._body = body
@@ -47,6 +49,7 @@ class StubTransport(httpx.AsyncBaseTransport):
         self.connections.append(str(request.url))
         self.request_headers.append(dict(request.headers))
         self.bodies.append(request.content)
+        self.methods.append(request.method)
 
         if self._raise is not None:
             raise self._raise
@@ -82,3 +85,59 @@ def brave_payload(count: int = 2) -> Dict[str, Any]:
             ]
         }
     }
+
+
+def tavily_payload(count: int = 2) -> Dict[str, Any]:
+    """A response shaped like Tavily's, from its published API reference.
+
+    Deliberately carries the fields Mai does *not* read -- `score`,
+    `raw_content`, `answer`, `request_id` -- so a test proves they are
+    ignored rather than merely absent.
+    """
+    return {
+        "query": "test",
+        "answer": "A synthesised answer Mai does not use.",
+        "request_id": "req-abc",
+        "response_time": 1.2,
+        "results": [
+            {
+                "title": f"Result {index}",
+                "url": f"https://source-{index}.example.org/page",
+                "content": f"Snippet for result {index}.",
+                "score": 0.9,
+                "raw_content": "<html>ignored</html>",
+            }
+            for index in range(1, count + 1)
+        ],
+    }
+
+
+def sent_query(transport, index: int = 0) -> str:
+    """The search query that actually reached the wire, whichever verb was used.
+
+    Providers disagree about where a query travels: Brave puts it in the query
+    string of a GET, Tavily puts it in the JSON body of a POST. A test that
+    reads one of those is a test that silently stops checking anything when
+    the configured provider changes -- it would pass by finding nothing.
+
+    So this reads whichever the request actually used, and raises if neither
+    is present rather than returning "" and letting an assertion compare two
+    empty strings.
+    """
+    import json
+    from urllib.parse import parse_qs, urlparse
+
+    url = transport.connections[index]
+    params = parse_qs(urlparse(url).query)
+    if "q" in params:
+        return params["q"][0]
+
+    body = transport.bodies[index]
+    if body:
+        payload = json.loads(body.decode("utf-8"))
+        if "query" in payload:
+            return str(payload["query"])
+
+    raise AssertionError(
+        f"no query found in request {index}: url={url!r} body={body!r}"
+    )
