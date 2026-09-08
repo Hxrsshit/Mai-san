@@ -55,19 +55,45 @@ def test_a_missing_api_key_is_reported_as_unconfigured_not_crashed() -> None:
 
 
 def test_an_unknown_provider_fails_with_a_useful_message_and_no_secret() -> None:
+    """The security half is unchanged: the message carries no credential."""
+    from app.llm.factory import UnknownProviderError
+
     settings = Settings(
         _env_file=None, LLM_PROVIDER="nonexistent", GROQ_API_KEY="SENTINEL-KEY-VALUE"
     )
 
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(UnknownProviderError) as caught:
         _ = settings.active_api_key
 
     message = str(caught.value)
     assert "nonexistent" in message
-    assert "NONEXISTENT_API_KEY" in message
-    # The message names the missing setting, never the value of another one.
+    # Stage 4F-F: the closed provider set is named, rather than a setting for
+    # a provider that does not exist.
+    assert "groq" in message and "anthropic_api" in message
+    # And no configured credential travels in it.
     assert "gsk_" not in message
     assert settings.GROQ_API_KEY not in message
+
+
+def test_an_unavailable_provider_says_why_and_carries_no_secret() -> None:
+    """`claude_subscription` is refused with its reason, not a typo message."""
+    from app.llm.factory import build_provider
+    from app.llm.gateway import ProviderUnavailable
+
+    settings = Settings(
+        _env_file=None,
+        LLM_PROVIDER="claude_subscription",
+        GROQ_API_KEY="SENTINEL-KEY-VALUE",
+        ANTHROPIC_API_KEY="SENTINEL-ANTHROPIC-VALUE",
+    )
+
+    with pytest.raises(ProviderUnavailable) as caught:
+        build_provider(settings)
+
+    message = str(caught.value)
+    assert "claude_subscription" in message
+    assert "claude.ai login" in message
+    assert "SENTINEL" not in message
 
 
 def test_no_setting_default_carries_a_credential() -> None:

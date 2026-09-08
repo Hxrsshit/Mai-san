@@ -436,5 +436,4 @@ class OpenAICompatibleProvider(LLMProvider):
             model=str(data.get("model") or self._model),
             finish_reason=first.get("finish_reason"),
             usage=usage if isinstance(usage, dict) else {},
-            raw=data,
         )

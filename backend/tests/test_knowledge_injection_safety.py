@@ -349,6 +349,8 @@ def test_no_new_llm_message_construction_site_was_added() -> None:
         "intent/classifier.py",  # Stage 4A: classification, not the chat prompt
         "planning/planner.py",  # Stage 4B: plan generation, not the chat prompt
         "llm/providers/openai_compatible.py",
+        # Stage 4F-F: the same one-token health probe, in the second provider.
+        "llm/providers/anthropic.py",
     }
 
     found = set()

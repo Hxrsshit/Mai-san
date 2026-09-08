@@ -30,7 +30,11 @@ class LLMResponse:
     model: str
     finish_reason: Optional[str] = None
     usage: Dict[str, Any] = field(default_factory=dict)
-    raw: Dict[str, Any] = field(default_factory=dict)
+
+    # No `raw` field. It used to carry the provider's entire response into
+    # application state, and nothing ever read it -- so it was pure exposure:
+    # whatever a provider chose to return, held in memory and reachable by any
+    # future logger or serialiser. Everything Mai needs is named above.
 
 
 @dataclass(frozen=True)

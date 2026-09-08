@@ -34,6 +34,10 @@ enforced, so a caller cannot smuggle a `Cookie`, an `Authorization` it built
 itself, or a `Host` override. `Content-Type` is set by this client when it is
 given a body, rather than accepted from a caller.
 
+A policy may widen that list by naming specific headers in
+`extra_request_headers`, which is how a provider sends a required protocol
+header such as `anthropic-version` without every caller gaining it.
+
 Bounded everywhere: connection, read and total time; response bytes read;
 decompressed bytes; and redirect hops. An external provider cannot make Mai
 wait forever or allocate without limit.
@@ -342,9 +346,13 @@ class SecureHttpClient:
             # disagree.
             built["content-type"] = "application/json"
 
+        permitted = ALLOWED_REQUEST_HEADERS | {
+            str(name).lower() for name in self._policy.extra_request_headers
+        }
+
         for name, value in (headers or {}).items():
             lowered = str(name).lower()
-            if lowered not in ALLOWED_REQUEST_HEADERS:
+            if lowered not in permitted:
                 # Refused, not dropped. A caller trying to set a header it
                 # may not set is a mistake worth surfacing.
                 raise NetworkPolicyViolation(detail="header")

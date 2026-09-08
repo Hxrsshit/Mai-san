@@ -204,6 +204,19 @@ class NetworkPolicy:
     #: that says nothing about methods cannot write. See `READ_ONLY_METHODS`.
     allowed_methods: FrozenSet[str] = READ_ONLY_METHODS
 
+    #: Extra request headers this caller may set, beyond the client's own
+    #: three. Empty by default.
+    #:
+    #: Some APIs require a protocol header -- Anthropic's Messages API rejects
+    #: a request without `anthropic-version`. Widening the client's global
+    #: allow-list would hand that header to every caller including web
+    #: research, so the permission lives on the policy instead, exactly as
+    #: method capability does. Each caller ends up narrower than the client.
+    #:
+    #: Names only. The *values* are still supplied by the calling code, and a
+    #: credential still travels by its own separate route.
+    extra_request_headers: FrozenSet[str] = frozenset()
+
     max_response_bytes: int = 2_000_000
     #: How many redirect hops may be followed. Each one is re-checked, so
     #: this bounds work rather than trust -- but an unbounded chain is a

@@ -155,6 +155,7 @@ def test_only_the_formatter_builds_prompt_messages() -> None:
         "intent/classifier.py",  # Stage 4A: classification, not the chat prompt
         "planning/planner.py",  # Stage 4B: plan generation, not the chat prompt
         "llm/providers/openai_compatible.py",  # health probe ping
+        "llm/providers/anthropic.py",  # Stage 4F-F: the same health probe ping
     }
 
     found = set()

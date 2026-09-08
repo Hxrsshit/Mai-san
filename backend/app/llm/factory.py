@@ -7,37 +7,65 @@ Nothing else in the application needs to know which backend is active.
 from typing import Callable, Dict, Optional
 
 from app.core.config import Settings, get_settings
-from app.core.errors import MaiError
 from app.core.logging import get_logger
 from app.llm.base import LLMProvider
+from app.llm.gateway import (
+    ProviderMode,
+    UnknownProviderMode,
+    require_available,
+    resolve_mode,
+)
+from app.llm.providers.anthropic import AnthropicProvider
 from app.llm.providers.groq import GroqProvider
 
 logger = get_logger(__name__)
 
-# name -> builder. Adding a provider is one line here plus one file
-# under `providers/`; nothing above the abstraction changes.
-_REGISTRY: Dict[str, Callable[[Settings], LLMProvider]] = {
-    "groq": GroqProvider.from_settings,
+# mode -> builder. Every entry is a provider Mai can actually construct.
+#
+# `claude_subscription` is deliberately absent. It is a *known* mode -- the
+# gateway names it and reports why it cannot be used -- but there is no
+# builder, so there is nothing to accidentally call. A mode with a builder
+# that raised would be one refactor away from a mode that works.
+_REGISTRY: Dict[ProviderMode, Callable[[Settings], LLMProvider]] = {
+    ProviderMode.GROQ: GroqProvider.from_settings,
+    ProviderMode.ANTHROPIC_API: AnthropicProvider.from_settings,
 }
 
 _provider: Optional[LLMProvider] = None
 
 
-class UnknownProviderError(MaiError):
-    status_code = 500
-    code = "unknown_llm_provider"
+#: One class, two names. `UnknownProviderMode` is raised by the gateway,
+#: which cannot import this module without a cycle; `UnknownProviderError` is
+#: the name callers and tests have used since Stage 1. Aliasing rather than
+#: subclassing keeps a single class, so `except` on either name catches the
+#: same thing and there is no hierarchy to get the wrong way round.
+UnknownProviderError = UnknownProviderMode
 
 
 def build_provider(settings: Optional[Settings] = None) -> LLMProvider:
-    """Construct a provider from settings without caching it."""
-    settings = settings or get_settings()
-    key = settings.LLM_PROVIDER.strip().lower()
+    """Construct the configured provider. One provider, no fallback.
 
-    builder = _REGISTRY.get(key)
+    Three refusals, in order, and each says something different:
+
+    - an unrecognised name is a typo (`UnknownProviderMode`);
+    - a recognised but unusable provider is a policy decision, reported with
+      its reason (`ProviderUnavailable`);
+    - a usable provider with no builder is a bug here, not a configuration
+      problem, and says so.
+
+    Nothing in this function falls back to another provider. A provider that
+    quietly failed over would send the conversation to a company the operator
+    did not choose and bill an account they did not mean to use.
+    """
+    settings = settings or get_settings()
+
+    mode = resolve_mode(settings.LLM_PROVIDER)
+    require_available(mode)
+
+    builder = _REGISTRY.get(mode)
     if builder is None:
         raise UnknownProviderError(
-            f"Unknown LLM_PROVIDER {settings.LLM_PROVIDER!r}. "
-            f"Available: {', '.join(sorted(_REGISTRY))}."
+            f"The {mode.value} provider is available but has no builder."
         )
     return builder(settings)
 

@@ -104,6 +104,10 @@ class RuntimeFacts(BaseModel):
     #: provider's own `model` property -- the live object, not a guess.
     llm_provider: str = "unknown"
     llm_model: str = "unknown"
+    #: How the provider authenticates: `api_key`, `subscription`, or
+    #: `unknown`. The *mode*, never the credential -- there is no field here a
+    #: key, token, account id or billing identifier could occupy.
+    llm_auth_mode: str = "unknown"
 
     #: The database *dialect* only -- `postgresql`, `sqlite`.
     #:

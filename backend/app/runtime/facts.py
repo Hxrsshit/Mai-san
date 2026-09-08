@@ -92,6 +92,22 @@ def _safe(read, label: str) -> str:
     return value.strip() or UNKNOWN
 
 
+def _auth_mode_reader(settings):
+    """A callable `_safe` can run, so a bad provider name degrades one field.
+
+    An unrecognised `LLM_PROVIDER` raises inside `resolve_mode`; reporting
+    `unknown` for the auth mode is the honest degradation, and the provider
+    itself will refuse to build for the same reason.
+    """
+
+    def read() -> str:
+        from app.llm.gateway import PROVIDERS, resolve_mode
+
+        return PROVIDERS[resolve_mode(settings.LLM_PROVIDER)].auth_mode.value
+
+    return read
+
+
 def build(
     settings: Optional[Settings] = None,
     provider: Optional[LLMProvider] = None,
@@ -114,6 +130,10 @@ def build(
         else (lambda: settings.LLM_PROVIDER),
         "provider name",
     )
+    # From the provider table keyed by configuration, never from the provider
+    # object -- an object could be a stub, and this is an authoritative fact.
+    llm_auth_mode = _safe(_auth_mode_reader(settings), "authentication mode")
+
     llm_model = _safe(
         (lambda: provider.model) if provider is not None
         else (lambda: settings.active_model),
@@ -154,6 +174,7 @@ def build(
         llm_provider=llm_provider,
         llm_model=llm_model,
         database=database_dialect(settings.DATABASE_URL),
+        llm_auth_mode=llm_auth_mode,
         **{
             fact: bool(getattr(settings, setting))
             for fact, setting in CAPABILITY_SETTINGS.items()

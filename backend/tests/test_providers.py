@@ -115,20 +115,45 @@ def registered_custom_provider():
     factory._REGISTRY.update(original)
 
 
-def test_a_new_provider_can_be_registered_at_runtime(
+def test_a_provider_cannot_be_added_at_runtime(
     registered_custom_provider,
 ) -> None:
-    """One registry entry is enough for the factory to build it."""
+    """Stage 4F-F closed the provider set, and that is a tightening.
+
+    Registering a builder used to be enough for the factory to construct a
+    provider under any name. Now the set is an enum, and a name outside it is
+    refused however many registry entries exist -- so a provider cannot appear
+    from configuration, from a fixture, or from anything a request could
+    reach.
+
+    Adding a real provider is now a deliberate three-place change: an enum
+    member, a table entry with its host and auth mode, and a builder.
+    """
     settings = Settings(_env_file=None, LLM_PROVIDER="claude-shaped")
-    provider = build_provider(settings)
-    assert isinstance(provider, ClaudeShapedProvider)
-    assert provider.name == "claude-shaped"
+
+    with pytest.raises(UnknownProviderError):
+        build_provider(settings)
 
 
-def test_provider_setting_lookup_normalises_hyphens() -> None:
-    """A hyphenated provider name maps to an underscored env var."""
+def test_the_provider_set_is_exactly_the_three_declared_modes() -> None:
+    from app.llm.gateway import PROVIDERS, ProviderMode
+
+    assert {mode.value for mode in ProviderMode} == {
+        "groq", "anthropic_api", "claude_subscription",
+    }
+    assert set(PROVIDERS) == set(ProviderMode)
+
+
+def test_an_unlisted_provider_name_has_no_settings_prefix() -> None:
+    """Settings resolution goes through the same closed table.
+
+    Previously a hyphenated name was mapped to an env var by convention, so
+    any name resolved to *some* setting. Now an unlisted name cannot resolve
+    at all.
+    """
     settings = Settings(_env_file=None, LLM_PROVIDER="claude-shaped")
-    with pytest.raises(ValueError, match="CLAUDE_SHAPED_API_KEY"):
+
+    with pytest.raises(UnknownProviderError):
         _ = settings.active_api_key
 
 
@@ -210,7 +235,19 @@ async def test_switching_providers_changes_the_endpoint_called() -> None:
 
 
 def test_unknown_provider_setting_gives_an_actionable_error() -> None:
-    """The message must say exactly which setting is missing."""
+    """The message must name the valid options.
+
+    Stage 4F-F changed what "actionable" means here. Previously an unknown
+    name produced `MYSTERY_API_KEY is missing`, which sent the reader off to
+    add a setting for a provider that does not exist. Now the provider set is
+    closed, so the useful message is the list of names that work.
+    """
     settings = Settings(_env_file=None, LLM_PROVIDER="mystery")
-    with pytest.raises(ValueError, match="MYSTERY_API_KEY"):
+
+    with pytest.raises(UnknownProviderError) as caught:
         _ = settings.active_api_key
+
+    message = str(caught.value)
+    assert "mystery" in message
+    for valid in ("groq", "anthropic_api", "claude_subscription"):
+        assert valid in message

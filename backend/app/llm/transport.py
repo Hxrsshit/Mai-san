@@ -62,7 +62,10 @@ NO_TRANSPORT_RETRIES = RetryPolicy(max_attempts=1)
 
 
 def provider_policy(
-    base_url: str, timeout_seconds: float, connect_seconds: float = 10.0
+    base_url: str,
+    timeout_seconds: float,
+    connect_seconds: float = 10.0,
+    extra_request_headers=frozenset(),
 ) -> NetworkPolicy:
     """Build the network policy for one configured provider endpoint.
 
@@ -94,6 +97,8 @@ def provider_policy(
             total_seconds=connect + read,
         ),
         retries=NO_TRANSPORT_RETRIES,
+        # Named by the provider that needs them, not open to every caller.
+        extra_request_headers=frozenset(extra_request_headers),
     )
 
 
@@ -121,6 +126,7 @@ def build_provider_client(
     timeout_seconds: float,
     transport=None,
     resolve=None,
+    extra_request_headers=frozenset(),
 ) -> SecureHttpClient:
     """The one client a provider gets. Same class research uses.
 
@@ -128,7 +134,9 @@ def build_provider_client(
     still runs against it, which is what makes those tests meaningful rather
     than decorative.
     """
-    policy = provider_policy(base_url, timeout_seconds)
+    policy = provider_policy(
+        base_url, timeout_seconds, extra_request_headers=extra_request_headers
+    )
     logger.debug(
         "Provider network policy built",
         # The host, which is configuration and not a secret. Never the key,

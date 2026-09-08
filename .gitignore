@@ -64,3 +64,6 @@ next-env.d.ts
 # Stage 4E workspace. Runtime artifacts Mai writes, never source.
 mai_workspace/
 backend/mai_workspace/
+
+# Editor crash-recovery files.
+*.save

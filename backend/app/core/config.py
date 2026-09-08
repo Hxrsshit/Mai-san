@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_MODEL: str = "openai/gpt-oss-120b"
 
+    # --- Anthropic API (Stage 4F-F) ---
+    # The Messages API, with an API key and API billing. Distinct from a
+    # Claude Pro/Max subscription, which Mai does not and may not use --
+    # see `app.llm.gateway.CLAUDE_SUBSCRIPTION_UNAVAILABLE`.
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
+    ANTHROPIC_MODEL: str = "claude-sonnet-5"
+
     # --- Active-provider resolution -----------------------------------------
     # Everything downstream reads these rather than a provider-specific field,
     # so switching LLM_PROVIDER is the only change required.
@@ -64,9 +72,18 @@ class Settings(BaseSettings):
         return self.LLM_PROVIDER.strip().lower()
 
     def _provider_setting(self, suffix: str) -> str:
-        """Read <PROVIDER>_<SUFFIX>, e.g. GROQ_API_KEY."""
-        # Hyphens are legal in a provider name but not in an env var.
-        name = f"{self._provider.upper().replace('-', '_')}_{suffix}"
+        """Read <PREFIX>_<SUFFIX>, e.g. GROQ_API_KEY.
+
+        The prefix comes from the provider table rather than from the mode
+        name. Deriving it produced `ANTHROPIC_API_API_KEY` for the
+        `anthropic_api` mode -- not a name anyone would write in a `.env`
+        file, and a convention that surprises is a convention that gets
+        worked around.
+        """
+        from app.llm.gateway import PROVIDERS, resolve_mode
+
+        prefix = PROVIDERS[resolve_mode(self._provider)].settings_prefix
+        name = f"{prefix}_{suffix}"
         try:
             return getattr(self, name)
         except AttributeError:

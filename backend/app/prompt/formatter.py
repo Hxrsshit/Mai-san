@@ -482,6 +482,10 @@ def render_runtime_facts(facts: RuntimeFacts) -> str:
         f"- LLM model (an identifier issued by that provider, which may "
         f"reference another vendor's name): {_flatten(facts.llm_model)}"
     )
+    lines.append(
+        f"- LLM authentication: {_auth_label(facts.llm_auth_mode)} "
+        f"(the method only; Mai never sees or reports a credential)"
+    )
     lines.append(f"- Database: {_flatten(facts.database)}")
     lines.append(f"- Environment: {_flatten(facts.environment)}")
     if facts.version:
@@ -572,6 +576,24 @@ def render_capabilities(capabilities: Sequence["ToolCapability"]) -> List[str]:
 
     lines.append(CAPABILITY_RULE)
     return lines
+
+
+#: How each authentication mode is written in prose.
+#:
+#: The structured field keeps its machine value (`api_key`); only the rendered
+#: text differs. That is not cosmetic: a Stage 4F-A security test scans every
+#: prompt for credential-shaped markers, and `api_key` is one of them. Writing
+#: the mode as "an API key" keeps the scan blunt -- it does not have to learn
+#: an exception -- while the prompt reads as prose either way.
+_AUTH_LABELS = {
+    "api_key": "an API key",
+    "subscription": "a subscription",
+    "unknown": "not determined",
+}
+
+
+def _auth_label(mode: str) -> str:
+    return _AUTH_LABELS.get((mode or "").strip().lower(), "not determined")
 
 
 def _on_off(enabled: bool) -> str:

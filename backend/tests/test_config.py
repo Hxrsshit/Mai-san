@@ -70,9 +70,16 @@ def test_provider_name_is_normalised(monkeypatch) -> None:
 
 
 def test_missing_provider_settings_raise_an_actionable_error() -> None:
+    """An unlisted provider is refused by name, with the valid options."""
+    from app.llm.factory import UnknownProviderError
+
     settings = Settings(_env_file=None, LLM_PROVIDER="gemini")
-    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+
+    with pytest.raises(UnknownProviderError) as caught:
         _ = settings.active_api_key
+
+    assert "gemini" in str(caught.value)
+    assert "groq" in str(caught.value)
 
 
 # --- Secrets ----------------------------------------------------------------
