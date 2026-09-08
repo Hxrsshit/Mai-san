@@ -425,6 +425,7 @@ async def research_client(
     from app.integrations.web_search import WebSearchIntegration
     from app.prompt.formatter import PromptFormatter
     from app.research.service import ResearchService
+    from app.workflows.service import WorkflowService
     from app.runtime.facts import build as build_runtime_facts
     from app.services.chat_service import ChatService
     from app.tools.authorization import AuthorizationService
@@ -454,6 +455,12 @@ async def research_client(
     tools = build_catalog(ToolRegistry())
     executable = ExecutableRegistry()
     executable.register(WebSearchTool())
+    # Stage 4F-E needs the artifact half too. Registered here rather than in
+    # a near-duplicate fixture: two fixtures building the same stack would
+    # drift, and the research tests are unaffected by a tool they never name.
+    from app.execution.tools import CreateTextFileTool
+
+    executable.register(CreateTextFileTool())
 
     app = create_app()
 
@@ -505,6 +512,12 @@ async def research_client(
                 ),
             ),
             research_service=ResearchService(
+                session,
+                settings=execution_settings,
+                executions=executions,
+                integrations=integrations,
+            ),
+            workflow_service=WorkflowService(
                 session,
                 settings=execution_settings,
                 executions=executions,

@@ -160,16 +160,61 @@ def test_only_two_modules_outside_planning_can_reach_a_plan() -> None:
 
 
 def test_no_module_outside_planning_iterates_a_plans_tasks() -> None:
-    """No caller walks the task list. There is no consumer of plan steps."""
+    """No caller walks a Stage 4B plan's task list. There is no consumer.
+
+    Scoped to *Stage 4B* plans specifically. The original pattern list
+    included the bare `for step in plan`, which Stage 4F-E's `WorkflowPlan`
+    matched -- a different type entirely, whose steps are application-authored
+    and go through Stage 4C authorization one at a time.
+
+    Narrowing it keeps the guarantee this test exists for: a plan produced by
+    a *model* is inert, and nothing walks its tasks looking for something to
+    do. A separate test below pins that a workflow's steps are not Stage 4B
+    tasks.
+    """
     offenders = []
     for path in APP.rglob("*.py"):
         if path.parent.name == "planning":
             continue
         source = path.read_text()
-        for pattern in ("for task in plan", "plan.tasks[", "for step in plan"):
+        for pattern in ("for task in plan", "plan.tasks[", "for task in self._plan",
+                        ".tasks:", "for step in planning"):
             if pattern in source:
                 offenders.append(f"{path.relative_to(APP)}:{pattern}")
     assert offenders == [], offenders
+
+
+def test_a_workflow_plan_is_not_a_stage_4b_plan() -> None:
+    """The two are unrelated types, and the workflow one is not model output.
+
+    Written because the test above had to be narrowed. If these ever became
+    the same object, a model-authored plan would inherit the workflow layer's
+    route to execution -- so the separation is asserted rather than assumed.
+    """
+    from app.planning.schemas import Plan
+    from app.workflows.schemas import WorkflowPlan
+
+    assert Plan is not WorkflowPlan
+    assert not issubclass(WorkflowPlan, Plan)
+    assert "tasks" not in WorkflowPlan.model_fields
+    assert "steps" not in Plan.model_fields
+
+
+def test_a_workflow_plan_cannot_be_built_from_model_output() -> None:
+    """`find_plan` takes a message and a phrase table. Nothing else.
+
+    There is no constructor path from a model's JSON to a `WorkflowPlan`
+    that carries a tool -- the step kinds are a closed enum and the tools are
+    a fixed mapping, so an invented step name cannot be represented.
+    """
+    import inspect
+
+    from app.workflows.plans import find_plan
+    from app.workflows.schemas import StepKind, TOOL_FOR_KIND
+
+    assert set(inspect.signature(find_plan).parameters) == {"message"}
+    assert set(TOOL_FOR_KIND) == {StepKind.RESEARCH, StepKind.ARTIFACT}
+    assert set(TOOL_FOR_KIND.values()) == {"web_search", "create_text_file"}
 
 
 # --- Coercion ---------------------------------------------------------------

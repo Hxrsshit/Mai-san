@@ -156,6 +156,22 @@ class Execution(Base):
     )
 
     #: A bounded sentence from the tool. Never raw output.
+    #: The workflow this execution is a step of, when it is one.
+    #:
+    #: Null for every execution created directly through the API or by the
+    #: Stage 4F-D research path. A workflow confirmation reaches only steps
+    #: carrying its own id, so a standalone execution can never be run by
+    #: approving a workflow -- the same separation `conversation_id` gives
+    #: the chat path.
+    workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("workflows.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    #: Which step of that workflow. Ordering and identity, so an approval for
+    #: step 2 cannot be spent on step 0.
+    step_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     result_summary: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     #: An application constant. Never an exception string or a traceback.
     error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

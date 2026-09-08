@@ -36,6 +36,8 @@ from app.core.errors import LLMError
 from app.core.logging import get_logger
 from app.research.schemas import ResearchResult
 from app.research.service import ResearchService
+from app.workflows.schemas import WorkflowOutcome, WorkflowResult
+from app.workflows.service import WorkflowService
 from app.database.models import Conversation, Message, MessageRole
 from app.intent.schemas import IntentResult
 from app.intent.service import IntentService
@@ -64,6 +66,7 @@ class ChatService:
         planning_service: Optional[PlanningService] = None,
         orchestration_service: Optional[OrchestrationService] = None,
         research_service: Optional["ResearchService"] = None,
+        workflow_service: Optional["WorkflowService"] = None,
     ) -> None:
         self._session = session
         self._provider = provider
@@ -72,6 +75,9 @@ class ChatService:
         self._context = context_service or ContextService(session, self._settings)
         self._formatter = prompt_formatter or PromptFormatter(
             self._settings.MAI_SYSTEM_PROMPT
+        )
+        self._workflows = workflow_service or WorkflowService(
+            session, settings=settings
         )
         self._research = research_service or ResearchService(
             session, settings=self._settings
@@ -148,7 +154,30 @@ class ChatService:
         # confirmation is a phrase table, and the proposal text is written in
         # application code. A turn that proposes a search costs *less* than an
         # ordinary turn, because it answers without the model at all.
-        research = await self._research.handle(conversation_id, content, intent)
+        # Stage 4F-E. Composite requests -- "research X and write me a
+        # summary" -- are recognised first, because the workflow matcher is
+        # the more specific of the two: it requires both halves of the
+        # request, so anything it matches would otherwise be handled as
+        # research alone and lose the second half silently.
+        #
+        # Adds no model call of its own. Planning is a phrase table, the
+        # proposal text is application-written, and the synthesis it needs is
+        # the same single generation the turn was already making.
+        workflow = await self._workflows.handle(conversation_id, content, intent)
+
+        if workflow.has_reply:
+            return await self._answer_without_the_model(
+                conversation, conversation_id, content, ResearchResult(),
+                intent, planning, orchestration, workflow=workflow,
+            )
+
+        # A turn the workflow layer claimed is not also a research turn.
+        # Running both would propose the same search twice.
+        research = (
+            ResearchResult()
+            if workflow.outcome is not WorkflowOutcome.NOT_WORKFLOW
+            else await self._research.handle(conversation_id, content, intent)
+        )
 
         if research.has_reply:
             # The application is answering. A confirmation prompt, a refusal
@@ -162,7 +191,7 @@ class ChatService:
             )
 
         prompt, timings = await self._build_prompt(
-            conversation_id, content, research=research
+            conversation_id, content, research=research, workflow=workflow
         )
         prepare_ms = round((time.perf_counter() - started) * 1000, 2)
 
@@ -227,10 +256,37 @@ class ChatService:
             )
             raise
 
+        reply = llm_response.content
+
+        if workflow.needs_synthesis:
+            # The synthesis just generated becomes the artifact's body. This
+            # is the only ordering that works: the file's content is the
+            # answer, so the file cannot be written before the answer exists.
+            finished = await self._workflows.finalise(
+                workflow.workflow_id, reply
+            )
+            # Merged rather than replaced. `finalise` reports the artifact
+            # half and knows nothing about the research half, so taking its
+            # result wholesale dropped the result count and the block -- the
+            # API then reported a successful workflow that had found nothing.
+            workflow = finished.model_copy(
+                update={
+                    "research_block": workflow.research_block,
+                    "result_count": workflow.result_count,
+                    "steps": workflow.steps + finished.steps,
+                }
+            )
+            # Appended by the application, from the execution record -- never
+            # left to the model to claim. A model that says "I've saved this"
+            # when the write failed is the exact failure Stage 4E.1 exists to
+            # prevent, and it cannot know the outcome in any case: the write
+            # happens after it has finished speaking.
+            reply = f"{reply}\n\n{self._artifact_note(workflow)}"
+
         assistant_message = await self._conversations.add_message(
             conversation_id=conversation_id,
             role=MessageRole.ASSISTANT,
-            content=llm_response.content,
+            content=reply,
         )
         await self._conversations.touch_conversation(conversation)
 
@@ -244,14 +300,32 @@ class ChatService:
         )
         return (
             user_message, assistant_message, intent, planning, orchestration,
-            research,
+            research, workflow,
+        )
+
+    @staticmethod
+    def _artifact_note(workflow: WorkflowResult) -> str:
+        """One sentence about the file, true by construction.
+
+        Built from `artifact_written`, which the workflow set from the
+        execution record's state. There is no branch here that can report a
+        file that does not exist.
+        """
+        if workflow.artifact_written:
+            return f"I've saved this to `{workflow.artifact_path}` in my workspace."
+        return (
+            "I couldn't save this to a file — the write didn't succeed, so "
+            "nothing was created."
         )
 
     async def _answer_without_the_model(
         self, conversation, conversation_id, content, research,
-        intent, planning, orchestration,
+        intent, planning, orchestration, workflow=None,
     ):
         """Persist a turn the application answered itself. No model call.
+
+        Shared by the research and workflow layers. Whichever produced the
+        reply, the text is application-written -- see `workflow` below.
 
         Used for a confirmation prompt, a decline, and the two "cannot search"
         cases. The reply is written in `app/research/service.py`, so it is
@@ -272,7 +346,10 @@ class ChatService:
         assistant_message = await self._conversations.add_message(
             conversation_id=conversation_id,
             role=MessageRole.ASSISTANT,
-            content=research.reply,
+            # Whichever layer answered. Both texts are written in
+            # application code precisely so they are true by construction.
+            content=(workflow.reply if workflow is not None and workflow.has_reply
+                     else research.reply),
         )
         await self._conversations.touch_conversation(conversation)
 
@@ -290,7 +367,7 @@ class ChatService:
 
         return (
             user_message, assistant_message, intent, planning, orchestration,
-            research,
+            research, workflow if workflow is not None else WorkflowResult(),
         )
 
     async def start_conversation_with_message(
@@ -322,6 +399,7 @@ class ChatService:
         conversation_id: uuid.UUID,
         content: str,
         research: Optional[ResearchResult] = None,
+        workflow: Optional[WorkflowResult] = None,
     ) -> Tuple[FormattedPrompt, Dict[str, float]]:
         """Assemble, then format. Never raises.
 
@@ -351,8 +429,36 @@ class ChatService:
         # the shared instance mutated: results left on it would appear in the
         # next turn of an unrelated conversation.
         formatter = self._formatter
+        # Both layers render into the *same* untrusted-research section. A
+        # workflow's results are web content exactly as a bare search's are,
+        # and giving them a second channel would mean a second place to get
+        # the trust labelling right.
+        block = ""
         if research is not None and research.results_block:
-            formatter = self._formatter.with_research(research.results_block)
+            block = research.results_block
+        elif workflow is not None and workflow.research_block:
+            block = workflow.research_block
+        if block:
+            formatter = self._formatter.with_research(block)
+
+        if workflow is not None and workflow.needs_synthesis and workflow.artifact_path:
+            # Told what the application has already decided, so it does not
+            # ask for permission it has been given. It still decides nothing:
+            # the path is fixed, the write is already approved, and the
+            # application performs it after this reply exists.
+            # Phrased as an instruction about *output shape*, not about
+            # files. An earlier version described the pending write in
+            # operational terms and the model responded by attempting a tool
+            # call, which the provider rejected outright -- the turn failed.
+            # Naming the destination is enough; describing the operation
+            # invites the model to try performing it.
+            formatter = formatter.with_workflow_note(
+                "Write only the summary itself, as plain prose. Do not ask "
+                "the user any questions, do not offer to take any action, "
+                "and do not describe what will happen to your reply. "
+                "Everything the user asked for beyond the summary has "
+                "already been arranged and is handled outside this reply."
+            )
 
         started = time.perf_counter()
         try:

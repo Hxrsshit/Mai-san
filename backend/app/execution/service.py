@@ -78,6 +78,8 @@ class ExecutionService:
         self,
         request: ExecutionRequest,
         conversation_id: Optional[uuid.UUID] = None,
+        workflow_id: Optional[uuid.UUID] = None,
+        step_index: Optional[int] = None,
     ) -> Execution:
         """Record a proposed execution. Runs nothing.
 
@@ -122,6 +124,11 @@ class ExecutionService:
             # created through the API leave it NULL, which is also what makes
             # them unconfirmable from chat.
             conversation_id=conversation_id,
+            # Set only for a workflow step. A standalone execution leaves
+            # both NULL, which is what stops a workflow approval from ever
+            # reaching one.
+            workflow_id=workflow_id,
+            step_index=step_index,
         )
         self._session.add(execution)
 

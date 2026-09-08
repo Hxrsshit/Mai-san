@@ -150,6 +150,7 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
         planning,
         orchestration,
         research,
+        workflow,
     ) = await chat.send_message(
         conversation.id, "hello from the test"
     )

@@ -24,6 +24,7 @@ from app.intent.schemas import IntentRead
 from app.orchestration.schemas import OrchestrationRead
 from app.planning.schemas import PlanningRead
 from app.memory.tasks import run_memory_extraction
+from app.schemas.workflow import WorkflowRead
 from app.schemas.message import (
     ChatResponse,
     MessageCreate,
@@ -137,6 +138,7 @@ async def send_message(
         planning,
         orchestration,
         research,
+        workflow,
     ) = await chat.send_message(
         conversation_id=conversation_id, content=payload.content
     )
@@ -180,6 +182,11 @@ async def send_message(
         # apart from an answer -- and so "did a search actually run?" is a
         # field rather than something to infer from the reply text.
         research=ResearchRead.from_result(research),
+        # Stage 4F-E. The minimum a client needs to distinguish a workflow
+        # proposal from an answer, and to know whether a file was actually
+        # written. No fingerprint, no plan internals, no filesystem path
+        # beyond the workspace-relative name the user was already shown.
+        workflow=WorkflowRead.from_result(workflow),
     )
 
 

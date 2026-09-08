@@ -10,6 +10,7 @@ from app.database.models.message import MessageRole
 from app.intent.schemas import IntentRead
 from app.orchestration.schemas import OrchestrationRead
 from app.planning.schemas import PlanningRead
+from app.schemas.workflow import WorkflowRead
 
 
 class MessageCreate(BaseModel):
@@ -99,6 +100,10 @@ class ChatResponse(BaseModel):
     #: is a question, and the user's next message decides whether anything is
     #: sent to a search provider.
     research: Optional["ResearchRead"] = None
+
+    #: Stage 4F-E. None on any turn that was not a workflow, so a client
+    #: cannot mistake "no workflow" for "a workflow that did nothing".
+    workflow: Optional["WorkflowRead"] = None
 
 
 class ResearchRead(BaseModel):

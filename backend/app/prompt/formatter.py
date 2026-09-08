@@ -187,6 +187,9 @@ class PromptFormatter:
         #: One turn's search results, set only via `with_research`. Empty on
         #: the shared instance, so an ordinary turn renders no such section.
         self._research_block = ""
+        #: One turn's application-written workflow note. See
+        #: `with_workflow_note`. Empty on every ordinary turn.
+        self._workflow_note = ""
 
     # --- Public API ---------------------------------------------------------
 
@@ -218,6 +221,28 @@ class PromptFormatter:
 
         return self._finish(parts, stats)
 
+    def with_workflow_note(self, note: str) -> "PromptFormatter":
+        """A formatter carrying one turn's application-written workflow note.
+
+        Application text, so it belongs in the instruction channel rather than
+        the untrusted research section. It says what the *application* has
+        already decided -- that the user approved a file write, and where the
+        reply will be saved -- and grants nothing: the model still cannot
+        choose the path, cannot decline the write, and cannot cause one.
+
+        It exists because of a real defect found in live verification. Without
+        it the model, seeing only research results, asked the user for
+        permission it had already been granted and invented a different
+        filename -- and the application's truthful line then contradicted it
+        in the same reply.
+
+        The path interpolated here has already passed through the planner's
+        `[a-z0-9-]+.txt` alphabet, so it cannot forge structure in this block.
+        """
+        clone = self.with_research(self._research_block)
+        clone._workflow_note = note or ""
+        return clone
+
     def with_research(self, results_block: str) -> "PromptFormatter":
         """A formatter that will render one turn's search results.
 
@@ -230,6 +255,7 @@ class PromptFormatter:
             system_prompt=self._system_prompt, runtime_facts=self._runtime_facts
         )
         clone._research_block = results_block or ""
+        clone._workflow_note = self._workflow_note
         return clone
 
     def _append_research(self, parts, stats) -> None:
@@ -306,6 +332,16 @@ class PromptFormatter:
         )
         stats.instruction_messages += 1
         stats.instruction_chars += len(self._system_prompt)
+
+        if self._workflow_note:
+            parts.append(
+                PromptPart(
+                    message=LLMMessage(role="system", content=self._workflow_note),
+                    section=PromptSection.SYSTEM_INSTRUCTIONS,
+                )
+            )
+            stats.instruction_messages += 1
+            stats.instruction_chars += len(self._workflow_note)
 
     def _append_runtime_facts(
         self, parts: List[PromptPart], stats: PromptStats

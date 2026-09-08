@@ -60,3 +60,7 @@ next-env.d.ts
 .idea/
 .vscode/
 
+
+# Stage 4E workspace. Runtime artifacts Mai writes, never source.
+mai_workspace/
+backend/mai_workspace/

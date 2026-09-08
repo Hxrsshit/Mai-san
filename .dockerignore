@@ -59,3 +59,7 @@ docs/
 .vscode/
 .idea/
 .DS_Store
+
+# Runtime workspace. Never built into an image.
+mai_workspace/
+backend/mai_workspace/
