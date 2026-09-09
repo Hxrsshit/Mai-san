@@ -122,6 +122,17 @@ class ResearchService:
         """Identify a research request and record it. Sends nothing anywhere."""
         candidate = self._research_candidate(message)
         if candidate is None:
+            if self._clarification_needed(message):
+                # Recognised, unreadable. Asking costs a turn; guessing would
+                # send a query nobody wrote to an external provider.
+                return ResearchResult(
+                    outcome=ResearchOutcome.NEEDS_CLARIFICATION,
+                    reply=(
+                        "I can search the web for you — what should I search "
+                        "for? Naming the topic in your message lets me show "
+                        "you the exact query before anything is sent."
+                    ),
+                )
             return ResearchResult(outcome=ResearchOutcome.NOT_RESEARCH)
 
         if not self._settings.EXECUTION_ENABLED:
@@ -178,7 +189,8 @@ class ResearchService:
             query=candidate,
             execution_id=execution.id,
             reply=(
-                f'I can search the web for: "{candidate}"\n\n'
+                f'I can search the web for **{candidate}** and use the '
+                f"results to answer you.\n\n"
                 "That sends the query to an external search provider. Reply "
                 "\"yes\" to go ahead, or anything else to skip it."
             ),
@@ -254,19 +266,40 @@ class ResearchService:
     # --- Internals ----------------------------------------------------------
 
     def _research_candidate(self, message: str) -> Optional[str]:
-        """The query, if this message is a research request.
+        """The extracted subject, if this message is a research request.
 
-        Stage 4D's deterministic phrase table, filtered to the one tool chat
-        may confirm. No model call, and no new matching logic -- reusing the
-        table means a phrase that fires here fires identically in
-        orchestration, and there is one place to audit.
+        Stage 4D's matcher, filtered to the one tool chat may confirm. Since
+        Stage 4F-F.1 the `web_search` entry is recognised by the grammar in
+        `app.research.language`, so what comes back is the *subject* rather
+        than the whole sentence -- but the route is unchanged, and there is
+        still one place to audit.
+
+        Returns None both for "not a research request" and for a request whose
+        subject could not be read. `_clarification_needed` tells those apart,
+        because they deserve different replies.
         """
         for candidate in matching.find_candidates(message):
             if candidate.tool_name in CHAT_CONFIRMABLE_TOOLS:
                 query = str(candidate.arguments.get("query", "")).strip()
-                if query:
+                # The matcher's placeholder for "recognised, but no subject".
+                # Searching for it would send a string nobody wrote to a
+                # third party.
+                if query and query != "(empty)":
                     return query
         return None
+
+    @staticmethod
+    def _clarification_needed(message: str) -> bool:
+        """Whether this was a research request Mai could not read.
+
+        Distinct from "not research at all": someone who typed "look this up
+        online" asked for something, and answering as though they had not is
+        a worse failure than asking what they meant.
+        """
+        from app.research.language import recognise
+
+        recognition = recognise(message)
+        return recognition.is_request and not recognition.query
 
     def _integration_available(self, name: str) -> bool:
         registry = self._integrations

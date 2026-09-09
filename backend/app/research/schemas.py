@@ -37,6 +37,10 @@ class ResearchOutcome(str, enum.Enum):
     DISABLED = "disabled"
     #: No search provider is configured, so there is nothing to search with.
     NOT_CONFIGURED = "not_configured"
+    #: A research request whose subject could not be determined. Mai asks
+    #: what to search for rather than guessing -- guessing here would send a
+    #: query nobody wrote to a third party.
+    NEEDS_CLARIFICATION = "needs_clarification"
 
 
 #: Outcomes where a search genuinely ran and returned results.

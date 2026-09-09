@@ -451,3 +451,76 @@ async def test_a_refusal_response_reveals_nothing_about_the_filesystem(
     assert str(workspace) not in body
     assert "/etc/passwd" not in body
     assert "root" not in body
+
+
+# --- The dispatcher's own authorization re-check ----------------------------
+
+
+async def test_policy_tightened_after_approval_still_refuses_at_dispatch(
+    db_session, execution_settings, workspace, monkeypatch
+) -> None:
+    """The re-check the dispatcher performs, exercised at last.
+
+    Found by Stage 4F-F.1's mutation testing: removing
+    `Dispatcher._require_authorized` broke no test, because nothing ever asked
+    the dispatcher to run a forbidden tool. Every existing test stops earlier
+    -- `ExecutionService.approve` refuses a forbidden authorization status, so
+    a forbidden execution never reached dispatch.
+
+    This is the case the guard exists for and the one nothing covered: an
+    execution approved while permitted, dispatched after policy changed. The
+    decision stored at proposal time is history; the question at dispatch is
+    whether this is permitted *now*.
+    """
+    from app.execution.errors import NotAuthorized
+    from app.execution.schemas import ExecutionRequest
+    from app.execution.service import ExecutionService
+    from app.tools import policy
+    from app.tools.schemas import AuthorizationStatus, DenialReason
+
+    service = ExecutionService(db_session, settings=execution_settings)
+    execution = await service.create(
+        ExecutionRequest(
+            tool_name="create_text_file",
+            arguments={"path": "allowed.txt", "content": "x"},
+            idempotency_key="tightened-1",
+        )
+    )
+    await service.approve(execution.id)
+    await db_session.flush()
+
+    # Policy tightens between approval and execution.
+    real_evaluate = policy.evaluate
+
+    def forbid_the_writer(definition, tool_name, intent=None):
+        if tool_name == "create_text_file":
+            return AuthorizationStatus.FORBIDDEN, DenialReason.TOOL_DISABLED
+        return real_evaluate(definition, tool_name, intent)
+
+    monkeypatch.setattr(policy, "evaluate", forbid_the_writer)
+
+    with pytest.raises(NotAuthorized):
+        await service.run(execution.id)
+
+    # Nothing was written, and the approval did not lift the denial.
+    assert not (workspace / "allowed.txt").exists()
+
+
+async def test_an_approval_cannot_lift_a_denial(
+    db_session, execution_settings, workspace, monkeypatch
+) -> None:
+    """`FORBIDDEN` is absent from the dispatcher's attemptable set.
+
+    An approval satisfies a requirement *for* approval. It is not a grant, and
+    no combination of approval and policy makes a forbidden action runnable.
+    """
+    from app.execution.dispatcher import Dispatcher
+
+    dispatcher = Dispatcher(db_session, settings=execution_settings)
+    from app.execution import dispatcher as module
+
+    assert module._EXECUTABLE_STATUSES == frozenset({
+        __import__("app.tools.schemas", fromlist=["x"]).AuthorizationStatus.ALLOWED,
+        __import__("app.tools.schemas", fromlist=["x"]).AuthorizationStatus.APPROVAL_REQUIRED,
+    })
+    assert dispatcher is not None

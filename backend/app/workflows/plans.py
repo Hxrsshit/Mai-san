@@ -86,10 +86,29 @@ def find_plan(message: str) -> Optional[WorkflowPlan]:
     if match is None:
         return None
 
+    # The subject comes from the same recogniser the plain research path uses.
+    # Stage 4F-F.1 unified them: two extraction implementations would drift,
+    # and a workflow searching for something subtly different from what a bare
+    # request would search for is exactly the kind of divergence nobody
+    # notices until the results are wrong.
+    #
+    # The composite regex still decides *whether* this is a workflow -- it
+    # alone knows about the artifact half -- and hands the research half over
+    # for the subject.
+    from app.research.language import recognise
+
+    research_half = f"research {match.group('query') or ''}"
+    recognition = recognise(research_half)
+
+    query = recognition.query
+    if not query:
+        # Recognised as a workflow whose research subject cannot be read.
+        # Refuse rather than search for nothing, exactly as before.
+        return None
+
     try:
-        query = normalise_query(match.group("query") or "")
+        query = normalise_query(query)
     except ValueError:
-        # An empty or unusable query. Refuse rather than search for nothing.
         return None
 
     name = _artifact_name(match.group("tail") or "", query)

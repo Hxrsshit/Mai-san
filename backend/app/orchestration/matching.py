@@ -74,20 +74,14 @@ def _echo_arguments(message: str, normalised: str) -> Dict[str, object]:
     return {"text": text or "(empty)"}
 
 
-def _web_search_arguments(message: str, normalised: str) -> Dict[str, object]:
-    """`web_search` takes the user's own words as the query.
-
-    The whole message, bounded -- not a model-extracted "search term". The
-    difference matters twice over: extraction would need a model call on a
-    path that currently makes none, and it would let a model choose what Mai
-    searches for. What the user typed is what gets proposed, and the user sees
-    it in the approval prompt before anything is sent anywhere.
-
-    Still only a *candidate*. It goes through Stage 4C validation, Stage 4C
-    authorization and an explicit approval before any request is made.
-    """
-    query = " ".join(message.split())[:300]
-    return {"query": query or "(empty)"}
+#: `web_search` has no argument builder.
+#:
+#: It had one until Stage 4F-F.1, which returned the whole message as the
+#: query. Recognition for this tool now goes through the grammar in
+#: `app.research.language`, which produces the arguments itself -- so the
+#: builder became unreachable, and mutation testing found it by showing that
+#: breaking it changed nothing. Dead code that looks load-bearing is worse
+#: than no code: the next reader would have edited it expecting an effect.
 
 
 def _no_arguments(message: str, normalised: str) -> Dict[str, object]:
@@ -122,13 +116,20 @@ _TABLE: List[Tuple[str, Sequence[str], Callable[[str, str], Dict[str, object]]]]
         # travels the Stage 4C authorization and Stage 4E approval path, and
         # `web_search` requires approval, so no message becomes a request.
         "web_search",
-        # Every phrase here is imperative. "web search" was removed after it
-        # fired on "tell me about web search engines" -- a noun phrase is a
-        # topic, not a request, and the table's own rule says a phrase broad
-        # enough to catch a paraphrase is broad enough to catch a mention.
+        # Stage 4F-F.1 replaced this tool's literal phrases with a grammar in
+        # `app.research.language`, reached through `_WEB_SEARCH_RECOGNISER`
+        # below. The five literals matched their exact wordings and nothing
+        # else -- "search up the web" defeated "search the web" on a single
+        # intervening word -- and a list long enough to cover paraphrase is
+        # long enough to fire on mention, which is the failure this table's
+        # own comment already recorded.
+        #
+        # Kept here as documentation of the shapes covered, and asserted
+        # against the recogniser by a test so the two cannot drift.
         ("search the web", "search online", "look this up online",
          "google this for me", "run a web search"),
-        _web_search_arguments,
+        # Arguments come from the grammar. See `_grammar_candidate`.
+        _no_arguments,
     ),
     (
         "future_generate_document",
@@ -185,6 +186,50 @@ def validate_table(registry: Optional[ToolRegistry] = None) -> None:
         )
 
 
+#: Tools whose recognition is a grammar rather than a phrase list.
+#:
+#: One entry. The rest of the table stays literal, because the rest of the
+#: table describes capabilities that do not exist yet and a literal phrase is
+#: the right amount of machinery for that.
+_GRAMMAR_MATCHED = frozenset({"web_search"})
+
+
+#: Words any research grammar family opens with, for ordering only.
+_TRIGGER_WORDS = re.compile(
+    r"\b(?:search|look|check|research|google|find|what)\b", re.IGNORECASE
+)
+
+
+def _first_trigger_position(normalised: str) -> int:
+    """Where the request's verb falls, so ordering matches the message.
+
+    Ordering only. It has no bearing on whether a candidate is produced.
+    """
+    match = _TRIGGER_WORDS.search(normalised)
+    return match.start() if match else 0
+
+
+def _grammar_candidate(message: str) -> Optional[ActionCandidate]:
+    """The `web_search` candidate, from the deterministic recogniser.
+
+    Returns a candidate for a *recognised request* even when its subject
+    could not be extracted -- carrying `(empty)`. That is deliberate: the
+    research service needs to tell "not a research request" apart from "a
+    research request I could not read", because the second deserves a
+    clarifying question rather than silence.
+    """
+    from app.research.language import recognise
+
+    recognition = recognise(message)
+    if not recognition.is_request:
+        return None
+
+    return ActionCandidate(
+        tool_name="web_search",
+        arguments={"query": recognition.query or "(empty)"},
+    )
+
+
 def find_candidates(message: str) -> List[ActionCandidate]:
     """Every capability the table recognises in a message.
 
@@ -203,6 +248,22 @@ def find_candidates(message: str) -> List[ActionCandidate]:
 
     found: List[ActionCandidate] = []
     for name, phrases, builder in _COMPILED:
+        if name in _GRAMMAR_MATCHED:
+            # Recognised by grammar, not by literal phrase. The candidate is
+            # positioned by where its trigger word falls, so ordering with the
+            # rest of the table stays "in the order the message names them".
+            candidate = _grammar_candidate(message)
+            if candidate is not None:
+                found.append(
+                    ActionCandidate(
+                        tool_name=candidate.tool_name,
+                        arguments=candidate.arguments,
+                        matched_at=_first_trigger_position(normalised),
+                        matched_phrase="(grammar)",
+                    )
+                )
+            continue
+
         best: Optional[Tuple[int, str]] = None
         for phrase, pattern in phrases:
             match = pattern.search(normalised)
