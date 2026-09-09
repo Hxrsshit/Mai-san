@@ -5,6 +5,7 @@ from app.api.routes.conversations import router as conversations_router
 from app.api.routes.entities import router as entities_router
 from app.api.routes.execution import router as execution_router
 from app.api.routes.health import router as health_router
+from app.api.routes.integrations import router as integrations_router
 from app.api.routes.intent import router as intent_router
 from app.api.routes.knowledge import router as knowledge_router
 from app.api.routes.orchestration import router as orchestration_router
@@ -34,4 +35,5 @@ __all__ = [
     "tools_router",
     "orchestration_router",
     "execution_router",
+    "integrations_router",
 ]

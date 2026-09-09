@@ -54,6 +54,15 @@ services:
       # which Mai does not and may not use.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+      # Stage 4F-G. A "Desktop app" OAuth client. Optional: without it the
+      # calendar integration reports not_configured and reads nothing.
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://127.0.0.1:8000/api/integrations/google/callback}
+      # OAuth tokens live here. A named volume, not a bind mount: the tokens
+      # belong to the container's own state rather than the source tree, so
+      # they cannot be committed and are not copied into an image.
+      MAI_CREDENTIAL_DIR: /var/lib/mai/credentials
       GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
       GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
       # Optional. Absent, web search reports NOT_CONFIGURED and the
@@ -77,6 +86,9 @@ services:
       # Source is mounted so host edits apply on container restart
       # (the CMD does not run uvicorn --reload).
       - ./backend:/app
+      # OAuth tokens. A named volume so they survive a restart, stay out of
+      # the source tree, and never enter an image layer.
+      - mai_credentials:/var/lib/mai/credentials
     restart: unless-stopped
 
   frontend:
@@ -95,3 +107,4 @@ services:
 
 volumes:
   mai_pgdata:
+  mai_credentials:

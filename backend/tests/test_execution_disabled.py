@@ -100,8 +100,8 @@ async def test_the_tools_endpoint_still_describes_them_when_disabled(
         item["name"] for item in body["items"]
         if item["execution_mode"] == "synchronous"
     } == {
-        "create_text_file", "read_text_file", "list_workspace_files",
-        "web_search",
+        "calendar_list_events", "create_text_file", "read_text_file",
+        "list_workspace_files", "web_search",
     }
 
 

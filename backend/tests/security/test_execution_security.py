@@ -329,8 +329,8 @@ def test_the_executor_offers_exactly_the_expected_capabilities() -> None:
     from app.execution.tools import get_executable_registry
 
     assert get_executable_registry().names() == (
-        "create_text_file", "list_workspace_files", "read_text_file",
-        "web_search",
+        "calendar_list_events", "create_text_file", "list_workspace_files",
+        "read_text_file", "web_search",
     )
 
 

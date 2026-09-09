@@ -24,6 +24,8 @@ from app.intent.schemas import IntentRead
 from app.orchestration.schemas import OrchestrationRead
 from app.planning.schemas import PlanningRead
 from app.memory.tasks import run_memory_extraction
+from app.calendar.schemas import CalendarOutcome
+from app.schemas.calendar import CalendarRead
 from app.schemas.workflow import WorkflowRead
 from app.schemas.message import (
     ChatResponse,
@@ -139,6 +141,7 @@ async def send_message(
         orchestration,
         research,
         workflow,
+        calendar,
     ) = await chat.send_message(
         conversation_id=conversation_id, content=payload.content
     )
@@ -152,7 +155,26 @@ async def send_message(
 
     # Memory extraction runs after this response is sent, on its own session.
     # It cannot delay, alter or fail the chat turn -- see app/memory/tasks.py.
-    if settings.MEMORY_ENABLED and settings.MEMORY_EXTRACTION_ENABLED:
+    # Stage 4F-G. A turn that read the calendar is not extracted from.
+    #
+    # The events never reach the extraction path directly, but the assistant's
+    # reply does -- and on a calendar turn that reply *is* a summary of the
+    # events. Without this, "you have a design review with Priya at 9" becomes
+    # a permanent memory about Priya, which is exactly the automatic
+    # persistence of personal data the stage forbids.
+    #
+    # Request-scoped means request-scoped. A user who wants Mai to remember
+    # something from their calendar can say so, and that is an ordinary turn.
+    reads_personal_data = (
+        calendar is not None
+        and calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+    )
+
+    if (
+        settings.MEMORY_ENABLED
+        and settings.MEMORY_EXTRACTION_ENABLED
+        and not reads_personal_data
+    ):
         background_tasks.add_task(
             run_memory_extraction,
             conversation_id=conversation_id,
@@ -187,6 +209,9 @@ async def send_message(
         # written. No fingerprint, no plan internals, no filesystem path
         # beyond the workspace-relative name the user was already shown.
         workflow=WorkflowRead.from_result(workflow),
+        # Stage 4F-G. Whether a calendar read happened and how many
+        # events it found -- never the events, which are private.
+        calendar=CalendarRead.from_result(calendar),
     )
 
 

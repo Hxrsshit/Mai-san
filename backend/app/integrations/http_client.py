@@ -209,9 +209,32 @@ class SecureHttpClient:
             auth_header=auth_header,
         )
 
+    async def post_form(
+        self,
+        url: str,
+        form: Mapping[str, str],
+        headers: Optional[Mapping[str, str]] = None,
+        auth_header: Optional[Tuple[str, str]] = None,
+    ) -> HttpResponse:
+        """POST form-encoded data. Permitted only where the policy names POST.
+
+        A third body shape rather than a general one. OAuth token endpoints
+        take `application/x-www-form-urlencoded` and reject JSON, so the
+        choice is between this method and letting a caller supply raw bytes
+        with a content type of its choosing -- and the second is a
+        general-purpose HTTP client wearing a narrower signature.
+
+        The client encodes the mapping and sets the content type itself, for
+        the same reason it does with JSON: a caller-chosen encoding and a
+        caller-chosen type can disagree, and this way they cannot.
+        """
+        return await self._request(
+            "POST", url, form_body=form, headers=headers, auth_header=auth_header
+        )
+
     async def _request(
         self, method, url, params=None, json_body=None, headers=None,
-        auth_header=None,
+        auth_header=None, form_body=None,
     ) -> HttpResponse:
         """Every request passes here, and every gate lives here.
 
@@ -226,7 +249,7 @@ class SecureHttpClient:
         try:
             return await asyncio.wait_for(
                 self._send_bounded(method, url, params, json_body, headers,
-                                   auth_header),
+                                   auth_header, form_body),
                 timeout=total,
             )
         except asyncio.TimeoutError as exc:
@@ -235,10 +258,12 @@ class SecureHttpClient:
             raise ProviderTimeout(detail="total") from exc
 
     async def _send_bounded(
-        self, method, url, params, json_body, headers, auth_header
+        self, method, url, params, json_body, headers, auth_header,
+        form_body=None,
     ) -> HttpResponse:
         request_headers = self._safe_headers(
-            headers, auth_header, has_body=json_body is not None
+            headers, auth_header, has_body=json_body is not None,
+            has_form=form_body is not None,
         )
         started = time.monotonic()
         current = url
@@ -251,7 +276,7 @@ class SecureHttpClient:
             self._policy.check(current, resolve=self._resolve)
 
             response = await self._send(
-                method, current, params, json_body, request_headers
+                method, current, params, json_body, request_headers, form_body
             )
 
             if response.status_code in (301, 302, 303, 307, 308):
@@ -268,6 +293,7 @@ class SecureHttpClient:
                 # the origin chose is how one approved write becomes two.
                 params = None
                 json_body = None
+                form_body = None
                 method = "GET" if not self._policy.permits(method) else method
                 await response.aclose()
                 continue
@@ -284,10 +310,13 @@ class SecureHttpClient:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
 
-    async def _send(self, method, url, params, json_body, headers) -> httpx.Response:
+    async def _send(
+        self, method, url, params, json_body, headers, form_body=None
+    ) -> httpx.Response:
         client = self._ensure_client()
         request = client.build_request(
-            method, url, params=params, json=json_body, headers=headers
+            method, url, params=params, json=json_body, data=form_body,
+            headers=headers,
         )
         try:
             return await client.send(request, stream=True)
@@ -328,7 +357,9 @@ class SecureHttpClient:
 
         return b"".join(chunks)
 
-    def _safe_headers(self, headers, auth_header, has_body=False) -> Dict[str, str]:
+    def _safe_headers(
+        self, headers, auth_header, has_body=False, has_form=False
+    ) -> Dict[str, str]:
         """Build the request headers. Refuses anything not allow-listed."""
         built = {
             "user-agent": USER_AGENT,
@@ -345,6 +376,8 @@ class SecureHttpClient:
             # sends JSON because it serialises JSON, and the two cannot
             # disagree.
             built["content-type"] = "application/json"
+        elif has_form:
+            built["content-type"] = "application/x-www-form-urlencoded"
 
         permitted = ALLOWED_REQUEST_HEADERS | {
             str(name).lower() for name in self._policy.extra_request_headers

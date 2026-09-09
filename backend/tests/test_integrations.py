@@ -122,14 +122,17 @@ def test_the_shipped_registry_holds_exactly_one_integration() -> None:
     from app.integrations.registry import get_integration_registry
 
     registry = get_integration_registry()
-    assert registry.names() == ("web_search",)
+    # The full shipped set, asserted as a literal. Stage 4F-B shipped one and
+    # Stage 4F-G added the calendar; the value of this test is that a third
+    # cannot appear without this line changing and being reviewed.
+    assert registry.names() == ("google_calendar", "web_search")
     assert registry.sealed is True
 
 
-def test_building_the_catalogue_registers_only_web_search() -> None:
+def test_building_the_catalogue_registers_only_the_declared_integrations() -> None:
     registry = build_integrations(IntegrationRegistry())
 
-    assert registry.names() == ("web_search",)
+    assert registry.names() == ("google_calendar", "web_search")
 
 
 def test_the_shipped_search_integration_is_read_only() -> None:

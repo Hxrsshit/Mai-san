@@ -67,3 +67,7 @@ backend/mai_workspace/
 
 # Editor crash-recovery files.
 *.save
+
+# OAuth token store, if a local path is used instead of the volume.
+.mai/
+credentials/

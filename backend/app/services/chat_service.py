@@ -36,6 +36,8 @@ from app.core.errors import LLMError
 from app.core.logging import get_logger
 from app.research.schemas import ResearchResult
 from app.research.service import ResearchService
+from app.calendar.schemas import CalendarOutcome, CalendarResult
+from app.calendar.service import CalendarService
 from app.workflows.schemas import WorkflowOutcome, WorkflowResult
 from app.workflows.service import WorkflowService
 from app.database.models import Conversation, Message, MessageRole
@@ -67,6 +69,7 @@ class ChatService:
         orchestration_service: Optional[OrchestrationService] = None,
         research_service: Optional["ResearchService"] = None,
         workflow_service: Optional["WorkflowService"] = None,
+        calendar_service: Optional["CalendarService"] = None,
     ) -> None:
         self._session = session
         self._provider = provider
@@ -77,6 +80,9 @@ class ChatService:
             self._settings.MAI_SYSTEM_PROMPT
         )
         self._workflows = workflow_service or WorkflowService(
+            session, settings=settings
+        )
+        self._calendar = calendar_service or CalendarService(
             session, settings=settings
         )
         self._research = research_service or ResearchService(
@@ -163,7 +169,29 @@ class ChatService:
         # Adds no model call of its own. Planning is a phrase table, the
         # proposal text is application-written, and the synthesis it needs is
         # the same single generation the turn was already making.
-        workflow = await self._workflows.handle(conversation_id, content, intent)
+        # Stage 4F-G. A calendar question is recognised before research and
+        # before a workflow: its grammar requires the calendar to be *named*,
+        # so it matches a narrower set of messages than either, and a message
+        # it claims is not one the others would have handled.
+        #
+        # No confirmation turn, deliberately -- see
+        # `app.tools.catalog._declare_calendar_read` for that decision and the
+        # argument against it. Adds no model call: recognition is a grammar,
+        # the time window comes from the application clock, and every refusal
+        # is application-written.
+        calendar = await self._calendar.handle(conversation_id, content)
+
+        if calendar.has_reply:
+            return await self._answer_without_the_model(
+                conversation, conversation_id, content, ResearchResult(),
+                intent, planning, orchestration, calendar=calendar,
+            )
+
+        workflow = (
+            WorkflowResult()
+            if calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+            else await self._workflows.handle(conversation_id, content, intent)
+        )
 
         if workflow.has_reply:
             return await self._answer_without_the_model(
@@ -175,7 +203,10 @@ class ChatService:
         # Running both would propose the same search twice.
         research = (
             ResearchResult()
-            if workflow.outcome is not WorkflowOutcome.NOT_WORKFLOW
+            if (
+                workflow.outcome is not WorkflowOutcome.NOT_WORKFLOW
+                or calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+            )
             else await self._research.handle(conversation_id, content, intent)
         )
 
@@ -191,7 +222,8 @@ class ChatService:
             )
 
         prompt, timings = await self._build_prompt(
-            conversation_id, content, research=research, workflow=workflow
+            conversation_id, content, research=research, workflow=workflow,
+            calendar=calendar,
         )
         prepare_ms = round((time.perf_counter() - started) * 1000, 2)
 
@@ -300,7 +332,7 @@ class ChatService:
         )
         return (
             user_message, assistant_message, intent, planning, orchestration,
-            research, workflow,
+            research, workflow, calendar,
         )
 
     @staticmethod
@@ -320,7 +352,7 @@ class ChatService:
 
     async def _answer_without_the_model(
         self, conversation, conversation_id, content, research,
-        intent, planning, orchestration, workflow=None,
+        intent, planning, orchestration, workflow=None, calendar=None,
     ):
         """Persist a turn the application answered itself. No model call.
 
@@ -348,8 +380,11 @@ class ChatService:
             role=MessageRole.ASSISTANT,
             # Whichever layer answered. Both texts are written in
             # application code precisely so they are true by construction.
-            content=(workflow.reply if workflow is not None and workflow.has_reply
-                     else research.reply),
+            content=(
+                calendar.reply if calendar is not None and calendar.has_reply
+                else workflow.reply if workflow is not None and workflow.has_reply
+                else research.reply
+            ),
         )
         await self._conversations.touch_conversation(conversation)
 
@@ -368,6 +403,7 @@ class ChatService:
         return (
             user_message, assistant_message, intent, planning, orchestration,
             research, workflow if workflow is not None else WorkflowResult(),
+            calendar if calendar is not None else CalendarResult(),
         )
 
     async def start_conversation_with_message(
@@ -400,6 +436,7 @@ class ChatService:
         content: str,
         research: Optional[ResearchResult] = None,
         workflow: Optional[WorkflowResult] = None,
+        calendar: Optional[CalendarResult] = None,
     ) -> Tuple[FormattedPrompt, Dict[str, float]]:
         """Assemble, then format. Never raises.
 
@@ -438,8 +475,16 @@ class ChatService:
             block = research.results_block
         elif workflow is not None and workflow.research_block:
             block = workflow.research_block
+        if calendar is not None and calendar.events_block:
+            # Calendar events go into the *personal data* section, not the
+            # research one. They are the user's own schedule rather than a
+            # stranger's web page -- a different provenance, a different
+            # heading, and a different sentence framing them.
+            formatter = formatter.with_calendar(
+                calendar.events_block, calendar.window_label
+            )
         if block:
-            formatter = self._formatter.with_research(block)
+            formatter = formatter.with_research(block)
 
         if workflow is not None and workflow.needs_synthesis and workflow.artifact_path:
             # Told what the application has already decided, so it does not

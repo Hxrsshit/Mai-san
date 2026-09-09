@@ -310,6 +310,7 @@ def build_executable_registry(
     class named in code -- there is no dynamic lookup and nothing a string
     could reach.
     """
+    from app.execution.calendar_tool import CalendarListEventsTool
     from app.execution.web_search_tool import WebSearchTool
 
     target = registry if registry is not None else _registry
@@ -317,6 +318,7 @@ def build_executable_registry(
     target.register(ReadTextFileTool())
     target.register(ListWorkspaceFilesTool())
     target.register(WebSearchTool())
+    target.register(CalendarListEventsTool())
     return target
 
 

@@ -128,6 +128,22 @@ class WebSearchArguments(ToolArguments):
     safe_search: bool = True
 
 
+class CalendarListEventsArguments(ToolArguments):
+    """Arguments for `calendar_list_events`.
+
+    A time window and a count. Deliberately no calendar identifier, no query,
+    no field selector and no URL: the integration builds the request, and
+    there is nothing here through which a caller could reach a different
+    endpoint or a different calendar.
+    """
+
+    #: RFC-3339 timestamps, computed by the application from the user's
+    #: question -- never supplied by a model.
+    starts_at: str = Field(..., min_length=10, max_length=40)
+    ends_at: str = Field(..., min_length=10, max_length=40)
+    max_results: int = Field(default=10, ge=1, le=25)
+
+
 class _ExecutableDeclaration(Tool):
     """A declaration whose implementation lives in `app.execution.tools`.
 
@@ -247,6 +263,49 @@ def _declare(
     return tool
 
 
+def _declare_calendar_read() -> Tool:
+    """Declare `calendar_list_events`. The one tool that needs no approval.
+
+    Every other executable tool in this catalogue carries
+    `requires_approval=True`, and this one deliberately does not. The
+    reasoning, and the argument against it, both belong in the record:
+
+    **For.** It is read-only and changes nothing, anywhere. The user granted
+    read access explicitly, in Google's own consent screen, in a browser --
+    a stronger and more informed act than typing "yes" in a chat. And a
+    prompt after every "what's on my calendar?" would train someone to
+    confirm without reading, which is how a confirmation stops being one.
+
+    **Against.** A calendar read moves private personal data -- sometimes
+    about third parties -- into a prompt sent to an external LLM provider.
+    That is a real disclosure, and Stage 4F-D requires consent for sending a
+    *search query* to a third party, which is less than this.
+
+    **Resolution.** The disclosure is made once, at connection time, where it
+    can be read properly: the connect flow states that calendar contents will
+    be sent to the configured model provider to answer questions. Per-use
+    approval is not required, but three other gates remain -- execution must
+    be switched on, the integration must be connected, and the natural-
+    language recogniser must actually identify a calendar question. The
+    alternative, a prompt on every query, buys a click rather than a decision.
+
+    Risk stays MEDIUM rather than LOW. It reads private data, and the ladder
+    should say so even where approval does not.
+    """
+    tool = _ExecutableDeclaration()
+    tool._definition = ToolDefinition(
+        name="calendar_list_events",
+        description="Read events from the user's Google Calendar. Read-only.",
+        category=ToolCategory.INFORMATION,
+        risk_level=RiskLevel.MEDIUM,
+        requires_approval=False,
+        execution_mode=ExecutionMode.SYNCHRONOUS,
+        enabled=True,
+    )
+    tool._arguments = CalendarListEventsArguments
+    return tool
+
+
 def build_catalog(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
     """Register every declared tool. Idempotent per registry instance.
 
@@ -276,6 +335,9 @@ def build_catalog(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
             RiskLevel.LOW,
             ListWorkspaceFilesArguments,
         ),
+        # Stage 4F-G. Read-only, and the one tool that does not require
+        # per-use approval -- see `_declare_calendar_read` for why.
+        _declare_calendar_read(),
         _declare_executable(
             "web_search",
             "Search the public web for a query and return sources.",
@@ -330,6 +392,7 @@ build_catalog()
 
 
 __all__ = [
+    "CalendarListEventsArguments",
     "CreateTextFileArguments",
     "WebSearchArguments",
     "EchoArguments",

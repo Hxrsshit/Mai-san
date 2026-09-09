@@ -63,3 +63,7 @@ docs/
 # Runtime workspace. Never built into an image.
 mai_workspace/
 backend/mai_workspace/
+
+# Never copy a credential store into an image.
+.mai/
+credentials/

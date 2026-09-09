@@ -112,6 +112,34 @@ def tavily_payload(count: int = 2) -> Dict[str, Any]:
     }
 
 
+def calendar_payload(count: int = 2) -> Dict[str, Any]:
+    """A Google Calendar response, carrying everything Mai must not keep.
+
+    Attendees, conference links, attachments and private properties are all
+    present deliberately, so a test proves they are dropped rather than
+    merely absent from a thin fixture.
+    """
+    return {
+        "kind": "calendar#events",
+        "items": [
+            {
+                "id": f"evt-{index}",
+                "summary": f"Meeting {index}",
+                "location": f"Room {index}",
+                "description": "Passcode 4821.",
+                "start": {"dateTime": f"2026-09-11T0{index}:00:00Z"},
+                "end": {"dateTime": f"2026-09-11T0{index}:30:00Z"},
+                "organizer": {
+                    "email": "priya@corp.example", "displayName": "Priya"
+                },
+                "attendees": [{"email": "alex@corp.example"}],
+                "hangoutLink": "https://meet.google.com/abc-defg-hij",
+            }
+            for index in range(1, count + 1)
+        ],
+    }
+
+
 def sent_query(transport, index: int = 0) -> str:
     """The search query that actually reached the wire, whichever verb was used.
 

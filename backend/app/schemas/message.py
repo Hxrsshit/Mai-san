@@ -10,6 +10,7 @@ from app.database.models.message import MessageRole
 from app.intent.schemas import IntentRead
 from app.orchestration.schemas import OrchestrationRead
 from app.planning.schemas import PlanningRead
+from app.schemas.calendar import CalendarRead
 from app.schemas.workflow import WorkflowRead
 
 
@@ -104,6 +105,10 @@ class ChatResponse(BaseModel):
     #: Stage 4F-E. None on any turn that was not a workflow, so a client
     #: cannot mistake "no workflow" for "a workflow that did nothing".
     workflow: Optional["WorkflowRead"] = None
+
+    #: Stage 4F-G. None on any turn that did not concern the calendar.
+    #: Carries no event content -- see `app/schemas/calendar.py`.
+    calendar: Optional["CalendarRead"] = None
 
 
 class ResearchRead(BaseModel):

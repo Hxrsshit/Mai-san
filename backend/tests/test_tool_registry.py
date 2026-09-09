@@ -241,6 +241,7 @@ def test_mutating_a_retrieved_definition_cannot_change_the_registry(
 def test_the_catalogue_registers_the_expected_tools(registry) -> None:
     """Exact, so a tool cannot appear without this list being updated."""
     assert registry.names() == (
+        "calendar_list_events",
         "create_text_file",
         "echo",
         "future_delete_file",
@@ -267,7 +268,8 @@ def test_only_the_expected_tools_are_executable(registry) -> None:
         if registry.definition(name).execution_mode is not ExecutionMode.UNAVAILABLE
     )
     assert executable == (
-        "create_text_file", "list_workspace_files", "read_text_file", "web_search",
+        "calendar_list_events", "create_text_file", "list_workspace_files",
+        "read_text_file", "web_search",
     )
 
     for name in registry.names():
@@ -330,16 +332,53 @@ def test_the_critical_tool_is_refused_twice_over(registry) -> None:
     assert definition_.risk_level is RiskLevel.CRITICAL
 
 
-def test_only_a_diagnostic_tool_may_skip_approval(registry) -> None:
+#: Every tool permitted to skip approval, and why.
+#:
+#: An enabled tool that also opts out of approval is one nothing stops once
+#: execution is switched on, so the set is enumerated rather than described by
+#: a rule. Stage 4F-G added the second entry, and that was a deliberate
+#: decision with a documented argument against it -- see
+#: `app.tools.catalog._declare_calendar_read`.
+APPROVAL_FREE_TOOLS = {
+    "echo": "inert framework tool; performs nothing at all",
+    "calendar_list_events": (
+        "read-only, and the user granted access in Google's own consent "
+        "screen; the disclosure is made once at connection time"
+    ),
+}
+
+
+def test_only_the_enumerated_tools_may_skip_approval(registry) -> None:
     """The invariant that keeps the operator switch safe.
 
-    An enabled tool that also opts out of approval is one nothing would stop
-    once execution exists. Only the inert framework tool may be both.
+    Previously "only a DIAGNOSTIC tool may skip approval", which held while
+    `echo` was the only one. Stage 4F-G added a read-only INFORMATION tool
+    that also skips it, so the rule became a list -- and a list is the
+    stronger form here: a new approval-free tool now fails this test until
+    someone writes down why it should be one.
     """
-    for name in registry.names():
+    skipping = {
+        name for name in registry.names()
+        if registry.definition(name).enabled
+        and not registry.definition(name).requires_approval
+    }
+
+    assert skipping == set(APPROVAL_FREE_TOOLS), skipping
+
+
+def test_every_approval_free_tool_is_read_only(registry) -> None:
+    """Whatever else it does, it must not change anything.
+
+    The reason approval can be skipped at all. A tool that both writes and
+    skips approval would be reachable from a chat message with no gate but
+    the recogniser.
+    """
+    for name in APPROVAL_FREE_TOOLS:
         definition_ = registry.definition(name)
-        if definition_.enabled and not definition_.requires_approval:
-            assert definition_.category is ToolCategory.DIAGNOSTIC, name
+        assert definition_.risk_level in (RiskLevel.LOW, RiskLevel.MEDIUM), name
+        # No write-shaped tool is in the set, by name or by category.
+        assert definition_.category is not ToolCategory.FILE_OPERATION, name
+        assert definition_.category is not ToolCategory.COMMUNICATION, name
 
 
 def test_no_registered_tool_claims_background_execution(registry) -> None:

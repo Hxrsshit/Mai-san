@@ -17,6 +17,7 @@ from typing import Dict, Optional, Tuple
 from app.core.logging import get_logger
 from app.integrations.base import Integration
 from app.integrations.errors import UnknownIntegration
+from app.integrations.google_calendar import GoogleCalendarIntegration
 from app.integrations.web_search import WebSearchIntegration
 
 logger = get_logger(__name__)
@@ -101,6 +102,12 @@ def build_integrations(
     """
     target = registry if registry is not None else _registry
     target.register(WebSearchIntegration())
+    # Stage 4F-G. Registering here rather than constructing one where it is
+    # needed is the point: the API route built its own, so `/status` answered
+    # correctly while the chat path -- which resolves through this registry --
+    # found nothing and told the user the integration was not configured when
+    # it was merely not connected. One place to register, one place to look.
+    target.register(GoogleCalendarIntegration())
     return target
 
 

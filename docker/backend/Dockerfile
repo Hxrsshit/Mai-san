@@ -15,6 +15,16 @@ COPY backend/ ./
 
 # Run as a non-root user.
 RUN useradd --create-home --uid 1000 mai && chown -R mai:mai /app
+
+# The OAuth credential directory, created in the image so the named volume
+# inherits this owner and mode when Docker initialises it. Without this the
+# volume is created root-owned 0755 and the unprivileged process cannot write
+# a token -- a failure that only appears at the end of the consent flow, after
+# the user has already granted access at Google.
+RUN mkdir -p /var/lib/mai/credentials \
+    && chown -R mai:mai /var/lib/mai \
+    && chmod 700 /var/lib/mai/credentials
+
 USER mai
 
 EXPOSE 8000

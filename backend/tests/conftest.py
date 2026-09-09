@@ -544,3 +544,155 @@ async def research_client(
         yield http_client
 
     app.dependency_overrides.clear()
+
+
+# --- Stage 4F-G: Google Calendar --------------------------------------------
+
+
+@pytest.fixture
+def calendar_tokens(tmp_path):
+    """A connected Google account, in a real token store.
+
+    A real `FileTokenStore` on a real directory, so the permission and path
+    behaviour under test is the behaviour that ships. Only the socket is
+    replaced.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.integrations.google_calendar import CALENDAR_READONLY_SCOPE
+    from app.integrations.token_store import FileTokenStore, StoredToken
+
+    directory = tmp_path / "credentials"
+    store = FileTokenStore(str(directory))
+    store.save(
+        "google",
+        StoredToken(
+            access_token="ya29.ACCESS-SENTINEL-NEVER-REAL",
+            refresh_token="1//REFRESH-SENTINEL-NEVER-REAL",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            scopes=(CALENDAR_READONLY_SCOPE,),
+        ),
+    )
+    return store
+
+
+@pytest.fixture
+def calendar_settings(execution_settings, tmp_path):
+    settings = execution_settings
+    settings.GOOGLE_OAUTH_CLIENT_ID = "cid.apps.googleusercontent.com"
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "GOCSPX-SENTINEL"
+    settings.MAI_CREDENTIAL_DIR = str(tmp_path / "credentials")
+    return settings
+
+
+@pytest_asyncio.fixture
+async def calendar_client(
+    session_factory, fake_provider, calendar_settings, calendar_tokens,
+    workspace, monkeypatch,
+) -> AsyncIterator[AsyncClient]:
+    """A chat client with a connected calendar and a stubbed Google transport.
+
+    The integration, the `SecureHttpClient` and the `NetworkPolicy` are all
+    real -- what these tests exercise is the code that would run against
+    Google.
+    """
+    import app.main as main_module
+    from app.calendar.service import CalendarService
+    from app.execution.calendar_tool import CalendarListEventsTool
+    from app.execution.dispatcher import Dispatcher
+    from app.execution.service import ExecutionService
+    from app.execution.tools import ExecutableRegistry
+    from app.integrations.google_calendar import GoogleCalendarIntegration
+    from app.integrations.registry import IntegrationRegistry
+    from app.prompt.formatter import PromptFormatter
+    from app.runtime.facts import build as build_runtime_facts
+    from app.services.chat_service import ChatService
+    from app.tools.authorization import AuthorizationService
+    from app.tools.catalog import build_catalog
+    from app.tools.registry import ToolRegistry
+    from tests.support.stub_transport import StubTransport, calendar_payload
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: calendar_settings)
+
+    transport = StubTransport(payload=calendar_payload())
+
+    def resolve(host, port):
+        return [(2, 1, 6, "", ("142.250.72.1", port))]
+
+    integration = GoogleCalendarIntegration(
+        settings=calendar_settings,
+        store=calendar_tokens,
+        api_transport=transport,
+        token_transport=transport,
+        resolve=resolve,
+    )
+    integrations = IntegrationRegistry()
+    integrations.register(integration)
+    integrations.seal()
+
+    tools = build_catalog(ToolRegistry())
+    executable = ExecutableRegistry()
+    executable.register(CalendarListEventsTool())
+
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            if session.in_transaction():
+                await session.commit()
+
+    from fastapi import Depends
+
+    def override_chat(session: AsyncSession = Depends(get_db_session)):
+        authorization = AuthorizationService(registry=tools)
+        executions = ExecutionService(
+            session,
+            settings=calendar_settings,
+            authorization=authorization,
+            dispatcher=Dispatcher(
+                session, settings=calendar_settings,
+                authorization=authorization, registry=executable,
+                integrations=integrations,
+            ),
+            executable=executable,
+        )
+        return ChatService(
+            session=session,
+            provider=fake_provider,
+            settings=calendar_settings,
+            prompt_formatter=PromptFormatter(
+                system_prompt=calendar_settings.MAI_SYSTEM_PROMPT,
+                runtime_facts=build_runtime_facts(
+                    settings=calendar_settings, provider=fake_provider
+                ),
+            ),
+            calendar_service=CalendarService(
+                session,
+                settings=calendar_settings,
+                executions=executions,
+                integrations=integrations,
+            ),
+        )
+
+    from app.api.deps import get_chat_service
+
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    app.dependency_overrides[get_settings] = lambda: calendar_settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_chat_service] = override_chat
+
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client.calendar_transport = transport
+    client.calendar_integration = integration
+    client.token_store = calendar_tokens
+
+    async with client as http_client:
+        yield http_client
+
+    app.dependency_overrides.clear()

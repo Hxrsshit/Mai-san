@@ -35,6 +35,11 @@ class PromptSection(str, Enum):
     #: ranked above reference knowledge because it *is* authoritative, and
     #: placed immediately after the instructions for the same reason.
     RUNTIME_FACTS = "runtime_facts"
+    #: Stage 4F-G. The user's own data, read from a service they connected:
+    #: their calendar today. Ranked above retrieved knowledge because it is
+    #: current and specific, and kept in its own section because it is
+    #: neither application configuration nor a stranger's web page.
+    PERSONAL_DATA = "personal_data"
     REFERENCE_KNOWLEDGE = "reference_knowledge"
     CONVERSATION = "conversation"
     #: Web search results for *this* turn, from Stage 4F-D.
@@ -87,6 +92,7 @@ class PromptStats(BaseModel):
     reference_chars: int = 0
     #: Size of the Stage 4F-D search results section, when present.
     research_chars: int = 0
+    personal_data_chars: int = 0
     conversation_chars: int = 0
     current_message_chars: int = 0
     total_chars: int = 0

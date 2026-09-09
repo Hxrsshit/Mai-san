@@ -20,6 +20,7 @@ from app.api.routes import (
     context_preview_router,
     context_router,
     execution_router,
+    integrations_router,
     intent_router,
     knowledge_router,
     orchestration_router,
@@ -130,6 +131,11 @@ def create_app() -> FastAPI:
     # Stage 4C authorization. Read-only: it lists declarations and answers
     # whether an action would be permitted. Nothing here runs anything.
     app.include_router(tools_router)
+    # Stage 4F-G. Connecting an external account is an operator action and is
+    # registered unconditionally: a deployment with no Google client
+    # configured still needs somewhere to report that, and `/connect` refuses
+    # with a specific code rather than a 404.
+    app.include_router(integrations_router)
     # Stage 4D orchestration. Propose, authorize, return -- never execute.
     app.include_router(orchestration_router)
 

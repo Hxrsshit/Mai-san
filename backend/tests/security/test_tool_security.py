@@ -461,8 +461,13 @@ def test_nothing_outside_the_package_holds_a_tool_instance() -> None:
     # `ToolArguments` subclass -- the *shape of a payload* -- and neither
     # imports a `Tool`, which is what keeps Stage 4C's guarantee that a
     # `Tool` defines no way to be run untouched by anything in `app/execution`.
+    # One entry per executor that declares its arguments in the catalogue.
+    # Each imports a *schema*, never a `Tool`, which is what keeps Stage 4C's
+    # guarantee -- that a `Tool` defines no way to be run -- untouched.
     assert sorted(schema_importers) == [
-        "execution/tools.py", "execution/web_search_tool.py",
+        "execution/calendar_tool.py",
+        "execution/tools.py",
+        "execution/web_search_tool.py",
     ], schema_importers
 
 

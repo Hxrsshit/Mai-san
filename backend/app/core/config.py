@@ -248,6 +248,23 @@ class Settings(BaseSettings):
     SEARCH_PROVIDER: str = "tavily"
     SEARCH_API_KEY: str = ""
 
+    # --- Google Calendar OAuth (Stage 4F-G) ---
+    # A "Desktop app" OAuth client from the Google Cloud console. The secret
+    # is not really secret for an installed app -- Google says so -- which is
+    # why PKCE carries the security rather than the secret.
+    GOOGLE_OAUTH_CLIENT_ID: str = ""
+    GOOGLE_OAUTH_CLIENT_SECRET: str = ""
+    #: Where the consent screen sends the authorization code back. Loopback
+    #: only, validated on every use: the code is delivered to a listener on
+    #: the user's own machine and never crosses a network.
+    GOOGLE_OAUTH_REDIRECT_URI: str = (
+        "http://127.0.0.1:8000/api/integrations/google/callback"
+    )
+    #: Where OAuth tokens live. Outside the source tree, outside the image,
+    #: mode 0700, files mode 0600. See app/integrations/token_store.py for
+    #: why this is not encrypted.
+    MAI_CREDENTIAL_DIR: str = "~/.mai/credentials"
+
     # --- Knowledge lifecycle (Stage 3C) ---
     # Conflict evaluation runs in the background pipeline after relationship
     # extraction. It adds no model calls anywhere. Disabling it stops new
