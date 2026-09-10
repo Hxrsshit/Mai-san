@@ -17,6 +17,7 @@ capability to run them exists in one dispatcher, behind an approval bound to
 the exact payload, and only when execution is switched on.
 """
 
+import enum
 from typing import Optional, Type
 
 from pydantic import Field
@@ -128,6 +129,20 @@ class WebSearchArguments(ToolArguments):
     safe_search: bool = True
 
 
+class CalendarReadIntent(str, enum.Enum):
+    """Why the calendar is being read. A closed set, chosen by the application.
+
+    Mirrors `app.orchestration.calendar_language.CalendarIntent`, and is
+    deliberately a separate type: that one is what the recogniser produces,
+    this one is what crosses the tool boundary. A test pins the two to the
+    same member values, so they cannot drift apart in silence.
+    """
+
+    SCHEDULE = "calendar_schedule"
+    AVAILABILITY = "calendar_availability"
+    NEXT_EVENT = "calendar_next_event"
+
+
 class CalendarListEventsArguments(ToolArguments):
     """Arguments for `calendar_list_events`.
 
@@ -142,6 +157,27 @@ class CalendarListEventsArguments(ToolArguments):
     starts_at: str = Field(..., min_length=10, max_length=40)
     ends_at: str = Field(..., min_length=10, max_length=40)
     max_results: int = Field(default=10, ge=1, le=25)
+
+    #: What the answer is for, which decides how much of each event is kept.
+    #:
+    #: A closed set of application-chosen names, not free text: it selects
+    #: between two renderings that already exist in the integration, and
+    #: `calendar_availability` is the *narrower* one -- it sends interval
+    #: times only, with no title, location or organiser. Widening the read is
+    #: not among the things this field can do.
+    #:
+    #: It is part of the arguments, so it is part of the approval fingerprint
+    #: and the audit record: a read approved as an availability check cannot
+    #: be re-run as a full schedule read.
+    intent: CalendarReadIntent = CalendarReadIntent.SCHEDULE
+
+    #: The user's own words for the window -- "tomorrow afternoon".
+    #:
+    #: Echoed into the availability block so it names the period the user
+    #: named. Bounded and flattened; it is the user's own text, so it is not
+    #: a new source of anything, but it is not a place to put anything else
+    #: either.
+    window_label: str = Field(default="", max_length=60)
 
 
 class _ExecutableDeclaration(Tool):

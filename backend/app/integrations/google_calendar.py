@@ -265,6 +265,12 @@ class GoogleCalendarIntegration(Integration):
         starts_at = _iso(arguments.get("starts_at"))
         ends_at = _iso(arguments.get("ends_at"))
         limit = max(1, min(int(arguments.get("max_results", 10)), MAX_RESULTS))
+        # A closed set, and anything unrecognised falls back to the schedule
+        # rendering rather than raising -- an unknown intent must not be a way
+        # to reach a *wider* rendering, and `schedule` is the one the caller
+        # would have got before this field existed.
+        intent = str(arguments.get("intent") or "calendar_schedule")
+        window_label = str(arguments.get("window_label") or "")[:60]
 
         if not starts_at or not ends_at:
             raise ProviderInvalidResponse(reason="calendar_window_invalid")
@@ -317,6 +323,16 @@ class GoogleCalendarIntegration(Integration):
             },
         )
 
+        # Which rendering, decided here where the events are. An availability
+        # answer needs interval times and nothing else, so under that intent
+        # no title, location or organiser is put into the block at all --
+        # they stop at this boundary rather than being stripped later.
+        data = (
+            window.as_availability_data(window_label)
+            if intent == "calendar_availability"
+            else window.as_external_data()
+        )
+
         return ExternalResult(
             state=ExternalResultState.SUCCESS,
             integration=self.name,
@@ -324,7 +340,7 @@ class GoogleCalendarIntegration(Integration):
             summary=(
                 f"Found {len(events)} event{'' if len(events) == 1 else 's'}."
             ),
-            data=window.as_external_data(),
+            data=data,
         )
 
     # --- Token handling -----------------------------------------------------

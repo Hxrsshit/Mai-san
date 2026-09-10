@@ -8,8 +8,21 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Dependencies first so the layer is cached across source changes.
+#
+# `constraints.txt` pins every transitive version as well as the direct ones,
+# so the image that ships is the image that was audited. Without it, a rebuild
+# months later silently resolves different versions of two dozen packages.
+#
+# Test tooling is deliberately absent: `requirements-dev.txt` is not installed
+# here, so pytest and its dependencies are not part of the runtime surface.
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/constraints.txt ./constraints.txt
+# pip itself is upgraded first. The base image ships a pip old enough to carry
+# seven advisories of its own; it is a build tool rather than a runtime
+# import, but it is installed in the image and an auditor cannot tell the
+# difference from the outside.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -c constraints.txt -r requirements.txt
 
 COPY backend/ ./
 

@@ -251,8 +251,13 @@ def test_the_window_is_computed_from_the_application_clock() -> None:
     """
     import inspect
 
+    # Pinned as a literal so a new parameter has to be added here and argued
+    # for. Every one of these is application-owned: the message is the user's
+    # own words, and the clock and the zone come from settings. None of them
+    # is a value a model could supply -- which is the property being guarded,
+    # since whatever chooses the window chooses how much calendar is read.
     assert set(inspect.signature(calendar_language.recognise).parameters) == {
-        "message", "now",
+        "message", "now", "tz",
     }
 
     earlier = calendar_language.recognise("What's on my calendar tomorrow?", now=THURSDAY)

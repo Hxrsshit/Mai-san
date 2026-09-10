@@ -15,7 +15,8 @@ greenlet==3.2.4
 # --- HTTP client (used by the LLM providers) ---
 httpx==0.28.1
 
-# --- Testing ---
-pytest==8.4.2
-pytest-asyncio==1.2.0
-aiosqlite==0.21.0
+# Test and development tooling is NOT here -- see requirements-dev.txt.
+#
+# It used to be, which meant pytest shipped inside the production image and
+# widened the deployed surface for no runtime benefit. Stage 4F-G recorded
+# that; Stage 4G.1 fixed it. Keep this file to what the server needs to run.

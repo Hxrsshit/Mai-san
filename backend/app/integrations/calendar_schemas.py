@@ -149,6 +149,113 @@ class CalendarWindow(BaseModel):
         )
 
 
+    def intervals(self):
+        """`(start, end, all_day)` triples for availability arithmetic.
+
+        Times only. Titles, locations and organisers are not returned, so the
+        availability path cannot leak them even by mistake -- the data simply
+        is not in what it receives.
+        """
+        out = []
+        for event in self.events:
+            out.append(
+                (
+                    _parsed(event.starts_at),
+                    _parsed(event.ends_at),
+                    event.all_day,
+                )
+            )
+        return tuple(out)
+
+    def as_availability_data(self, window_label: str = "") -> ExternalData:
+        """Render free and busy periods. **No event content at all.**
+
+        The minimal answer to "am I free tomorrow afternoon?" is a set of
+        intervals. Titles are not needed for it, so under this rendering no
+        title, location or organiser reaches the model -- which is a stronger
+        guarantee than redacting them would be, because the strings are never
+        put into the block in the first place.
+
+        Still `PRIVATE`: when someone is busy is personal data even with the
+        reason removed.
+        """
+        from app.calendar import availability as availability_module
+
+        start = _parsed(self.starts_at)
+        end = _parsed(self.ends_at)
+        if start is None or end is None:
+            return ExternalData(
+                source="google_calendar",
+                content="(the requested window could not be resolved)",
+                classification=DataClassification.PRIVATE,
+            )
+
+        result = availability_module.compute(start, end, self.intervals())
+
+        lines: List[str] = []
+        window = _flatten(window_label) or "the requested window"
+        lines.append(f"Availability for {window}:")
+        lines.append(
+            f"  Window: {_clock(result.window.start)} to {_clock(result.window.end)}"
+        )
+
+        if result.all_day_blocked:
+            lines.append("  An all-day event covers this period.")
+
+        if result.busy:
+            lines.append(f"  Busy ({len(result.busy)}):")
+            for index, period in enumerate(result.busy, start=1):
+                # Numbered with the same `[n]` marker the event block uses, so
+                # the service's one counter works on either rendering. Safe
+                # here in a way it would not be elsewhere: every character on
+                # this line is an application-formatted timestamp, so there is
+                # no event text that could forge the marker.
+                lines.append(
+                    f"[{index}]     {_clock(period.start)} to {_clock(period.end)}"
+                )
+        else:
+            lines.append("  Busy: none")
+
+        if result.free:
+            lines.append(f"  Free ({len(result.free)}):")
+            for period in result.free:
+                lines.append(f"    {_clock(period.start)} to {_clock(period.end)}")
+        else:
+            lines.append("  Free: none -- the window is fully occupied")
+
+        return ExternalData(
+            source="google_calendar",
+            content="\n".join(lines),
+            classification=DataClassification.PRIVATE,
+        )
+
+
+def _parsed(value: str):
+    """An ISO-8601 string from Google to an aware datetime, or None.
+
+    An all-day event arrives as a bare date. It is given midnight UTC so it
+    sorts, but the availability layer treats `all_day` as covering the whole
+    window regardless, so the time of day here never decides anything.
+    """
+    from datetime import datetime, timezone
+
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _clock(moment) -> str:
+    """A readable time. Never a raw ISO string, which no one asked about."""
+    return moment.strftime("%a %d %b %H:%M")
+
+
 def parse_events(
     payload: Dict[str, Any], max_events: int = MAX_EVENTS
 ) -> Tuple[Tuple[CalendarEvent, ...], int]:

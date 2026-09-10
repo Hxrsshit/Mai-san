@@ -34,6 +34,27 @@ from app.schemas.message import (
     ResearchRead,
 )
 
+
+def touches_personal_data(calendar) -> bool:
+    """Whether this turn involved the user's calendar at all.
+
+    A named function rather than an inline boolean because it is a rule, not a
+    condition: *any* calendar outcome except "this was not a calendar turn"
+    suppresses memory extraction. Mutation testing is why -- narrowing it to
+    `is COMPLETED` broke nothing, since no test could reach the rule directly
+    and the end-to-end turns that could were the completed ones.
+
+    Deliberately inclusive of the failure states. A turn that asked which day
+    the user meant, or that failed to reach Google, is still a turn *about*
+    their schedule, and the cost of suppressing extraction on it is one
+    forgotten pleasantry. The cost of the other mistake is a permanent memory
+    of a medical appointment.
+    """
+    if calendar is None:
+        return False
+    return calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+
+
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 NOT_FOUND = {404: {"model": ErrorResponse, "description": "Conversation not found"}}
@@ -165,10 +186,7 @@ async def send_message(
     #
     # Request-scoped means request-scoped. A user who wants Mai to remember
     # something from their calendar can say so, and that is an ordinary turn.
-    reads_personal_data = (
-        calendar is not None
-        and calendar.outcome is not CalendarOutcome.NOT_CALENDAR
-    )
+    reads_personal_data = touches_personal_data(calendar)
 
     if (
         settings.MEMORY_ENABLED

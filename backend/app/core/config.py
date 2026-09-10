@@ -265,6 +265,19 @@ class Settings(BaseSettings):
     #: why this is not encrypted.
     MAI_CREDENTIAL_DIR: str = "~/.mai/credentials"
 
+    #: The timezone "tomorrow afternoon" is resolved in. An IANA name.
+    #:
+    #: Stage 4F-G computed calendar windows in UTC, which is wrong everywhere
+    #: except UTC: asked at 09:00 in Asia/Kolkata, "tomorrow" resolved to a
+    #: window running from 05:30 tomorrow to 05:30 the day after -- missing
+    #: the user's morning and including someone else's. A calendar day is a
+    #: local idea, so the window has to be built in a local zone.
+    #:
+    #: UTC remains the default because a wrong-but-declared zone is worse than
+    #: an obviously neutral one, and because nothing may guess: a guessed
+    #: timezone silently reads the wrong part of someone's calendar.
+    MAI_TIMEZONE: str = "UTC"
+
     # --- Knowledge lifecycle (Stage 3C) ---
     # Conflict evaluation runs in the background pipeline after relationship
     # extraction. It adds no model calls anywhere. Disabling it stops new
@@ -319,6 +332,27 @@ class Settings(BaseSettings):
     CORS_ORIGINS: Annotated[List[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000"]
     )
+
+    @field_validator("MAI_TIMEZONE")
+    @classmethod
+    def _known_timezone(cls, value: str) -> str:
+        """Refuse an unknown zone at startup rather than falling back.
+
+        A silent fallback to UTC is the failure that hurts: the deployment
+        looks configured, every calendar window is quietly built in the wrong
+        zone, and the answers are plausible enough that nobody checks. A typo
+        should stop the process.
+        """
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        name = (value or "").strip()
+        if not name:
+            raise ValueError("MAI_TIMEZONE must not be empty")
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError) as exc:
+            raise ValueError(f"MAI_TIMEZONE is not a known IANA zone: {name!r}") from exc
+        return name
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

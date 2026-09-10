@@ -481,7 +481,9 @@ class ChatService:
             # stranger's web page -- a different provenance, a different
             # heading, and a different sentence framing them.
             formatter = formatter.with_calendar(
-                calendar.events_block, calendar.window_label
+                calendar.events_block,
+                calendar.window_label,
+                availability=calendar.is_availability,
             )
         if block:
             formatter = formatter.with_research(block)

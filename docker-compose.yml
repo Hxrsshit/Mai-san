@@ -63,6 +63,10 @@ services:
       # belong to the container's own state rather than the source tree, so
       # they cannot be committed and are not copied into an image.
       MAI_CREDENTIAL_DIR: /var/lib/mai/credentials
+      # The zone calendar windows are built in. A container runs in UTC and
+      # the user does not; "tomorrow" is a local idea, so this decides which
+      # day a calendar question actually reads.
+      MAI_TIMEZONE: ${MAI_TIMEZONE:-UTC}
       GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
       GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
       # Optional. Absent, web search reports NOT_CONFIGURED and the

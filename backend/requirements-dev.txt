@@ -1,0 +1,15 @@
+# Test and development tooling. Deliberately NOT installed into the runtime
+# image: nothing here is needed to serve a request, and every package in the
+# image is attack surface plus an advisory to triage.
+#
+#     pip install -r requirements.txt -r requirements-dev.txt
+#
+-r requirements.txt
+
+pytest==8.4.2
+pytest-asyncio==1.2.0
+aiosqlite==0.21.0
+
+# Dependency advisory scanning. Run against the *image* as well as this file:
+# transitive versions resolve differently there.
+pip-audit==2.9.0

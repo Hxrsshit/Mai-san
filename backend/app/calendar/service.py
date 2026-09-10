@@ -94,7 +94,7 @@ class CalendarService:
     async def _handle(
         self, conversation_id: uuid.UUID, message: str
     ) -> CalendarResult:
-        request = calendar_language.recognise(message)
+        request = calendar_language.recognise(message, tz=self._timezone())
 
         if request.is_write_request:
             # Recognised only so Mai can say plainly that it cannot. No write
@@ -107,6 +107,19 @@ class CalendarService:
                     "I can only read your calendar — I can't create, change "
                     "or cancel events. My access to Google Calendar is "
                     "read-only, so nothing was changed."
+                ),
+            )
+
+        if request.needs_clarification:
+            # Recognised as a calendar question whose window is not knowable.
+            # Asking costs a turn; guessing reads a period of the user's
+            # private calendar that they never named.
+            return CalendarResult(
+                outcome=CalendarOutcome.CLARIFICATION_NEEDED,
+                intent=request.intent.value if request.intent else None,
+                reply=(
+                    "I can check your calendar — which day or time did you "
+                    "mean?"
                 ),
             )
 
@@ -144,10 +157,20 @@ class CalendarService:
                         "starts_at": request.starts_at,
                         "ends_at": request.ends_at,
                         "max_results": request.max_results,
+                        "intent": (
+                            request.intent.value
+                            if request.intent
+                            else "calendar_schedule"
+                        ),
+                        "window_label": request.window_label,
                     },
+                    # Binds the window *and* the intent: an availability
+                    # check and a schedule read over the same hours are
+                    # different reads returning different data, so they must
+                    # not collapse onto one execution record.
                     idempotency_key=(
                         f"cal:{conversation_id}:{request.starts_at}"
-                        f":{request.ends_at}"
+                        f":{request.ends_at}:{request.family}"
                     )[:128],
                 ),
                 conversation_id=conversation_id,
@@ -161,14 +184,17 @@ class CalendarService:
                 "Calendar read refused",
                 extra={"reason": refusal.reason},
             )
-            return self._failure(refusal.reason)
+            return self._failure(refusal.reason, request.intent)
 
         if execution.state is not ExecutionState.SUCCEEDED or outcome is None:
-            return self._failure(execution.error_code or "calendar_failed")
+            return self._failure(
+                execution.error_code or "calendar_failed", request.intent
+            )
 
         block, count = self._rendered(outcome)
         return CalendarResult(
             outcome=CalendarOutcome.COMPLETED,
+            intent=request.intent.value if request.intent else None,
             events_block=block,
             event_count=count,
             window_label=request.window_label,
@@ -216,6 +242,26 @@ class CalendarService:
             )
         return None
 
+    def _timezone(self):
+        """The zone a calendar day is measured in.
+
+        Read from settings rather than from the host clock: a container runs
+        in UTC and the user does not, and "tomorrow" is a local idea. An
+        unknown name cannot arrive here -- `Settings` refuses one at startup
+        -- but the fallback is UTC rather than a raise, because failing a
+        calendar question is worse than answering it in the default zone.
+        """
+        from zoneinfo import ZoneInfo
+
+        name = getattr(self._settings, "MAI_TIMEZONE", "UTC") or "UTC"
+        try:
+            return ZoneInfo(name)
+        except Exception:  # noqa: BLE001
+            logger.warning("Unknown MAI_TIMEZONE; using UTC")
+            from datetime import timezone
+
+            return timezone.utc
+
     def _integration(self):
         registry = self._integrations
         if registry is None:
@@ -224,7 +270,14 @@ class CalendarService:
             registry = get_integration_registry()
         return registry.get("google_calendar")
 
-    def _failure(self, reason: str) -> CalendarResult:
+    def _failure(self, reason: str, intent=None) -> CalendarResult:
+        """A failed read still knows what was asked.
+
+        The intent is carried through so the wire field means what it says --
+        "which kind of calendar question this was" is knowable whether or not
+        Google answered, and reporting `null` on the failure path made it a
+        field about success instead.
+        """
         outcome = (
             CalendarOutcome.REAUTHORISATION_REQUIRED
             if reason in (
@@ -235,6 +288,7 @@ class CalendarService:
         )
         return CalendarResult(
             outcome=outcome,
+            intent=intent.value if intent else None,
             reason=reason,
             reply=_REPLIES.get(reason, _DEFAULT_FAILURE),
         )

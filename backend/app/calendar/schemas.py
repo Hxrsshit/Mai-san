@@ -29,6 +29,8 @@ class CalendarOutcome(str, enum.Enum):
     REAUTHORISATION_REQUIRED = "reauthorisation_required"
     #: A request to change the calendar. Mai has no such capability.
     WRITE_NOT_SUPPORTED = "write_not_supported"
+    #: Recognised as a calendar question, but the window was not knowable.
+    CLARIFICATION_NEEDED = "clarification_needed"
 
 
 class CalendarResult(BaseModel):
@@ -42,6 +44,11 @@ class CalendarResult(BaseModel):
 
     outcome: CalendarOutcome = CalendarOutcome.NOT_CALENDAR
 
+    #: Which kind of calendar question this was, when it was one. A member of
+    #: `CalendarIntent`, carried as its string value so this schema does not
+    #: depend on the recogniser.
+    intent: Optional[str] = Field(default=None, max_length=32)
+
     #: Application-written text to send instead of calling the model.
     reply: str = ""
 
@@ -54,6 +61,11 @@ class CalendarResult(BaseModel):
 
     #: An application reason code. Never a Google message, never an exception.
     reason: Optional[str] = Field(default=None, max_length=64)
+
+    @property
+    def is_availability(self) -> bool:
+        """Whether this turn's block is computed availability, not events."""
+        return self.intent == "calendar_availability"
 
     @property
     def has_reply(self) -> bool:

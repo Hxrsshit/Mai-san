@@ -87,7 +87,7 @@ You need Python 3.12+, Node 20+, and a running PostgreSQL.
 ```bash
 cd backend
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -c constraints.txt -r requirements.txt -r requirements-dev.txt
 cp ../.env.example .env   # set GROQ_API_KEY and DATABASE_URL
 alembic upgrade head
 uvicorn app.main:app --reload

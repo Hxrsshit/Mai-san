@@ -60,6 +60,17 @@ docs/
 .idea/
 .DS_Store
 
+# --- Tests ------------------------------------------------------------------
+# The suite is not needed to serve a request, and shipping it puts thousands
+# of lines of fixtures into the production image -- including the synthetic
+# sentinel credentials the security tests use, which are harmless but which
+# make an image scan look alarming and bury a real finding if one ever
+# appears. Stage 4G.1 removed pytest from the image for the same reason.
+#
+# Development is unaffected: docker-compose bind-mounts ./backend over /app.
+backend/tests/
+backend/requirements-dev.txt
+
 # Runtime workspace. Never built into an image.
 mai_workspace/
 backend/mai_workspace/
