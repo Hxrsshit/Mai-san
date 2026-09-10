@@ -3,7 +3,7 @@
 ## Status: **PASS, with one acceptance criterion unavailable**
 
 - **Baseline commit:** `87ab02a` (Stage 4F-G, verified — working tree clean)
-- **Final commit:** _(filled in below)_
+- **Final commit:** `b15607d`
 
 **§17 live verification against a real Google account was not performed.** No
 Google OAuth client is configured on this machine, which §17 anticipates:
