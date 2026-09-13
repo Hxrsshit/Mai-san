@@ -49,15 +49,30 @@ def _quiet_extraction(fake_provider):
 # --- A workflow is not a general executor -----------------------------------
 
 
-def test_only_two_tools_can_appear_in_any_plan() -> None:
+def test_only_declared_tools_can_appear_in_any_plan() -> None:
     """The step kinds are a closed enum and the tool map is fixed.
 
     An invented step cannot be represented, so it cannot reach authorization
     to be refused there -- it fails earlier, at parse time.
+
+    Three entries since Stage 4H, asserted as a literal. What matters is not
+    the count but that the set is closed and every member is a tool the
+    catalogue already declares: composition added a *use* of the calendar,
+    not a new capability.
     """
     from app.workflows.schemas import TOOL_FOR_KIND
 
-    assert set(TOOL_FOR_KIND.values()) == {"web_search", "create_text_file"}
+    assert set(TOOL_FOR_KIND.values()) == {
+        "calendar_list_events", "web_search", "create_text_file",
+    }
+
+    # Every one is registered, so a plan cannot name something that only
+    # exists inside the workflow layer.
+    from app.tools.registry import get_registry
+
+    registry = get_registry()
+    for tool_name in TOOL_FOR_KIND.values():
+        assert registry.get(tool_name) is not None, tool_name
     for forbidden in (
         "future_send_email", "future_delete_file", "read_text_file",
         "list_workspace_files", "echo", "shell", "http_request",
@@ -624,12 +639,27 @@ async def test_no_credential_reaches_the_workflow_or_the_artifact(
 
 
 def test_the_wire_schema_exposes_no_internals() -> None:
-    """No fingerprint, no plan, no execution ids, no absolute path."""
+    """No fingerprint, no plan, no execution ids, no absolute path.
+
+    Stage 4H added four truthfulness booleans and a count. They say whether
+    Mai reached the calendar and the web, which a client needs in order to
+    render "briefed from your calendar only" honestly -- and they carry no
+    event, no result and no authorization detail.
+    """
     from app.schemas.workflow import WorkflowRead
 
     assert set(WorkflowRead.model_fields) == {
-        "outcome", "artifact_written", "artifact_path", "result_count", "reason",
+        "outcome", "artifact_written", "artifact_path", "result_count",
+        "calendar_read", "calendar_event_count", "researched",
+        "research_attempted", "reason",
     }
+
+    # The things that must never appear, named so the pin above cannot widen
+    # into one of them by accident.
+    for absent in ("plan", "fingerprint", "approved_fingerprint",
+                   "calendar_block", "research_block", "execution_id",
+                   "workspace_root", "steps"):
+        assert absent not in WorkflowRead.model_fields, absent
 
 
 # --- Audit ------------------------------------------------------------------

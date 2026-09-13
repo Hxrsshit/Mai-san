@@ -696,3 +696,150 @@ async def calendar_client(
         yield http_client
 
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def briefing_client(
+    session_factory, fake_provider, calendar_settings, calendar_tokens,
+    workspace, monkeypatch,
+) -> AsyncIterator[AsyncClient]:
+    """A chat client with calendar *and* search, for Stage 4H compositions.
+
+    Both integrations are real -- real `SecureHttpClient`, real
+    `NetworkPolicy`, real dispatcher, real authorization -- with only the
+    socket replaced by a stub transport on each. What these tests exercise is
+    the code that would run against Google and Tavily.
+
+    A separate transport per integration, deliberately: sharing one would make
+    "which service was called" unanswerable, and several Stage 4H tests turn
+    on exactly that -- that a briefing whose search failed still did not touch
+    the calendar twice, and that no request reaches a provider before consent.
+    """
+    import app.main as main_module
+    from app.execution.calendar_tool import CalendarListEventsTool
+    from app.execution.dispatcher import Dispatcher
+    from app.execution.service import ExecutionService
+    from app.execution.tools import CreateTextFileTool, ExecutableRegistry
+    from app.execution.web_search_tool import WebSearchTool
+    from app.integrations.credentials import EnvironmentCredentialResolver
+    from app.integrations.google_calendar import GoogleCalendarIntegration
+    from app.integrations.registry import IntegrationRegistry
+    from app.integrations.web_search import WebSearchIntegration
+    from app.prompt.formatter import PromptFormatter
+    from app.research.service import ResearchService
+    from app.runtime.facts import build as build_runtime_facts
+    from app.services.chat_service import ChatService
+    from app.tools.authorization import AuthorizationService
+    from app.tools.catalog import build_catalog
+    from app.tools.registry import ToolRegistry
+    from app.calendar.service import CalendarService
+    from app.workflows.service import WorkflowService
+    from tests.support.stub_transport import (
+        StubTransport, brave_payload, calendar_payload,
+    )
+
+    calendar_settings.SEARCH_API_KEY = "SEARCH_SECRET_123"
+    monkeypatch.setattr(main_module, "get_settings", lambda: calendar_settings)
+
+    calendar_transport = StubTransport(payload=calendar_payload())
+    search_transport = StubTransport(payload=brave_payload(count=2))
+
+    def resolve(host, port):
+        return [(2, 1, 6, "", ("142.250.72.1", port))]
+
+    calendar_integration = GoogleCalendarIntegration(
+        settings=calendar_settings,
+        store=calendar_tokens,
+        api_transport=calendar_transport,
+        token_transport=calendar_transport,
+        resolve=resolve,
+    )
+    search_integration = WebSearchIntegration(
+        credentials=EnvironmentCredentialResolver(
+            environ={"SEARCH_API_KEY": "SEARCH_SECRET_123"}
+        ),
+        transport=search_transport,
+        resolve=resolve,
+    )
+    integrations = IntegrationRegistry()
+    integrations.register(calendar_integration)
+    integrations.register(search_integration)
+    integrations.seal()
+
+    tools = build_catalog(ToolRegistry())
+    executable = ExecutableRegistry()
+    executable.register(CalendarListEventsTool())
+    executable.register(WebSearchTool())
+    executable.register(CreateTextFileTool())
+
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            if session.in_transaction():
+                await session.commit()
+
+    from fastapi import Depends
+
+    def override_chat(session: AsyncSession = Depends(get_db_session)):
+        authorization = AuthorizationService(registry=tools)
+        executions = ExecutionService(
+            session,
+            settings=calendar_settings,
+            authorization=authorization,
+            dispatcher=Dispatcher(
+                session, settings=calendar_settings,
+                authorization=authorization, registry=executable,
+                integrations=integrations,
+            ),
+            executable=executable,
+        )
+        return ChatService(
+            session=session,
+            provider=fake_provider,
+            settings=calendar_settings,
+            prompt_formatter=PromptFormatter(
+                system_prompt=calendar_settings.MAI_SYSTEM_PROMPT,
+                runtime_facts=build_runtime_facts(
+                    settings=calendar_settings, provider=fake_provider
+                ),
+            ),
+            calendar_service=CalendarService(
+                session, settings=calendar_settings,
+                executions=executions, integrations=integrations,
+            ),
+            research_service=ResearchService(
+                session, settings=calendar_settings,
+                executions=executions, integrations=integrations,
+            ),
+            workflow_service=WorkflowService(
+                session, settings=calendar_settings,
+                executions=executions, integrations=integrations,
+            ),
+        )
+
+    from app.api.deps import get_chat_service
+
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    app.dependency_overrides[get_settings] = lambda: calendar_settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_chat_service] = override_chat
+
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client.calendar_transport = calendar_transport
+    client.search_transport = search_transport
+    client.calendar_integration = calendar_integration
+    client.search_integration = search_integration
+    client.token_store = calendar_tokens
+    client.settings = calendar_settings
+
+    async with client as http_client:
+        yield http_client
+
+    app.dependency_overrides.clear()

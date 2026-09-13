@@ -3,7 +3,10 @@
 Deliberately small. A client needs to distinguish a proposal from an answer,
 and to know whether a file was actually written -- and nothing else. Absent by
 design: the approval fingerprint, the stored plan, execution ids, the
-workspace root, and any absolute path.
+workspace root, any absolute path, and -- since Stage 4H -- the calendar
+events and web results themselves. A composition's *content* reached the
+model to answer the question; handing it to a client as structured data would
+invite a UI to render it as though Mai had said it.
 """
 
 from typing import Optional
@@ -27,6 +30,19 @@ class WorkflowRead(BaseModel):
     #: business, and a leaked root is a leaked deployment detail.
     artifact_path: str = Field(default="", max_length=400)
     result_count: int = 0
+
+    #: What a composition actually did, from execution records.
+    #:
+    #: These are truthfulness metadata, not content: counts and booleans about
+    #: whether Mai reached the calendar and the web, never a title, a time, a
+    #: search result or an authorization detail. A client showing "briefed
+    #: from your calendar only" needs to know research did not land, and
+    #: inferring that from an empty result count would be guessing.
+    calendar_read: bool = False
+    calendar_event_count: int = 0
+    researched: bool = False
+    research_attempted: bool = False
+
     reason: Optional[str] = None
 
     @classmethod
@@ -43,6 +59,10 @@ class WorkflowRead(BaseModel):
             artifact_written=result.artifact_written,
             artifact_path=result.artifact_path,
             result_count=result.result_count,
+            calendar_read=result.calendar_read,
+            calendar_event_count=result.calendar_event_count,
+            researched=result.researched,
+            research_attempted=result.research_attempted,
             reason=result.reason,
         )
 

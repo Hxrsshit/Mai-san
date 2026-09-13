@@ -59,10 +59,12 @@ from app.research.service import ResearchService
 from app.tools.schemas import AuthorizationStatus
 from app.workflows.limits import MAX_ARTIFACT_CONTENT_CHARS
 from app.workflows.models import Workflow
+from app.workflows import briefing
 from app.workflows.plans import find_plan
 from app.workflows.schemas import (
     StepKind,
     StepReport,
+    StepStatus,
     WorkflowOutcome,
     WorkflowPlan,
     WorkflowResult,
@@ -81,7 +83,10 @@ logger = get_logger(__name__)
 APPROVAL_TTL_SECONDS = 300
 
 #: Every integration a workflow step may require, by step kind.
-_REQUIRED_INTEGRATION = {StepKind.RESEARCH: "web_search"}
+_REQUIRED_INTEGRATION = {
+    StepKind.RESEARCH: "web_search",
+    StepKind.CALENDAR: "google_calendar",
+}
 
 #: Authorization outcomes from which a step may be attempted at all.
 #:
@@ -90,6 +95,24 @@ _REQUIRED_INTEGRATION = {StepKind.RESEARCH: "web_search"}
 _ATTEMPTABLE = frozenset(
     {AuthorizationStatus.ALLOWED, AuthorizationStatus.APPROVAL_REQUIRED}
 )
+
+
+def _step_of_kind(plan: WorkflowPlan, kind: StepKind) -> Optional[WorkflowStep]:
+    """The one step of this kind, or None.
+
+    By kind rather than by index. Stage 4F-E had a single plan shape, so
+    `plan.step(2)` was always the artifact; with a second shape the artifact
+    sits at 2 or 3 depending on whether research was requested, and a
+    positional lookup would have written the file from the wrong step's
+    arguments -- or from the synthesis step, which has no path at all.
+
+    The composition bounds guarantee at most one step of each kind, so "the
+    one step" is well defined rather than a convenient assumption.
+    """
+    for step in plan.steps:
+        if step.kind is kind:
+            return step
+    return None
 
 
 class WorkflowService:
@@ -140,7 +163,11 @@ class WorkflowService:
         """Plan and disclose. Sends nothing, writes nothing."""
         plan = find_plan(message)
         if plan is None:
-            return WorkflowResult(outcome=WorkflowOutcome.NOT_WORKFLOW)
+            # Stage 4H's second shape. Tried after the research-document
+            # template, not instead of it: the two grammars are disjoint --
+            # one needs an artifact noun, the other a meeting and a time --
+            # and trying the older one first keeps its behaviour identical.
+            return await self._maybe_propose_briefing(conversation_id, message)
 
         if not self._settings.EXECUTION_ENABLED:
             return WorkflowResult(
@@ -215,6 +242,368 @@ class WorkflowService:
             ),
         )
 
+    # --- Stage 4H: briefing composition -------------------------------------
+
+    async def _maybe_propose_briefing(
+        self, conversation_id: uuid.UUID, message: str
+    ) -> WorkflowResult:
+        """Recognise a briefing request and either answer it or propose it.
+
+        Two routes, and which one is taken preserves each capability's own
+        consent rule rather than inventing a third:
+
+        * **Calendar only.** A calendar read requires no approval -- Stage
+          4G.1 decided that, and argued that prompting for every calendar
+          question trains people to confirm without reading. So a briefing
+          with no research runs immediately, exactly as "what's on my
+          calendar tomorrow?" does.
+
+        * **Calendar and research.** Research requires consent, so the whole
+          composition is put to the user first, with both operations named in
+          the sentence they answer. That is Stage 4F-E's rule: one informed
+          consent covering disclosed operations, never a consent for one
+          thing that silently acquires another.
+        """
+        request = briefing.recognise(message, tz=self._timezone())
+        if request is None:
+            return WorkflowResult(outcome=WorkflowOutcome.NOT_WORKFLOW)
+
+        if not self._settings.EXECUTION_ENABLED:
+            return WorkflowResult(
+                outcome=WorkflowOutcome.DISABLED,
+                reply=(
+                    "I can't put a briefing together: action execution is "
+                    "switched off for this deployment, so I can't read your "
+                    "calendar or search the web. I can still help you think "
+                    "the meeting through."
+                ),
+            )
+
+        if not self._integration_available("google_calendar"):
+            return WorkflowResult(
+                outcome=WorkflowOutcome.NOT_CONFIGURED,
+                reason="calendar_unavailable",
+                reply=(
+                    "I can't put a briefing together because my calendar "
+                    "integration isn't available. I can still help you think "
+                    "the meeting through."
+                ),
+            )
+
+        if request.needs_subject:
+            # They asked for research and named nothing searchable -- "research
+            # the company". Guessing from the calendar event is refused on
+            # purpose (see app/workflows/briefing.py), so the honest move is
+            # to ask. Nothing is read and no record is created.
+            return WorkflowResult(
+                outcome=WorkflowOutcome.CLARIFICATION_NEEDED,
+                reply=(
+                    "I can check your calendar and look something up before "
+                    "the meeting — what should I research?"
+                ),
+            )
+
+        plan = briefing.build_plan(message, request)
+        if plan is None:
+            return WorkflowResult(
+                outcome=WorkflowOutcome.FAILED,
+                reason="plan_rejected",
+                reply="I couldn't put that briefing together.",
+            )
+
+        refusal = self._unauthorized_step(plan)
+        if refusal is not None:
+            return WorkflowResult(
+                outcome=WorkflowOutcome.FAILED,
+                reason=refusal,
+                reply="I can't do that: one of the steps isn't permitted.",
+            )
+
+        workflow = Workflow(
+            conversation_id=conversation_id,
+            kind="briefing",
+            state=WorkflowState.PENDING,
+            plan=plan.model_dump(mode="json"),
+        )
+        self._session.add(workflow)
+        await self._session.flush()
+
+        if not request.wants_research:
+            # No consent needed: this is a calendar read and nothing else.
+            self._transition(workflow, WorkflowState.AWAITING_APPROVAL)
+            await self._session.flush()
+            return await self._approve_and_run(workflow)
+
+        if not self._integration_available("web_search"):
+            # Recognised, but the research half cannot run. Say so rather
+            # than proposing something that would fail on approval.
+            await self._session.delete(workflow)
+            await self._session.flush()
+            return WorkflowResult(
+                outcome=WorkflowOutcome.NOT_CONFIGURED,
+                reason="search_unavailable",
+                reply=(
+                    "I can check your calendar, but no search provider is "
+                    "configured, so I can't research anything for the "
+                    "briefing. Ask me what's on your calendar and I'll tell "
+                    "you."
+                ),
+            )
+
+        self._transition(workflow, WorkflowState.AWAITING_APPROVAL)
+        await self._session.flush()
+
+        research_step = _step_of_kind(plan, StepKind.RESEARCH)
+        query = str((research_step.arguments or {}).get("query", ""))
+        artifact_step = _step_of_kind(plan, StepKind.ARTIFACT)
+
+        logger.info(
+            "Briefing proposed",
+            extra={
+                "workflow_id": str(workflow.id),
+                "conversation_id": str(conversation_id),
+                # Lengths and counts. A meeting subject can name a client, an
+                # employer or a diagnosis, and Stage 3D's rule is that such
+                # text does not reach INFO.
+                "query_chars": len(query),
+                "steps": len(plan.steps),
+            },
+        )
+
+        lines = [
+            "Here is what I would do:",
+            "",
+            f"1. Read your calendar for {request.window_label}",
+            f'2. Search the web for: "{query}"',
+        ]
+        if artifact_step is not None:
+            path = str((artifact_step.arguments or {}).get("path", ""))
+            lines.append(f"3. Write the briefing to: {path}")
+        lines += [
+            "",
+            "The calendar read is read-only and the search sends that query "
+            "to an external search provider. Reply \"yes\" to go ahead, or "
+            "anything else to skip it.",
+        ]
+
+        return WorkflowResult(
+            outcome=WorkflowOutcome.AWAITING_CONFIRMATION,
+            workflow_id=workflow.id,
+            reply="\n".join(lines),
+        )
+
+    async def _run_briefing(
+        self, workflow: Workflow, plan: WorkflowPlan
+    ) -> WorkflowResult:
+        """Run the calendar step, then the research step if there is one.
+
+        Every outcome below is read from an execution record. Nothing here
+        infers success from the absence of an error, and a step that did not
+        run is reported as not having run -- which is what stops a briefing
+        claiming research it never did.
+        """
+        reports: List[StepReport] = []
+
+        calendar_step = _step_of_kind(plan, StepKind.CALENDAR)
+        research_step = _step_of_kind(plan, StepKind.RESEARCH)
+        synthesis_step = _step_of_kind(plan, StepKind.SYNTHESISE)
+        artifact_step = _step_of_kind(plan, StepKind.ARTIFACT)
+
+        calendar_block, event_count, calendar_status = await self._run_calendar(
+            workflow, calendar_step
+        )
+        reports.append(
+            StepReport(
+                index=calendar_step.index,
+                kind=StepKind.CALENDAR,
+                status=calendar_status,
+            )
+        )
+
+        research_block, result_count = "", 0
+        research_status = StepStatus.NOT_STARTED
+        if research_step is not None:
+            if calendar_status is not StepStatus.SUCCEEDED:
+                # The dependency did not succeed. Skipped, not failed: nothing
+                # was attempted, and saying "the search failed" would be a
+                # false claim about an external service.
+                research_status = StepStatus.SKIPPED
+            else:
+                research_block, result_count, research_status = (
+                    await self._run_research_step(workflow, research_step)
+                )
+            reports.append(
+                StepReport(
+                    index=research_step.index,
+                    kind=StepKind.RESEARCH,
+                    status=research_status,
+                )
+            )
+
+        if calendar_status is not StepStatus.SUCCEEDED and not research_block:
+            # Nothing was retrieved at all. There is no briefing to give.
+            await self._finish(workflow, WorkflowState.FAILED, "calendar_failed")
+            reports.append(
+                StepReport(index=synthesis_step.index, kind=StepKind.SYNTHESISE,
+                           status=StepStatus.SKIPPED)
+            )
+            return WorkflowResult(
+                outcome=WorkflowOutcome.FAILED,
+                workflow_id=workflow.id,
+                reason="calendar_failed",
+                steps=tuple(reports),
+                reply=(
+                    "I couldn't read your calendar, so I haven't put a "
+                    "briefing together. Nothing was retrieved."
+                ),
+            )
+
+        partial = (
+            research_step is not None
+            and research_status is not StepStatus.SUCCEEDED
+        )
+
+        if artifact_step is None:
+            # No later phase will move this workflow, so it is finished here.
+            # A partial composition is recorded as SUCCEEDED at the workflow
+            # level -- every step that was going to run has run -- while the
+            # *result* stays PARTIAL, which is what the user is told. The two
+            # answer different questions: whether the workflow is over, and
+            # whether it got everything it went for.
+            await self._finish(workflow, WorkflowState.SUCCEEDED, None)
+
+        return WorkflowResult(
+            outcome=(
+                WorkflowOutcome.PARTIAL if partial else WorkflowOutcome.COMPLETED
+            ),
+            workflow_id=workflow.id,
+            calendar_block=calendar_block,
+            calendar_event_count=event_count,
+            calendar_read=calendar_status is StepStatus.SUCCEEDED,
+            research_block=research_block,
+            result_count=result_count,
+            researched=research_status is StepStatus.SUCCEEDED,
+            research_attempted=research_step is not None,
+            artifact_requested=artifact_step is not None,
+            artifact_path=(
+                str((artifact_step.arguments or {}).get("path", ""))
+                if artifact_step is not None else ""
+            ),
+            steps=tuple(reports),
+        )
+
+    async def _run_calendar(
+        self, workflow: Workflow, step: WorkflowStep
+    ) -> Tuple[str, int, StepStatus]:
+        """Read the window through the ordinary execution path.
+
+        No second calendar client and no direct integration call: this creates
+        an execution and lets the Stage 4E dispatcher reach the integration,
+        so Stage 4C authorization, the network policy and the audit journal
+        all apply exactly as they do to a bare calendar question.
+        """
+        arguments = dict(step.arguments or {})
+        try:
+            execution = await self._executions.create(
+                ExecutionRequest(
+                    tool_name="calendar_list_events",
+                    arguments=arguments,
+                    idempotency_key=f"wf:{workflow.id}:{step.index}"[:128],
+                ),
+                conversation_id=workflow.conversation_id,
+                workflow_id=workflow.id,
+                step_index=step.index,
+            )
+            await self._executions.approve(execution.id)
+            execution, outcome = await self._executions.run_returning_outcome(
+                execution.id
+            )
+        except ExecutionError as refusal:
+            logger.info(
+                "Briefing calendar step refused",
+                extra={"workflow_id": str(workflow.id), "reason": refusal.reason},
+            )
+            return "", 0, StepStatus.REFUSED
+
+        if execution.state is not ExecutionState.SUCCEEDED or outcome is None:
+            return "", 0, StepStatus.FAILED
+
+        block, count = self._rendered_calendar(outcome)
+        if not block:
+            return "", 0, StepStatus.FAILED
+        return block, count, StepStatus.SUCCEEDED
+
+    async def _run_research_step(
+        self, workflow: Workflow, step: WorkflowStep
+    ) -> Tuple[str, int, StepStatus]:
+        """The research step of a briefing. Same path as Stage 4F-E's."""
+        query = str((step.arguments or {}).get("query", ""))
+        try:
+            execution = await self._executions.create(
+                ExecutionRequest(
+                    tool_name="web_search",
+                    arguments={"query": query},
+                    idempotency_key=f"wf:{workflow.id}:{step.index}"[:128],
+                ),
+                conversation_id=workflow.conversation_id,
+                workflow_id=workflow.id,
+                step_index=step.index,
+            )
+            await self._executions.approve(execution.id)
+            execution, outcome = await self._executions.run_returning_outcome(
+                execution.id
+            )
+        except ExecutionError as refusal:
+            logger.info(
+                "Briefing research step refused",
+                extra={"workflow_id": str(workflow.id), "reason": refusal.reason},
+            )
+            return "", 0, StepStatus.REFUSED
+
+        if execution.state is not ExecutionState.SUCCEEDED or outcome is None:
+            return "", 0, StepStatus.FAILED
+
+        block, count = ResearchService._rendered_results(outcome)
+        if not block:
+            return "", 0, StepStatus.FAILED
+        return block, count, StepStatus.SUCCEEDED
+
+    @staticmethod
+    def _rendered_calendar(outcome) -> Tuple[str, int]:
+        """Pull the rendered window out of the tool's outcome.
+
+        The same extraction the calendar service uses: the content arrives as
+        the `ExternalData` the integration built, already minimised, already
+        flattened, already classified. Re-rendering it here would be a second
+        place for the labelling to be forgotten.
+        """
+        if outcome is None:
+            return "", 0
+        external = (outcome.data or {}).get("external")
+        if not isinstance(external, dict):
+            return "", 0
+        content = external.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return "", 0
+        count = sum(1 for line in content.split("\n") if line.startswith("["))
+        return content, count
+
+    def _timezone(self):
+        """The zone a briefing's window is measured in. Settings, never a host."""
+        from zoneinfo import ZoneInfo
+
+        # A direct attribute read, not `getattr`. `MAI_TIMEZONE` is a
+        # declared setting with a default, so the dynamic form bought nothing
+        # -- and `getattr` is the string-to-code primitive that a layer
+        # deciding *what to run* should not contain at all. The structural
+        # audit asserts its absence here.
+        name = self._settings.MAI_TIMEZONE or "UTC"
+        try:
+            return ZoneInfo(name)
+        except Exception:  # noqa: BLE001
+            logger.warning("Unknown MAI_TIMEZONE; using UTC")
+            return timezone.utc
+
     # --- Turn N+1: resolve --------------------------------------------------
 
     async def _resolve(self, workflow: Workflow, message: str) -> WorkflowResult:
@@ -257,6 +646,13 @@ class WorkflowService:
         workflow.started_at = now
         await self._session.flush()
 
+        if workflow.kind == "briefing":
+            # A second shape, dispatched on the stored kind rather than on
+            # the plan's contents: the kind is what the application recorded
+            # when it planned, and reading the shape back out of the steps
+            # would make a tampered plan able to choose its own runner.
+            return await self._run_briefing(workflow, plan)
+
         research_step = plan.step(0)
         outcome, reports = await self._run_research(workflow, research_step)
 
@@ -280,6 +676,9 @@ class WorkflowService:
             # the approved path, not a new decision -- `finalise` reads the
             # same value from the same stored plan.
             artifact_path=str((plan.step(2).arguments or {}).get("path", "")),
+            # This shape always writes a file, so the flag is unconditional
+            # here. It is what tells the chat layer to call `finalise` at all.
+            artifact_requested=True,
             # Not COMPLETED yet: the artifact has not been written. The chat
             # layer synthesises, then calls `finalise`, and only the executor's
             # answer decides whether this becomes COMPLETED or PARTIAL.
@@ -323,7 +722,22 @@ class WorkflowService:
             )
 
         plan = self._plan_of(workflow)
-        artifact_step = plan.step(2)
+        artifact_step = _step_of_kind(plan, StepKind.ARTIFACT)
+        if artifact_step is None:
+            # Nothing to write, so nothing for this method to decide.
+            #
+            # An earlier version returned COMPLETED here, which overwrote the
+            # outcome the run phase had already established: a briefing whose
+            # search had failed came back PARTIAL, reached this line, and was
+            # reported to the user as a completed composition. `finalise`
+            # exists to write an artifact and must not be the thing that
+            # decides whether a composition succeeded.
+            #
+            # The caller no longer reaches this for an artifact-free plan; it
+            # stays as a guard, and it invents nothing.
+            return WorkflowResult(
+                outcome=WorkflowOutcome.NOT_WORKFLOW, workflow_id=workflow.id
+            )
         reports: List[StepReport] = []
 
         if not self._approval_still_valid(workflow, plan):
@@ -343,11 +757,11 @@ class WorkflowService:
                 ExecutionRequest(
                     tool_name="create_text_file",
                     arguments={"path": path, "content": content, "overwrite": True},
-                    idempotency_key=f"wf:{workflow.id}:2"[:128],
+                    idempotency_key=f"wf:{workflow.id}:{artifact_step.index}"[:128],
                 ),
                 conversation_id=workflow.conversation_id,
                 workflow_id=workflow.id,
-                step_index=2,
+                step_index=artifact_step.index,
             )
             # No path re-check here, deliberately. An earlier version
             # compared the created execution's path against `path` -- but both
@@ -364,8 +778,8 @@ class WorkflowService:
             execution, _ = await self._executions.run_returning_outcome(execution.id)
         except ExecutionError as refusal:
             reports.append(
-                StepReport(index=2, kind=StepKind.ARTIFACT, status="failed",
-                           detail=refusal.reason)
+                StepReport(index=artifact_step.index, kind=StepKind.ARTIFACT,
+                           status=StepStatus.FAILED, detail=refusal.reason)
             )
             await self._finish(workflow, WorkflowState.FAILED, refusal.reason)
             logger.info(
@@ -376,6 +790,7 @@ class WorkflowService:
                 outcome=WorkflowOutcome.PARTIAL,
                 workflow_id=workflow.id,
                 reason=refusal.reason,
+                artifact_requested=True,
                 artifact_path=path,
                 artifact_written=False,
                 steps=tuple(reports),
@@ -387,8 +802,8 @@ class WorkflowService:
         written = execution.state is ExecutionState.SUCCEEDED
         reports.append(
             StepReport(
-                index=2, kind=StepKind.ARTIFACT,
-                status="succeeded" if written else "failed",
+                index=artifact_step.index, kind=StepKind.ARTIFACT,
+                status=StepStatus.SUCCEEDED if written else StepStatus.FAILED,
             )
         )
 
@@ -401,6 +816,7 @@ class WorkflowService:
         return WorkflowResult(
             outcome=WorkflowOutcome.COMPLETED if written else WorkflowOutcome.PARTIAL,
             workflow_id=workflow.id,
+            artifact_requested=True,
             artifact_path=path if written else "",
             artifact_written=written,
             steps=tuple(reports),
@@ -437,20 +853,23 @@ class WorkflowService:
             )
         except ExecutionError as refusal:
             reports.append(
-                StepReport(index=0, kind=StepKind.RESEARCH, status="failed",
-                           detail=refusal.reason)
+                StepReport(index=0, kind=StepKind.RESEARCH,
+                           status=StepStatus.FAILED, detail=refusal.reason)
             )
             reports.append(
-                StepReport(index=1, kind=StepKind.SYNTHESISE, status="skipped")
+                StepReport(index=1, kind=StepKind.SYNTHESISE,
+                           status=StepStatus.SKIPPED)
             )
             reports.append(
-                StepReport(index=2, kind=StepKind.ARTIFACT, status="skipped")
+                StepReport(index=2, kind=StepKind.ARTIFACT,
+                           status=StepStatus.SKIPPED)
             )
             return None, reports
 
         if execution.state is not ExecutionState.SUCCEEDED or outcome is None:
             reports.append(
-                StepReport(index=0, kind=StepKind.RESEARCH, status="failed")
+                StepReport(index=0, kind=StepKind.RESEARCH,
+                           status=StepStatus.FAILED)
             )
             return None, reports
 
@@ -470,13 +889,14 @@ class WorkflowService:
             # of nothing would be a document asserting things no source said,
             # so this is a failure rather than an empty success.
             reports.append(
-                StepReport(index=0, kind=StepKind.RESEARCH, status="failed",
-                           detail="no_results")
+                StepReport(index=0, kind=StepKind.RESEARCH,
+                           status=StepStatus.FAILED, detail="no_results")
             )
             return None, reports
 
         reports.append(
-            StepReport(index=0, kind=StepKind.RESEARCH, status="succeeded")
+            StepReport(index=0, kind=StepKind.RESEARCH,
+                       status=StepStatus.SUCCEEDED)
         )
         return (block, count), reports
 
@@ -492,7 +912,8 @@ class WorkflowService:
         cheapest way to keep that visible to whoever, or whatever, reads it
         next.
         """
-        query = str((plan.step(0).arguments or {}).get("query", ""))
+        research_step = _step_of_kind(plan, StepKind.RESEARCH)
+        query = str((research_step.arguments or {}).get("query", "")) if research_step else ""
         header = (
             "Summary written by Mai from web search results.\n"
             f"Search query: {query}\n"

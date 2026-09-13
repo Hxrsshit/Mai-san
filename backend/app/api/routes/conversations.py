@@ -35,6 +35,29 @@ from app.schemas.message import (
 )
 
 
+def composition_touched_personal_data(workflow) -> bool:
+    """Whether a composition turn reached the calendar or the web.
+
+    Stage 4H compositions read the same private calendar and the same
+    untrusted web content the single-capability paths read, so they inherit
+    the same rule: nothing from this turn becomes a long-term memory merely
+    because Mai went and looked at something.
+
+    Keyed on the workflow having *attempted* either, not on success. A failed
+    calendar read still means the assistant's reply is about the user's
+    schedule, and a failed search still means the turn was a composition
+    rather than a conversation.
+    """
+    if workflow is None:
+        return False
+    return bool(
+        workflow.calendar_read
+        or workflow.calendar_block
+        or workflow.research_attempted
+        or workflow.research_block
+    )
+
+
 def touches_personal_data(calendar) -> bool:
     """Whether this turn involved the user's calendar at all.
 
@@ -186,7 +209,9 @@ async def send_message(
     #
     # Request-scoped means request-scoped. A user who wants Mai to remember
     # something from their calendar can say so, and that is an ordinary turn.
-    reads_personal_data = touches_personal_data(calendar)
+    reads_personal_data = touches_personal_data(calendar) or (
+        composition_touched_personal_data(workflow)
+    )
 
     if (
         settings.MEMORY_ENABLED

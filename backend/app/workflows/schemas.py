@@ -22,7 +22,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.workflows.limits import (
     MAX_ARTIFACT_CONTENT_CHARS,
+    MAX_ARTIFACT_OPERATIONS,
+    MAX_CALENDAR_LOOKUPS,
     MAX_DEPENDENCY_EDGES,
+    MAX_EXTERNAL_OPERATIONS,
+    MAX_MODEL_CALLS,
+    MAX_RESEARCH_QUERIES,
     MAX_STEPS,
 )
 
@@ -35,6 +40,13 @@ class StepKind(str, enum.Enum):
     fails at parse time rather than at authorization time.
     """
 
+    #: Read a bounded window of the user's calendar (Stage 4F-G / 4G.1).
+    #:
+    #: The window is two application-computed timestamps. Nothing here lets a
+    #: plan name a calendar, an endpoint or a parameter -- the step carries
+    #: the same arguments the bare calendar path carries, validated by the
+    #: same schema.
+    CALENDAR = "calendar"
     #: Run a web search through the Stage 4F-D research path.
     RESEARCH = "research"
     #: Ask the model to synthesise the research into prose. No side effect,
@@ -51,9 +63,54 @@ class StepKind(str, enum.Enum):
 #: cannot be dispatched, so the synthesis step has no route to a side effect
 #: however it is reached.
 TOOL_FOR_KIND: Dict[StepKind, str] = {
+    StepKind.CALENDAR: "calendar_list_events",
     StepKind.RESEARCH: "web_search",
     StepKind.ARTIFACT: "create_text_file",
 }
+
+#: How many external operations each kind costs, for the composition bounds.
+#:
+#: `SYNTHESISE` costs nothing external: it is the turn's own generation, and
+#: counting it here would conflate "left the process" with "used the model".
+_EXTERNAL_COST: Dict[StepKind, int] = {
+    StepKind.CALENDAR: 1,
+    StepKind.RESEARCH: 1,
+    StepKind.ARTIFACT: 0,
+    StepKind.SYNTHESISE: 0,
+}
+
+
+class StepStatus(str, enum.Enum):
+    """What happened to one step. Explicit, and never inferred from silence.
+
+    Stage 4F-E used bare strings, which was enough for three steps with two
+    outcomes. Stage 4H needs the distinctions the brief names: a step that was
+    never reached, one refused by policy, and one whose capability is not
+    available are three different things to tell a user, and collapsing them
+    into "failed" is how a briefing ends up claiming research was attempted
+    when the search provider was simply not configured.
+    """
+
+    NOT_STARTED = "not_started"
+    PENDING_AUTHORIZATION = "pending_authorization"
+    APPROVED = "approved"
+    EXECUTING = "executing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    #: Policy said no. Distinct from failure: nothing was attempted.
+    REFUSED = "refused"
+    #: The capability is not configured or not connected.
+    UNAVAILABLE = "unavailable"
+    CANCELLED = "cancelled"
+    #: A dependency did not succeed, so this step was never reached.
+    SKIPPED = "skipped"
+
+
+#: The one status that means the step's effect actually happened.
+#:
+#: A single member rather than "not in FAILURES", so a status added later is
+#: unsuccessful by default -- the same reasoning as `ExternalResultState`.
+SUCCESS_STATUS = StepStatus.SUCCEEDED
 
 
 class WorkflowStep(BaseModel):
@@ -111,6 +168,8 @@ class WorkflowPlan(BaseModel):
                 f"a plan may not exceed {MAX_DEPENDENCY_EDGES} dependency edges"
             )
 
+        self._enforce_composition_bounds()
+
         known = set(indices)
         for step in self.steps:
             for dependency in step.depends_on:
@@ -122,6 +181,46 @@ class WorkflowPlan(BaseModel):
                     # no valid order, and a cycle cannot be represented at all
                     # if every edge must point backwards.
                     raise ValueError("a dependency must point to an earlier step")
+
+    def _enforce_composition_bounds(self) -> None:
+        """Refuse a plan that exceeds any per-capability ceiling.
+
+        Enforced on construction, so an over-large plan is *unrepresentable*
+        rather than merely rejected somewhere later. There is no code path
+        that holds one, which means no code path that has to remember to
+        check.
+
+        Refused, never trimmed. Reducing a plan to fit would run a different
+        composition from the one that was recognised, and the user would be
+        shown -- and approve -- something that had already been altered.
+        """
+        counts = {kind: 0 for kind in StepKind}
+        for step in self.steps:
+            counts[step.kind] += 1
+
+        ceilings = (
+            (StepKind.CALENDAR, MAX_CALENDAR_LOOKUPS, "calendar lookups"),
+            (StepKind.RESEARCH, MAX_RESEARCH_QUERIES, "research queries"),
+            (StepKind.SYNTHESISE, MAX_MODEL_CALLS, "model calls"),
+            (StepKind.ARTIFACT, MAX_ARTIFACT_OPERATIONS, "artifact operations"),
+        )
+        for kind, ceiling, label in ceilings:
+            if counts[kind] > ceiling:
+                raise ValueError(f"a plan may not exceed {ceiling} {label}")
+
+        external = sum(
+            _EXTERNAL_COST[step.kind] for step in self.steps
+        )
+        if external > MAX_EXTERNAL_OPERATIONS:
+            raise ValueError(
+                f"a plan may not exceed {MAX_EXTERNAL_OPERATIONS} "
+                "external operations"
+            )
+
+    @property
+    def external_operations(self) -> int:
+        """How many operations this plan would send outside the process."""
+        return sum(_EXTERNAL_COST[step.kind] for step in self.steps)
 
     @property
     def executable_steps(self) -> Tuple[WorkflowStep, ...]:
@@ -178,6 +277,12 @@ class WorkflowOutcome(str, enum.Enum):
 
     NOT_WORKFLOW = "not_workflow"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
+    #: Recognised as a composition whose research subject the user did not
+    #: name. Asking is the only safe move: the subject could be read off the
+    #: calendar event, but an event title is written by whoever sent the
+    #: invitation, and letting it choose a search query would put untrusted
+    #: content in charge of an outbound request.
+    CLARIFICATION_NEEDED = "clarification_needed"
     COMPLETED = "completed"
     #: Research succeeded but the artifact did not, or the reverse. The
     #: distinction from FAILED matters: a partial workflow has real results to
@@ -197,11 +302,15 @@ class StepReport(BaseModel):
 
     index: int
     kind: StepKind
-    #: `succeeded`, `failed`, `skipped`. Taken from the execution record for
-    #: executable steps, so a step is reported successful only if the
-    #: executor said so.
-    status: str = "pending"
+    #: Taken from the execution record for executable steps, so a step is
+    #: reported successful only if the executor said so -- never from a model,
+    #: and never from the absence of an error.
+    status: StepStatus = StepStatus.NOT_STARTED
     detail: str = Field(default="", max_length=200)
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status is SUCCESS_STATUS
 
 
 class WorkflowResult(BaseModel):
@@ -220,9 +329,33 @@ class WorkflowResult(BaseModel):
     research_block: str = ""
     result_count: int = 0
 
+    #: The rendered calendar window, as minimised private personal data.
+    #: Rendered by the integration, and carried separately from the research
+    #: block because the two go to different prompt sections with different
+    #: framing -- the user's own schedule is not a stranger's web page.
+    calendar_block: str = ""
+    calendar_event_count: int = 0
+
+    #: What actually happened, read from execution records.
+    #:
+    #: These exist so the chat layer can be truthful without inspecting step
+    #: reports. `researched` is false when research was skipped *and* when it
+    #: failed, and `research_attempted` tells those apart -- the difference
+    #: between "I didn't look anything up" and "I tried and couldn't".
+    calendar_read: bool = False
+    researched: bool = False
+    research_attempted: bool = False
+
     #: What was written, when something was. A workspace-relative path.
     artifact_path: str = Field(default="", max_length=400)
     artifact_written: bool = False
+    #: Whether the plan contained an artifact step at all.
+    #:
+    #: Explicit rather than inferred from an empty path, because the two
+    #: states an empty path can mean are opposites: "no file was asked for"
+    #: and "the write failed". Reporting the second when the first is true
+    #: makes Mai apologise for not doing something nobody requested.
+    artifact_requested: bool = False
 
     steps: Tuple[StepReport, ...] = ()
     reason: Optional[str] = Field(default=None, max_length=64)
@@ -241,7 +374,9 @@ class WorkflowResult(BaseModel):
 
 __all__ = [
     "MAX_ARTIFACT_CONTENT_CHARS",
+    "SUCCESS_STATUS",
     "StepKind",
+    "StepStatus",
     "StepReport",
     "TOOL_FOR_KIND",
     "WorkflowOutcome",

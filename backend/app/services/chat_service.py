@@ -290,10 +290,15 @@ class ChatService:
 
         reply = llm_response.content
 
-        if workflow.needs_synthesis:
+        if workflow.needs_synthesis and workflow.artifact_requested:
             # The synthesis just generated becomes the artifact's body. This
             # is the only ordering that works: the file's content is the
             # answer, so the file cannot be written before the answer exists.
+            #
+            # Gated on the plan having asked for an artifact. Without that
+            # gate a briefing with no document still called `finalise`, whose
+            # return value then replaced a PARTIAL outcome with COMPLETED --
+            # reporting a composition whose search had failed as a success.
             finished = await self._workflows.finalise(
                 workflow.workflow_id, reply
             )
@@ -301,10 +306,21 @@ class ChatService:
             # half and knows nothing about the research half, so taking its
             # result wholesale dropped the result count and the block -- the
             # API then reported a successful workflow that had found nothing.
+            # Merged rather than replaced, and the field list is exhaustive
+            # on purpose. `finalise` reports the artifact half and knows
+            # nothing about what came before it, so every value describing an
+            # earlier step has to be carried across explicitly -- a field
+            # forgotten here becomes a false report about work that did
+            # happen. Stage 4F-E lost the result count this way.
             workflow = finished.model_copy(
                 update={
                     "research_block": workflow.research_block,
                     "result_count": workflow.result_count,
+                    "calendar_block": workflow.calendar_block,
+                    "calendar_event_count": workflow.calendar_event_count,
+                    "calendar_read": workflow.calendar_read,
+                    "researched": workflow.researched,
+                    "research_attempted": workflow.research_attempted,
                     "steps": workflow.steps + finished.steps,
                 }
             )
@@ -313,7 +329,12 @@ class ChatService:
             # when the write failed is the exact failure Stage 4E.1 exists to
             # prevent, and it cannot know the outcome in any case: the write
             # happens after it has finished speaking.
-            reply = f"{reply}\n\n{self._artifact_note(workflow)}"
+        note = self._composition_note(workflow)
+        if note:
+            # Outside the artifact branch: a composition that wrote no file
+            # can still have something the application must say about it,
+            # such as a search that did not land.
+            reply = f"{reply}\n\n{note}"
 
         assistant_message = await self._conversations.add_message(
             conversation_id=conversation_id,
@@ -336,19 +357,41 @@ class ChatService:
         )
 
     @staticmethod
-    def _artifact_note(workflow: WorkflowResult) -> str:
-        """One sentence about the file, true by construction.
+    def _composition_note(workflow: WorkflowResult) -> str:
+        """What actually happened, appended by the application.
 
-        Built from `artifact_written`, which the workflow set from the
-        execution record's state. There is no branch here that can report a
-        file that does not exist.
+        Every sentence here is built from execution records, never from the
+        model -- which could not know the outcomes in any case, because the
+        artifact is written after it has finished speaking.
+
+        Silence is a valid answer. Stage 4F-E always had a file to report, so
+        it always said something; a briefing that asked for no document must
+        not apologise for failing to write one, which is what an
+        unconditional artifact sentence did.
         """
-        if workflow.artifact_written:
-            return f"I've saved this to `{workflow.artifact_path}` in my workspace."
-        return (
-            "I couldn't save this to a file — the write didn't succeed, so "
-            "nothing was created."
-        )
+        parts = []
+
+        if workflow.research_attempted and not workflow.researched:
+            # The distinction that keeps a briefing honest. The model has just
+            # written prose from the calendar alone; without this line the
+            # user has no way to know the research half never landed.
+            parts.append(
+                "I couldn't complete the web search, so there's no outside "
+                "research in this — it's from your calendar only."
+            )
+
+        if workflow.artifact_requested:
+            parts.append(
+                f"I've saved this to `{workflow.artifact_path}` in my workspace."
+                if workflow.artifact_written
+                else (
+                    "I couldn't save this to a file — the write didn't "
+                    "succeed, so nothing was created."
+                )
+            )
+
+        return " ".join(parts)
+
 
     async def _answer_without_the_model(
         self, conversation, conversation_id, content, research,
@@ -475,6 +518,17 @@ class ChatService:
             block = research.results_block
         elif workflow is not None and workflow.research_block:
             block = workflow.research_block
+        if (
+            calendar is None or not calendar.events_block
+        ) and workflow is not None and workflow.calendar_block:
+            # A briefing's calendar half. The same section, the same framing
+            # and the same untrusted preamble as a bare calendar question --
+            # it is the same data from the same integration, and giving a
+            # composition its own channel would be a second place for the
+            # labelling to be got right.
+            formatter = formatter.with_calendar(
+                workflow.calendar_block, "", availability=False
+            )
         if calendar is not None and calendar.events_block:
             # Calendar events go into the *personal data* section, not the
             # research one. They are the user's own schedule rather than a

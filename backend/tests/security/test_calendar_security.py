@@ -520,11 +520,32 @@ def _loud_event(**overrides):
         },
         "attendees": [{"email": "ATTENDEESENTINEL@corp.example"}],
         "hangoutLink": "https://meet.google.com/LINKSENTINEL",
-        "start": {"dateTime": "2026-09-11T14:00:00Z"},
-        "end": {"dateTime": "2026-09-11T15:00:00Z"},
+        # Relative to the real clock, not a fixed date.
+        #
+        # These were hard-coded to 2026-09-11, which meant the event sat
+        # inside "tomorrow afternoon" only on the day the test was written.
+        # Three days later the window had moved, the event fell outside it,
+        # availability correctly reported nothing busy, and the assertion
+        # that the *times* reached the model failed. The event's date has to
+        # move with the window it is meant to fall inside.
+        "start": {"dateTime": _tomorrow_at(14)},
+        "end": {"dateTime": _tomorrow_at(15)},
     }
     event.update(overrides)
     return {"items": [event]}
+
+
+def _tomorrow_at(hour: int) -> str:
+    """An RFC-3339 UTC timestamp at `hour` tomorrow, as Google would send it.
+
+    Tests run in the default `MAI_TIMEZONE` of UTC, so tomorrow-in-UTC is the
+    same day the recogniser resolves.
+    """
+    from datetime import datetime, time, timedelta, timezone
+
+    day = (datetime.now(timezone.utc) + timedelta(days=1)).date()
+    moment = datetime.combine(day, time(hour, 0), tzinfo=timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 SENTINELS = (

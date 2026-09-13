@@ -213,8 +213,20 @@ def test_a_workflow_plan_cannot_be_built_from_model_output() -> None:
     from app.workflows.schemas import StepKind, TOOL_FOR_KIND
 
     assert set(inspect.signature(find_plan).parameters) == {"message"}
-    assert set(TOOL_FOR_KIND) == {StepKind.RESEARCH, StepKind.ARTIFACT}
-    assert set(TOOL_FOR_KIND.values()) == {"web_search", "create_text_file"}
+
+    # A literal, so a capability cannot join a plan without being argued for
+    # here. Stage 4H added the calendar; the property under test is unchanged
+    # -- every entry is a tool the application already declared, and there is
+    # no path from a model's output to a new one.
+    assert set(TOOL_FOR_KIND) == {
+        StepKind.CALENDAR, StepKind.RESEARCH, StepKind.ARTIFACT,
+    }
+    assert set(TOOL_FOR_KIND.values()) == {
+        "calendar_list_events", "web_search", "create_text_file",
+    }
+
+    # And the synthesis step still has no tool, so it cannot be dispatched.
+    assert StepKind.SYNTHESISE not in TOOL_FOR_KIND
 
 
 # --- Coercion ---------------------------------------------------------------

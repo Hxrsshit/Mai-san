@@ -116,16 +116,39 @@ def test_an_artifact_path_cannot_express_an_escape() -> None:
 
 
 def test_a_plan_may_not_exceed_the_step_limit() -> None:
-    steps = tuple(
-        WorkflowStep(index=index, kind=StepKind.SYNTHESISE)
-        for index in range(MAX_STEPS)
-    )
-    WorkflowPlan(steps=steps)  # at the limit, fine
+    """Three bounds, and it is worth being exact about which one binds.
 
+    Stage 4H added a ceiling per step kind, all of them 1, so the largest
+    representable plan is now four steps -- one of each kind. `MAX_STEPS` is
+    therefore no longer the constraint a realistic plan meets first, and a
+    test asserting "ten steps is fine" would have been asserting something
+    that stopped being true.
+
+    It is still enforced, in two places, and both are checked here: a step
+    cannot carry an index at or beyond it, and a plan cannot hold more steps
+    than it. Those remain the outer bound for any future kind added without a
+    ceiling of its own.
+    """
+    # The largest plan any current shape can produce.
+    largest = WorkflowPlan(steps=(
+        WorkflowStep(index=0, kind=StepKind.CALENDAR),
+        WorkflowStep(index=1, kind=StepKind.RESEARCH, depends_on=(0,)),
+        WorkflowStep(index=2, kind=StepKind.SYNTHESISE, depends_on=(0, 1)),
+        WorkflowStep(index=3, kind=StepKind.ARTIFACT, depends_on=(2,)),
+    ))
+    assert len(largest.steps) == 4
+    assert len(largest.steps) < MAX_STEPS
+
+    # An index at the limit is refused by the step itself.
     with pytest.raises(Exception):
-        WorkflowPlan(
-            steps=steps + (WorkflowStep(index=MAX_STEPS, kind=StepKind.SYNTHESISE),)
-        )
+        WorkflowStep(index=MAX_STEPS, kind=StepKind.SYNTHESISE)
+
+    # And the per-kind ceiling refuses a second step of a kind.
+    with pytest.raises(Exception):
+        WorkflowPlan(steps=(
+            WorkflowStep(index=0, kind=StepKind.SYNTHESISE),
+            WorkflowStep(index=1, kind=StepKind.SYNTHESISE),
+        ))
 
 
 def test_a_dependency_must_point_backwards() -> None:

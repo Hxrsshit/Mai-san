@@ -631,6 +631,29 @@ def _day_window(day: date, zone, part, label: str):
     return start.isoformat(), end.isoformat(), described.strip()
 
 
+def resolve_window(text: str, now: Optional[datetime] = None, tz=None):
+    """Resolve a time expression anywhere in `text`, or None.
+
+    The public face of this module's temporal engine, so Stage 4H composes a
+    briefing window with the same code that resolves "tomorrow afternoon" for
+    a bare calendar question. Two date engines would drift, and the drift
+    would show up as a briefing covering a different day from the one the same
+    words produce elsewhere -- which nobody would notice until it mattered.
+
+    Returns `(starts_at, ends_at, label)` or None. Never raises.
+    """
+    if not text or not text.strip():
+        return None
+    trimmed = " ".join(text.split())[:1000]
+    moment = now or datetime.now(timezone.utc)
+    zone = tz or moment.tzinfo or timezone.utc
+    try:
+        return _resolve_when(trimmed, moment.astimezone(zone), zone)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not resolve a time expression")
+        return None
+
+
 def known_families() -> Tuple[str, ...]:
     return tuple(family.name for family in _FAMILIES)
 
@@ -647,5 +670,6 @@ __all__ = [
     "CalendarRequest",
     "known_families",
     "known_intents",
+    "resolve_window",
     "recognise",
 ]
