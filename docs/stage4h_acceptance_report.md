@@ -23,7 +23,7 @@ baseline: **3251 passed, 1 skipped**.
 
 ## Final commit
 
-_(recorded below after commit)_
+`eef2969`
 
 ## Objective
 
