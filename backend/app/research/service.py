@@ -87,7 +87,11 @@ class ResearchService:
     # --- The one entry point ------------------------------------------------
 
     async def handle(
-        self, conversation_id: uuid.UUID, message: str, intent: IntentResult
+        self,
+        conversation_id: uuid.UUID,
+        message: str,
+        intent: IntentResult,
+        normalised: Optional[str] = None,
     ) -> ResearchResult:
         """Examine one turn. Never raises; degrades to NOT_RESEARCH.
 
@@ -101,9 +105,15 @@ class ResearchService:
             pending = await self._pending_for(conversation_id)
 
             if pending is not None:
+                # Deliberately the original. A confirmation is its own narrow
+                # phrase table, and normalisation's vocabulary holds no
+                # confirmation words -- running it here would add surface for
+                # no coverage.
                 return await self._resolve(pending, message)
 
-            return await self._maybe_propose(conversation_id, message, intent)
+            return await self._maybe_propose(
+                conversation_id, message, intent, normalised
+            )
         except Exception:  # noqa: BLE001
             # Research must never fail a chat turn. A failure here degrades to
             # an ordinary turn, which is the same principle retrieval and
@@ -117,12 +127,19 @@ class ResearchService:
     # --- Turn N: propose ----------------------------------------------------
 
     async def _maybe_propose(
-        self, conversation_id: uuid.UUID, message: str, intent: IntentResult
+        self,
+        conversation_id: uuid.UUID,
+        message: str,
+        intent: IntentResult,
+        normalised: Optional[str] = None,
     ) -> ResearchResult:
         """Identify a research request and record it. Sends nothing anywhere."""
-        candidate = self._research_candidate(message)
+        # Recognition reads the repaired text; everything else reads what the
+        # user actually wrote.
+        reading = normalised or message
+        candidate = self._research_candidate(reading)
         if candidate is None:
-            if self._clarification_needed(message):
+            if self._clarification_needed(reading):
                 # Recognised, unreadable. Asking costs a turn; guessing would
                 # send a query nobody wrote to an external provider.
                 return ResearchResult(

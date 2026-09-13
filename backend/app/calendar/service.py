@@ -79,11 +79,14 @@ class CalendarService:
         self._integrations = integrations
 
     async def handle(
-        self, conversation_id: uuid.UUID, message: str
+        self,
+        conversation_id: uuid.UUID,
+        message: str,
+        normalised: Optional[str] = None,
     ) -> CalendarResult:
         """Examine one turn. Never raises; degrades to NOT_CALENDAR."""
         try:
-            return await self._handle(conversation_id, message)
+            return await self._handle(conversation_id, normalised or message)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "Calendar handling failed; continuing as an ordinary turn",

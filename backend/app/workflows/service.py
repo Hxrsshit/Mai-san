@@ -135,7 +135,11 @@ class WorkflowService:
     # --- One turn -----------------------------------------------------------
 
     async def handle(
-        self, conversation_id: uuid.UUID, message: str, intent: IntentResult
+        self,
+        conversation_id: uuid.UUID,
+        message: str,
+        intent: IntentResult,
+        normalised: Optional[str] = None,
     ) -> WorkflowResult:
         """Examine one turn. Never raises; degrades to NOT_WORKFLOW.
 
@@ -146,8 +150,9 @@ class WorkflowService:
         try:
             pending = await self._pending_for(conversation_id)
             if pending is not None:
+                # The original: a confirmation is its own phrase table.
                 return await self._resolve(pending, message)
-            return await self._maybe_propose(conversation_id, message)
+            return await self._maybe_propose(conversation_id, message, normalised)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "Workflow handling failed; continuing as an ordinary turn",
@@ -158,16 +163,28 @@ class WorkflowService:
     # --- Turn N: propose ----------------------------------------------------
 
     async def _maybe_propose(
-        self, conversation_id: uuid.UUID, message: str
+        self,
+        conversation_id: uuid.UUID,
+        message: str,
+        normalised: Optional[str] = None,
     ) -> WorkflowResult:
-        """Plan and disclose. Sends nothing, writes nothing."""
-        plan = find_plan(message)
+        """Plan and disclose. Sends nothing, writes nothing.
+
+        `message` is what the user wrote and is what gets stored on the plan;
+        `normalised` is the repaired text the grammars read. Keeping them
+        apart is what stops a stored plan claiming the user typed something
+        they did not.
+        """
+        reading = normalised or message
+        plan = find_plan(reading)
         if plan is None:
             # Stage 4H's second shape. Tried after the research-document
             # template, not instead of it: the two grammars are disjoint --
             # one needs an artifact noun, the other a meeting and a time --
             # and trying the older one first keeps its behaviour identical.
-            return await self._maybe_propose_briefing(conversation_id, message)
+            return await self._maybe_propose_briefing(
+                conversation_id, message, reading
+            )
 
         if not self._settings.EXECUTION_ENABLED:
             return WorkflowResult(
@@ -245,7 +262,10 @@ class WorkflowService:
     # --- Stage 4H: briefing composition -------------------------------------
 
     async def _maybe_propose_briefing(
-        self, conversation_id: uuid.UUID, message: str
+        self,
+        conversation_id: uuid.UUID,
+        message: str,
+        reading: Optional[str] = None,
     ) -> WorkflowResult:
         """Recognise a briefing request and either answer it or propose it.
 
@@ -264,7 +284,7 @@ class WorkflowService:
           consent covering disclosed operations, never a consent for one
           thing that silently acquires another.
         """
-        request = briefing.recognise(message, tz=self._timezone())
+        request = briefing.recognise(reading or message, tz=self._timezone())
         if request is None:
             return WorkflowResult(outcome=WorkflowOutcome.NOT_WORKFLOW)
 

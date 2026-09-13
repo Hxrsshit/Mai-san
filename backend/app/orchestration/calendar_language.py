@@ -103,6 +103,25 @@ _GAP_NOUN = r"(?:slots?|hours?|times?|gaps?|windows?|spaces?|moments?)"
 #: attacker-controlled text on a path with no timeout, so that is a denial of
 #: service, not a performance note. One optional opener covers every real
 #: phrasing and cannot backtrack.
+#: Qualifiers people put between the possessive and the noun.
+#:
+#: "my google calendar", "the work calendar", "my personal diary". Without
+#: this, "what's on my google calendar tomorrow?" matched no family at all --
+#: the pattern wanted the possessive adjacent to the noun. Stage 5A found it
+#: while chasing a typo report; the qualifier, not the spelling, was what the
+#: grammar could not see.
+#:
+#: A closed list. It admits an adjective, never an arbitrary word, so
+#: "what's on my urgent-request calendar" does not quietly become a request
+#: about something else.
+_CALENDAR_QUALIFIER = (
+    r"(?:google|gmail|outlook|apple|icloud|office|work|personal|team|"
+    r"shared|main|primary)"
+)
+
+#: The noun, with an optional qualifier in front of it.
+_CALENDAR_PHRASE = rf"(?:{_CALENDAR_QUALIFIER}\s+)?{_CALENDAR_NOUN}"
+
 _LEAD = (
     r"(?:(?:can|could|would|will)\s+you\s*,?\s*|"
     r"(?:please|hey|hi|hello|ok|okay|so|and|also)\s*,?\s*)?"
@@ -180,7 +199,7 @@ _FAMILIES: Tuple[_Family, ...] = (
         CalendarIntent.AVAILABILITY,
         re.compile(
             rf"^{_LEAD}how\s+(?:busy|packed|full|booked|free)\s+"
-            rf"(?:is|does)\s+(?:my|the)\s+{_CALENDAR_NOUN}\b(?P<when>.*)",
+            rf"(?:is|does)\s+(?:my|the)\s+{_CALENDAR_PHRASE}\b(?P<when>.*)",
             re.IGNORECASE | re.DOTALL,
         ),
         time_required=True,
@@ -211,7 +230,7 @@ _FAMILIES: Tuple[_Family, ...] = (
             rf"{_LEAD}what(?:'|’)?s?\s+(?:is\s+)?"
             rf"(?:(?:happening|going\s+on|planned|scheduled|booked|"
             rf"coming\s+up|left)\s+)?"
-            rf"(?:(?:on|in|for)\s+(?:my|the)|my)\s+{_CALENDAR_NOUN}\b"
+            rf"(?:(?:on|in|for)\s+(?:my|the)|my)\s+{_CALENDAR_PHRASE}\b"
             rf"(?P<when>.*)",
             re.IGNORECASE | re.DOTALL,
         ),
@@ -223,7 +242,7 @@ _FAMILIES: Tuple[_Family, ...] = (
         CalendarIntent.SCHEDULE,
         re.compile(
             rf"{_LEAD}(?:what|which|any|do\s+i\s+have|have\s+i\s+got)\s*"
-            rf"(?:\w+\s+){{0,2}}?{_CALENDAR_NOUN}\s*"
+            rf"(?:\w+\s+){{0,2}}?{_CALENDAR_PHRASE}\s*"
             rf"(?:do\s+i\s+have|have\s+i\s+got|are\s+there|do\s+i\s+got|"
             rf"look\s+like)?"
             rf"(?P<when>.*)",
@@ -259,7 +278,7 @@ _FAMILIES: Tuple[_Family, ...] = (
         CalendarIntent.NEXT_EVENT,
         re.compile(
             rf"{_LEAD}(?:when\s+is|what(?:'|’)?s?\s+(?:is\s+)?|when(?:'|’)?s)\s+"
-            rf"(?:my|the)\s+next\s+{_CALENDAR_NOUN}(?P<when>.*)",
+            rf"(?:my|the)\s+next\s+{_CALENDAR_PHRASE}(?P<when>.*)",
             re.IGNORECASE | re.DOTALL,
         ),
     ),
@@ -268,8 +287,9 @@ _FAMILIES: Tuple[_Family, ...] = (
         "show_calendar",
         CalendarIntent.SCHEDULE,
         re.compile(
-            rf"{_LEAD}(?:show|tell|give)\s+me\s+(?:my|the)\s+{_CALENDAR_NOUN}"
-            rf"(?P<when>.*)",
+            rf"{_LEAD}(?:(?:show|tell|give)\s+me\s+(?:my|the)|"
+            rf"(?:check|see|open|pull\s+up|look\s+at)\s+(?:my|the))\s+"
+            rf"{_CALENDAR_PHRASE}(?P<when>.*)",
             re.IGNORECASE | re.DOTALL,
         ),
     ),

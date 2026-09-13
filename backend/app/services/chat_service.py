@@ -38,6 +38,7 @@ from app.research.schemas import ResearchResult
 from app.research.service import ResearchService
 from app.calendar.schemas import CalendarOutcome, CalendarResult
 from app.calendar.service import CalendarService
+from app.language.normalise import normalise
 from app.workflows.schemas import WorkflowOutcome, WorkflowResult
 from app.workflows.service import WorkflowService
 from app.database.models import Conversation, Message, MessageRole
@@ -179,7 +180,26 @@ class ChatService:
         # argument against it. Adds no model call: recognition is a grammar,
         # the time window comes from the application clock, and every refusal
         # is application-written.
-        calendar = await self._calendar.handle(conversation_id, content)
+        # Stage 5A. One normalisation, computed here and passed to the
+        # recognisers only.
+        #
+        # `content` remains the user's own words everywhere it matters: it is
+        # what gets stored as the message, what reaches the prompt, and what
+        # an audit reader sees. Only the grammars read the repaired text, and
+        # they can only ever be handed a word Mai already recognises -- the
+        # normaliser's output vocabulary is closed. So this can change *which*
+        # grammar matches and nothing about what any of them is permitted to
+        # do.
+        #
+        # Applied to the user's message and to nothing else. Calendar events,
+        # web results and retrieved memories never pass through it: a
+        # normaliser over untrusted content would be a way to nudge a hostile
+        # string until it matched a request grammar.
+        reading = normalise(content)
+
+        calendar = await self._calendar.handle(
+            conversation_id, content, normalised=reading.text
+        )
 
         if calendar.has_reply:
             return await self._answer_without_the_model(
@@ -190,7 +210,9 @@ class ChatService:
         workflow = (
             WorkflowResult()
             if calendar.outcome is not CalendarOutcome.NOT_CALENDAR
-            else await self._workflows.handle(conversation_id, content, intent)
+            else await self._workflows.handle(
+                conversation_id, content, intent, normalised=reading.text
+            )
         )
 
         if workflow.has_reply:
@@ -207,7 +229,9 @@ class ChatService:
                 workflow.outcome is not WorkflowOutcome.NOT_WORKFLOW
                 or calendar.outcome is not CalendarOutcome.NOT_CALENDAR
             )
-            else await self._research.handle(conversation_id, content, intent)
+            else await self._research.handle(
+                conversation_id, content, intent, normalised=reading.text
+            )
         )
 
         if research.has_reply:
