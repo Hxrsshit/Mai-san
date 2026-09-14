@@ -39,6 +39,8 @@ from app.research.service import ResearchService
 from app.calendar.schemas import CalendarOutcome, CalendarResult
 from app.calendar.service import CalendarService
 from app.language.normalise import normalise
+from app.mail.schemas import MailOutcome, MailResult
+from app.mail.service import MailService
 from app.workflows.schemas import WorkflowOutcome, WorkflowResult
 from app.workflows.service import WorkflowService
 from app.database.models import Conversation, Message, MessageRole
@@ -70,6 +72,7 @@ class ChatService:
         orchestration_service: Optional[OrchestrationService] = None,
         research_service: Optional["ResearchService"] = None,
         workflow_service: Optional["WorkflowService"] = None,
+        mail_service: Optional["MailService"] = None,
         calendar_service: Optional["CalendarService"] = None,
     ) -> None:
         self._session = session
@@ -86,6 +89,7 @@ class ChatService:
         self._calendar = calendar_service or CalendarService(
             session, settings=settings
         )
+        self._mail = mail_service or MailService(session, settings=settings)
         self._research = research_service or ResearchService(
             session, settings=self._settings
         )
@@ -207,9 +211,35 @@ class ChatService:
                 intent, planning, orchestration, calendar=calendar,
             )
 
+        # Stage 5B. Mail is recognised after the calendar and before the
+        # workflow and research layers.
+        #
+        # After the calendar because the two grammars are disjoint and the
+        # calendar one is older and narrower. Before research because the mail
+        # grammar requires a mail noun *and* a reading verb, so anything it
+        # claims would otherwise have been mishandled -- and because the mail
+        # grammar itself refuses anything that looks like a web search, which
+        # is what keeps "search the web for Gmail pricing" on the research path.
+        mail = (
+            MailResult()
+            if calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+            else await self._mail.handle(
+                conversation_id, content, normalised=reading.text
+            )
+        )
+
+        if mail.has_reply:
+            return await self._answer_without_the_model(
+                conversation, conversation_id, content, ResearchResult(),
+                intent, planning, orchestration, mail=mail,
+            )
+
         workflow = (
             WorkflowResult()
-            if calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+            if (
+                calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+                or mail.outcome is not MailOutcome.NOT_MAIL
+            )
             else await self._workflows.handle(
                 conversation_id, content, intent, normalised=reading.text
             )
@@ -228,6 +258,7 @@ class ChatService:
             if (
                 workflow.outcome is not WorkflowOutcome.NOT_WORKFLOW
                 or calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+                or mail.outcome is not MailOutcome.NOT_MAIL
             )
             else await self._research.handle(
                 conversation_id, content, intent, normalised=reading.text
@@ -247,7 +278,7 @@ class ChatService:
 
         prompt, timings = await self._build_prompt(
             conversation_id, content, research=research, workflow=workflow,
-            calendar=calendar,
+            calendar=calendar, mail=mail,
         )
         prepare_ms = round((time.perf_counter() - started) * 1000, 2)
 
@@ -377,7 +408,7 @@ class ChatService:
         )
         return (
             user_message, assistant_message, intent, planning, orchestration,
-            research, workflow, calendar,
+            research, workflow, calendar, mail,
         )
 
     @staticmethod
@@ -420,6 +451,7 @@ class ChatService:
     async def _answer_without_the_model(
         self, conversation, conversation_id, content, research,
         intent, planning, orchestration, workflow=None, calendar=None,
+        mail=None,
     ):
         """Persist a turn the application answered itself. No model call.
 
@@ -449,6 +481,7 @@ class ChatService:
             # application code precisely so they are true by construction.
             content=(
                 calendar.reply if calendar is not None and calendar.has_reply
+                else mail.reply if mail is not None and mail.has_reply
                 else workflow.reply if workflow is not None and workflow.has_reply
                 else research.reply
             ),
@@ -471,6 +504,7 @@ class ChatService:
             user_message, assistant_message, intent, planning, orchestration,
             research, workflow if workflow is not None else WorkflowResult(),
             calendar if calendar is not None else CalendarResult(),
+            mail if mail is not None else MailResult(),
         )
 
     async def start_conversation_with_message(
@@ -503,6 +537,7 @@ class ChatService:
         content: str,
         research: Optional[ResearchResult] = None,
         workflow: Optional[WorkflowResult] = None,
+        mail: Optional[MailResult] = None,
         calendar: Optional[CalendarResult] = None,
     ) -> Tuple[FormattedPrompt, Dict[str, float]]:
         """Assemble, then format. Never raises.
@@ -553,6 +588,11 @@ class ChatService:
             formatter = formatter.with_calendar(
                 workflow.calendar_block, "", availability=False
             )
+        if mail is not None and mail.messages_block:
+            # Its own section. Mail is the user's own correspondence and
+            # carries the strongest untrusted framing in the system -- anyone
+            # who knows an address can put text here.
+            formatter = formatter.with_mail(mail.messages_block)
         if calendar is not None and calendar.events_block:
             # Calendar events go into the *personal data* section, not the
             # research one. They are the user's own schedule rather than a

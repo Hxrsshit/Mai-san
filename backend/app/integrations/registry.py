@@ -18,6 +18,7 @@ from app.core.logging import get_logger
 from app.integrations.base import Integration
 from app.integrations.errors import UnknownIntegration
 from app.integrations.google_calendar import GoogleCalendarIntegration
+from app.integrations.google_gmail import GoogleGmailIntegration
 from app.integrations.web_search import WebSearchIntegration
 
 logger = get_logger(__name__)
@@ -108,6 +109,10 @@ def build_integrations(
     # found nothing and told the user the integration was not configured when
     # it was merely not connected. One place to register, one place to look.
     target.register(GoogleCalendarIntegration())
+    # Stage 5B. A separate integration, not a Calendar feature: it holds its
+    # own OAuth grant under its own provider key, reaches its own host, and
+    # neither implies the other.
+    target.register(GoogleGmailIntegration())
     return target
 
 

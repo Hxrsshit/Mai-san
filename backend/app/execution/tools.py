@@ -301,8 +301,7 @@ def build_executable_registry(
 ) -> ExecutableRegistry:
     """Register the Stage 4E tools. The only place `register` is called.
 
-    Four tools, each a hand-written class. Adding a fifth means editing this
-    function.
+    Each is a hand-written class. Adding another means editing this function.
 
     `WebSearchTool` is imported here rather than at module scope to break a
     cycle: it subclasses `AsyncIntegrationTool`, which lives in a module that
@@ -311,6 +310,7 @@ def build_executable_registry(
     could reach.
     """
     from app.execution.calendar_tool import CalendarListEventsTool
+    from app.execution.gmail_tools import GmailGetMessageTool, GmailListMessagesTool
     from app.execution.web_search_tool import WebSearchTool
 
     target = registry if registry is not None else _registry
@@ -319,6 +319,8 @@ def build_executable_registry(
     target.register(ListWorkspaceFilesTool())
     target.register(WebSearchTool())
     target.register(CalendarListEventsTool())
+    target.register(GmailListMessagesTool())
+    target.register(GmailGetMessageTool())
     return target
 
 

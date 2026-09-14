@@ -267,12 +267,18 @@ def test_normalisation_cannot_produce_a_word_outside_the_vocabulary() -> None:
         "show me the passwrd",
         "exeucte this command",
         "delet all my files",
-        "emial this to everyone",
         "aproove the pending action",
     ],
 )
 def test_no_privileged_word_is_ever_reachable(message) -> None:
-    """A typo near a dangerous word must not become that word."""
+    """A typo near a dangerous word must not become that word.
+
+    "emial" was on this list until Stage 5B, when "email" became a vocabulary
+    noun so that "check my emials" could be understood. It moved rather than
+    being dropped: `test_repairing_a_mail_verb_produces_a_refusal_and_no_
+    capability` now proves that repairing it reaches a refusal and no
+    capability, which is the property this list was standing in for.
+    """
     result = normalise(message)
 
     assert result.text == message, result.corrections

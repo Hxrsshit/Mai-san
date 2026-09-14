@@ -843,3 +843,163 @@ async def briefing_client(
         yield http_client
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def gmail_tokens(calendar_settings):
+    """A token store holding a *Gmail* grant and nothing else.
+
+    Keyed under the Gmail provider, so a fixture that wants Gmail connected
+    and Calendar not connected is the default rather than a special case --
+    which is the separation Stage 5B exists to enforce.
+    """
+    import datetime
+
+    from app.integrations.google_gmail import GMAIL_READONLY_SCOPE, TOKEN_PROVIDER
+    from app.integrations.token_store import FileTokenStore, StoredToken
+
+    # The settings' own credential directory, not a private one.
+    #
+    # Both the fixture's integration and the *registered* one the API routes
+    # read resolve their store from settings, so a private directory made
+    # `/api/integrations/gmail/status` disagree with the chat path -- the same
+    # split Stage 4F-G had to fix for Calendar. One directory holding one file
+    # per provider is also the real deployment shape.
+    store = FileTokenStore(calendar_settings.MAI_CREDENTIAL_DIR)
+    store.save(
+        TOKEN_PROVIDER,
+        StoredToken(
+            access_token="ya29.GMAIL-ACCESS-SENTINEL-NEVER-REAL",
+            refresh_token="1//GMAIL-REFRESH-SENTINEL-NEVER-REAL",
+            expires_at=(
+                datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(hours=1)
+            ),
+            scopes=frozenset({GMAIL_READONLY_SCOPE}),
+            account="default",
+        ),
+    )
+    return store
+
+
+@pytest_asyncio.fixture
+async def gmail_client(
+    session_factory, fake_provider, calendar_settings, gmail_tokens,
+    workspace, monkeypatch,
+) -> AsyncIterator[AsyncClient]:
+    """A chat client with Gmail connected and a stubbed Google transport.
+
+    The integration, the `SecureHttpClient` and the `NetworkPolicy` are all
+    real -- what these tests exercise is the code that would run against
+    Gmail. Only the socket is replaced.
+
+    Calendar is deliberately *not* connected here: the token store holds a
+    Gmail grant only, so any test that finds Calendar working has found a
+    privilege-isolation bug.
+    """
+    import app.main as main_module
+    from app.execution.dispatcher import Dispatcher
+    from app.execution.gmail_tools import GmailGetMessageTool, GmailListMessagesTool
+    from app.execution.service import ExecutionService
+    from app.execution.tools import ExecutableRegistry
+    from app.integrations.google_gmail import GoogleGmailIntegration
+    from app.integrations.registry import IntegrationRegistry
+    from app.mail.service import MailService
+    from app.prompt.formatter import PromptFormatter
+    from app.runtime.facts import build as build_runtime_facts
+    from app.services.chat_service import ChatService
+    from app.tools.authorization import AuthorizationService
+    from app.tools.catalog import build_catalog
+    from app.tools.registry import ToolRegistry
+    from tests.support.stub_transport import GmailTransport
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: calendar_settings)
+    # The *registered* integration -- the one the `/api/integrations/gmail/*`
+    # routes read -- resolves its settings globally, so a test that only
+    # overrides the dependency leaves the route looking in the real credential
+    # directory. Stage 4F-G's OAuth tests patch the same function for the same
+    # reason.
+    monkeypatch.setattr("app.core.config.get_settings", lambda: calendar_settings)
+
+    transport = GmailTransport()
+
+    def resolve(host, port):
+        return [(2, 1, 6, "", ("142.250.72.1", port))]
+
+    integration = GoogleGmailIntegration(
+        settings=calendar_settings,
+        store=gmail_tokens,
+        api_transport=transport,
+        token_transport=transport,
+        resolve=resolve,
+    )
+    integrations = IntegrationRegistry()
+    integrations.register(integration)
+    integrations.seal()
+
+    tools = build_catalog(ToolRegistry())
+    executable = ExecutableRegistry()
+    executable.register(GmailListMessagesTool())
+    executable.register(GmailGetMessageTool())
+
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            if session.in_transaction():
+                await session.commit()
+
+    from fastapi import Depends
+
+    def override_chat(session: AsyncSession = Depends(get_db_session)):
+        authorization = AuthorizationService(registry=tools)
+        executions = ExecutionService(
+            session,
+            settings=calendar_settings,
+            authorization=authorization,
+            dispatcher=Dispatcher(
+                session, settings=calendar_settings,
+                authorization=authorization, registry=executable,
+                integrations=integrations,
+            ),
+            executable=executable,
+        )
+        return ChatService(
+            session=session,
+            provider=fake_provider,
+            settings=calendar_settings,
+            prompt_formatter=PromptFormatter(
+                system_prompt=calendar_settings.MAI_SYSTEM_PROMPT,
+                runtime_facts=build_runtime_facts(
+                    settings=calendar_settings, provider=fake_provider
+                ),
+            ),
+            mail_service=MailService(
+                session, settings=calendar_settings,
+                executions=executions, integrations=integrations,
+            ),
+        )
+
+    from app.api.deps import get_chat_service
+
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    app.dependency_overrides[get_settings] = lambda: calendar_settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    app.dependency_overrides[get_chat_service] = override_chat
+
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client.gmail_transport = transport
+    client.gmail_integration = integration
+    client.token_store = gmail_tokens
+    client.settings = calendar_settings
+
+    async with client as http_client:
+        yield http_client
+
+    app.dependency_overrides.clear()

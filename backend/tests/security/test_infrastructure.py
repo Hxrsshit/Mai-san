@@ -227,9 +227,17 @@ def test_no_personal_data_is_persisted_in_browser_storage() -> None:
     """Browser storage outlives the session and is readable by any script."""
     offenders = []
     for path in frontend_sources():
-        text = path.read_text(errors="ignore")
-        for api in ("localStorage", "sessionStorage", "document.cookie"):
-            if api in text:
+        # Comment lines are skipped. A raw scan flagged a component whose
+        # docstring says it writes to neither store -- the recurring lesson
+        # that a substring search also reads the prose explaining the
+        # guarantee. The trailing dot keeps it to actual use: `localStorage.`
+        # is a call, `localStorage` in a sentence is not.
+        code = "\n".join(
+            line for line in path.read_text(errors="ignore").splitlines()
+            if not line.lstrip().startswith(("//", "*", "/*"))
+        )
+        for api in ("localStorage.", "sessionStorage.", "document.cookie"):
+            if api in code:
                 offenders.append(f"{path.name}:{api}")
     assert offenders == [], f"browser storage use: {offenders}"
 

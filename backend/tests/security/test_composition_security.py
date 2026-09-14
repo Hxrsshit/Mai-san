@@ -1095,8 +1095,9 @@ async def test_model_output_cannot_create_or_claim_a_capability(
 
     registry = get_executable_registry()
     assert registry.names() == (
-        "calendar_list_events", "create_text_file", "list_workspace_files",
-        "read_text_file", "web_search",
+        "calendar_list_events", "create_text_file", "gmail_get_message",
+        "gmail_list_messages", "list_workspace_files", "read_text_file",
+        "web_search",
     )
 
 

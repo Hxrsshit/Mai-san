@@ -102,6 +102,7 @@ async def test_the_tools_endpoint_still_describes_them_when_disabled(
     } == {
         "calendar_list_events", "create_text_file", "read_text_file",
         "list_workspace_files", "web_search",
+        "gmail_list_messages", "gmail_get_message",
     }
 
 

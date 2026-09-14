@@ -18,7 +18,9 @@ the exact payload, and only when execution is switched on.
 """
 
 import enum
-from typing import Optional, Type
+from typing import Optional, Tuple, Type
+
+from app.integrations.gmail_schemas import MAX_BODIES as GMAIL_MAX_BODIES
 
 from pydantic import Field
 
@@ -342,6 +344,74 @@ def _declare_calendar_read() -> Tool:
     return tool
 
 
+class GmailListMessagesArguments(ToolArguments):
+    """Arguments for `gmail_list_messages`.
+
+    A typed, bounded description of *which* messages to look at. Deliberately
+    no `q`, no `labelIds`, no `pageToken`, no `includeSpamTrash` and no URL:
+    the integration renders Gmail's query language from these fields, so raw
+    Gmail syntax has no way in. `extra="forbid"` means a caller adding one of
+    those names is refused rather than ignored.
+    """
+
+    #: Part of a sender address or domain -- "netflix", "john@acme.com".
+    sender: str = Field(default="", max_length=96)
+    #: Words that must appear in the subject, and anywhere, respectively.
+    subject_terms: Tuple[str, ...] = ()
+    text_terms: Tuple[str, ...] = ()
+    unread_only: bool = False
+    newer_than_days: Optional[int] = Field(default=None, ge=1, le=30)
+    max_results: int = Field(default=5, ge=1, le=10)
+    #: How many of the returned messages to read the body of.
+    #:
+    #: Zero for "what came in today?", which needs only senders and subjects.
+    #: The bodies of messages nobody asked about never cross the network.
+    #:
+    #: Bounded by `MAX_BODIES` rather than by a literal of its own. Two
+    #: numbers for one property drift, and mutation testing showed which way:
+    #: with a separate literal here, the integration's bound became
+    #: unreachable and could be raised without any test noticing.
+    body_count: int = Field(default=0, ge=0, le=GMAIL_MAX_BODIES)
+
+
+class GmailGetMessageArguments(ToolArguments):
+    """Arguments for `gmail_get_message`. One id, from a listing Mai made."""
+
+    message_id: str = Field(..., min_length=1, max_length=128)
+
+
+def _declare_gmail_read(name: str, description: str, arguments) -> Tool:
+    """Declare one of the two Gmail reads.
+
+    **`requires_approval=True`, unlike the calendar read.** The calendar's
+    exemption was argued on the grounds that an event title is low-sensitivity
+    and the question is asked often; neither transfers here.
+
+    `gmail.readonly` is a Google *restricted* scope covering the whole
+    mailbox, and a message body is the most sensitive personal data Mai
+    touches -- frequently about third parties who never consented to anything.
+    Sending it to an external model provider is a real disclosure, and Stage
+    4F-D already requires consent for sending a *search query* to a third
+    party, which is far less. So Gmail follows `web_search`: the user is told
+    what will be read, and says yes.
+
+    Risk is HIGH rather than MEDIUM for the same reason. Nothing is destroyed,
+    but the ladder should reflect what is exposed, not only what is changed.
+    """
+    tool = _ExecutableDeclaration()
+    tool._definition = ToolDefinition(
+        name=name,
+        description=description,
+        category=ToolCategory.INFORMATION,
+        risk_level=RiskLevel.HIGH,
+        requires_approval=True,
+        execution_mode=ExecutionMode.SYNCHRONOUS,
+        enabled=True,
+    )
+    tool._arguments = arguments
+    return tool
+
+
 def build_catalog(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
     """Register every declared tool. Idempotent per registry instance.
 
@@ -374,6 +444,19 @@ def build_catalog(registry: Optional[ToolRegistry] = None) -> ToolRegistry:
         # Stage 4F-G. Read-only, and the one tool that does not require
         # per-use approval -- see `_declare_calendar_read` for why.
         _declare_calendar_read(),
+        # Stage 5B. Two reads, both requiring approval -- see
+        # `_declare_gmail_read`. There is deliberately no third: no send, no
+        # reply, no trash, no label, no draft, no modify.
+        _declare_gmail_read(
+            "gmail_list_messages",
+            "List bounded metadata for the user's Gmail messages. Read-only.",
+            GmailListMessagesArguments,
+        ),
+        _declare_gmail_read(
+            "gmail_get_message",
+            "Read one selected Gmail message, bounded. Read-only.",
+            GmailGetMessageArguments,
+        ),
         _declare_executable(
             "web_search",
             "Search the public web for a query and return sources.",

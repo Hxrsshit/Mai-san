@@ -22,6 +22,10 @@ from app.core.errors import MaiError
 from app.core.logging import get_logger
 from app.integrations.credentials import CredentialStatus
 from app.integrations.google_calendar import REQUIRED_SCOPES
+from app.integrations.google_gmail import (
+    REQUIRED_SCOPES as GMAIL_REQUIRED_SCOPES,
+    TOKEN_PROVIDER as GMAIL_TOKEN_PROVIDER,
+)
 from app.integrations.oauth import (
     OAuthError,
     PendingAuthorizations,
@@ -112,6 +116,30 @@ DISCLOSURE = (
     "When you ask a calendar question, the matching events are sent to the "
     "configured AI model provider so it can answer — attendee lists, meeting "
     "links and email addresses are not. Access can be withdrawn at any time."
+)
+
+
+#: Shown before the user leaves for Google, and it says the parts that are
+#: easy to leave out.
+#:
+#: `gmail.readonly` is a Google *restricted* scope: it grants read access to
+#: the entire mailbox, not to a folder or a search. A disclosure that said
+#: "read-only" and stopped there would be technically accurate and materially
+#: misleading, because the two things people actually want to know are how
+#: much is reachable and where it goes.
+GMAIL_DISCLOSURE = (
+    "Mai is asking Google for read-only access to your Gmail. This is a "
+    "broad permission: it covers your whole mailbox, not a single folder or "
+    "search. Mai cannot send, reply, forward, delete, archive, label or "
+    "change anything.\n\n"
+    "Mai reads mail only when you ask it to, never in the background, and it "
+    "asks you to confirm each time before reading. When you ask a question "
+    "about your mail, the senders, subjects and — if the question needs them "
+    "— the message bodies of the matching messages are sent to the "
+    "configured AI model provider so it can answer. Attachments are never "
+    "read.\n\n"
+    "This is separate from Calendar: connecting one does not connect the "
+    "other. Access can be withdrawn at any time."
 )
 
 
@@ -292,4 +320,187 @@ async def google_disconnect(settings: AppSettings) -> DisconnectResult:
     deleted = store.delete("google")
     _PENDING.clear()
     logger.info("Google account disconnected", extra={"revoked": revoked})
+    return DisconnectResult(disconnected=deleted, revoked_remotely=revoked)
+
+
+# --- Gmail (Stage 5B) --------------------------------------------------------
+#
+# A separate integration end to end: its own consent, its own scope check, its
+# own token file. The two flows share the OAuth machinery -- `_PENDING`, PKCE,
+# one-shot state, redirect validation -- and share nothing else, which is what
+# makes "Calendar is connected" and "Gmail is connected" independent facts.
+
+
+def _gmail(settings):
+    """The registered Gmail integration, not a fresh one.
+
+    Reading the registry rather than constructing an instance is the fix
+    Stage 4F-G had to make for Calendar after `/status` and the chat path
+    disagreed. The same mistake is available here, so the same answer is
+    used.
+    """
+    from app.integrations.registry import get_integration_registry
+
+    return get_integration_registry().get("google_gmail")
+
+
+@router.get(
+    "/gmail/status",
+    response_model=ConnectionRead,
+    summary="Whether Gmail is connected. Returns no credential.",
+)
+async def gmail_status(settings: AppSettings) -> ConnectionRead:
+    integration = _gmail(settings)
+    credential = integration.credential_state()
+
+    return ConnectionRead(
+        integration="google_gmail",
+        state=integration.state().value,
+        connected=credential.status is CredentialStatus.AVAILABLE,
+        granted_scopes=tuple(credential.granted_scopes),
+        required_scopes=tuple(sorted(GMAIL_REQUIRED_SCOPES)),
+    )
+
+
+@router.post(
+    "/gmail/connect",
+    response_model=AuthorizationStart,
+    summary="Begin Gmail authorization. Returns a URL; starts nothing itself.",
+)
+async def gmail_connect(settings: AppSettings) -> AuthorizationStart:
+    """Build the consent URL for Gmail alone.
+
+    `GMAIL_REQUIRED_SCOPES` and nothing else: the Calendar scope is not added,
+    so a user connecting Gmail is not quietly asked for their calendar too.
+    """
+    if not settings.GOOGLE_OAUTH_CLIENT_ID:
+        raise IntegrationNotConfigured(
+            "No Google OAuth client is configured for this instance."
+        )
+
+    try:
+        started = build_authorization_url(
+            client_id=settings.GOOGLE_OAUTH_CLIENT_ID,
+            redirect_uri=settings.GOOGLE_GMAIL_REDIRECT_URI,
+            scopes=GMAIL_REQUIRED_SCOPES,
+            pending=_PENDING,
+        )
+    except OAuthError as failure:
+        raise OAuthFailed(f"Could not begin authorization ({failure.reason}).")
+
+    logger.info(
+        "Gmail authorization started",
+        # A count of scope names, which are public URLs. Never the state,
+        # which is this flow's CSRF token.
+        extra={"scopes": len(GMAIL_REQUIRED_SCOPES)},
+    )
+    return AuthorizationStart(
+        authorization_url=started.authorization_url, disclosure=GMAIL_DISCLOSURE
+    )
+
+
+@router.get(
+    "/gmail/callback",
+    response_model=ConnectionRead,
+    summary="Receive the Gmail authorization code. Verifies state and scope.",
+)
+async def gmail_callback(
+    settings: AppSettings,
+    code: Optional[str] = Query(default=None, max_length=2048),
+    state: Optional[str] = Query(default=None, max_length=512),
+    error: Optional[str] = Query(default=None, max_length=200),
+) -> ConnectionRead:
+    """Complete the Gmail flow.
+
+    Identical in shape to the Calendar callback and different in exactly two
+    places: the scope it demands, and the provider key it stores under.
+    """
+    if error:
+        logger.info("Gmail authorization was not completed")
+        raise OAuthFailed("Authorization was not completed.")
+
+    pending = _PENDING.consume(state or "")
+    if pending is None:
+        logger.warning("Rejected a Gmail callback with an unrecognised state")
+        raise OAuthFailed("That authorization request is no longer valid.")
+
+    if not code:
+        raise OAuthFailed("The authorization response carried no code.")
+
+    client = None
+    try:
+        from app.integrations.http_client import SecureHttpClient
+
+        client = SecureHttpClient(policy=token_policy())
+        token = await exchange_code(
+            client,
+            client_id=settings.GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=settings.GOOGLE_OAUTH_CLIENT_SECRET,
+            code=code,
+            pending=pending,
+        )
+    except OAuthError as failure:
+        logger.warning("Gmail token exchange failed", extra={"reason": failure.reason})
+        raise OAuthFailed("Could not complete authorization with Google.")
+    finally:
+        if client is not None:
+            await client.aclose()
+
+    if not token.covers(GMAIL_REQUIRED_SCOPES):
+        # Exact required-scope validation. Google lets a user deselect scopes
+        # at the consent screen, and a *Calendar* grant arriving here would
+        # also fail this check -- which is the point. Neither is stored:
+        # keeping a grant that does not cover the read would leave Gmail
+        # looking connected and failing on every use.
+        logger.warning("Google granted fewer scopes than Gmail requires")
+        raise OAuthFailed(
+            "The granted permissions do not include reading Gmail."
+        )
+
+    try:
+        _store(settings).save(GMAIL_TOKEN_PROVIDER, token)
+    except TokenStoreError as failure:
+        logger.error(
+            "Could not store the Gmail token", extra={"reason": failure.args[0]}
+        )
+        raise OAuthFailed(
+            "Authorization succeeded but the credential could not be stored."
+        )
+
+    logger.info("Gmail connected", extra={"scopes": len(token.scopes)})
+    return await gmail_status(settings)
+
+
+@router.post(
+    "/gmail/disconnect",
+    response_model=DisconnectResult,
+    summary="Withdraw Gmail access and delete the stored token.",
+)
+async def gmail_disconnect(settings: AppSettings) -> DisconnectResult:
+    """Revoke at Google, then delete locally. Deletes even if revocation fails."""
+    store = _store(settings)
+    revoked = False
+    try:
+        token = store.load(GMAIL_TOKEN_PROVIDER, "default")
+    except Exception:  # noqa: BLE001
+        token = None
+
+    if token is not None:
+        client = None
+        try:
+            from app.integrations.http_client import SecureHttpClient
+
+            client = SecureHttpClient(policy=token_policy())
+            revoked = await revoke(client, token)
+        except Exception:  # noqa: BLE001
+            # A revocation that fails must not stop the local delete. Leaving
+            # the token on disk because Google was unreachable is the worse
+            # of the two failures.
+            logger.warning("Gmail token revocation failed")
+        finally:
+            if client is not None:
+                await client.aclose()
+
+    deleted = store.delete(GMAIL_TOKEN_PROVIDER, "default")
+    logger.info("Gmail disconnected", extra={"revoked": revoked, "deleted": deleted})
     return DisconnectResult(disconnected=deleted, revoked_remotely=revoked)

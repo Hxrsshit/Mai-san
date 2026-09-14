@@ -329,9 +329,16 @@ def test_the_executor_offers_exactly_the_expected_capabilities() -> None:
     from app.execution.tools import get_executable_registry
 
     assert get_executable_registry().names() == (
-        "calendar_list_events", "create_text_file", "list_workspace_files",
-        "read_text_file", "web_search",
+        "calendar_list_events", "create_text_file", "gmail_get_message",
+        "gmail_list_messages", "list_workspace_files", "read_text_file",
+        "web_search",
     )
+
+    # And no Gmail write exists to be executable, however the list grows.
+    for write in ("gmail_send_message", "gmail_reply", "gmail_forward",
+                  "gmail_trash", "gmail_archive", "gmail_modify_labels",
+                  "gmail_create_draft", "gmail_request"):
+        assert get_executable_registry().get(write) is None, write
 
 
 def test_no_execution_module_can_run_a_shell_or_open_a_socket() -> None:

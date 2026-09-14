@@ -11,6 +11,7 @@ from app.intent.schemas import IntentRead
 from app.orchestration.schemas import OrchestrationRead
 from app.planning.schemas import PlanningRead
 from app.schemas.calendar import CalendarRead
+from app.schemas.mail import MailRead
 from app.schemas.workflow import WorkflowRead
 
 
@@ -105,6 +106,10 @@ class ChatResponse(BaseModel):
     #: Stage 4F-E. None on any turn that was not a workflow, so a client
     #: cannot mistake "no workflow" for "a workflow that did nothing".
     workflow: Optional["WorkflowRead"] = None
+
+    #: Stage 5B. None on any turn that had nothing to do with mail. Carries
+    #: counts and an outcome -- never a sender, subject, body or message id.
+    mail: Optional["MailRead"] = None
 
     #: Stage 4F-G. None on any turn that did not concern the calendar.
     #: Carries no event content -- see `app/schemas/calendar.py`.

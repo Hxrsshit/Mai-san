@@ -1,5 +1,6 @@
 "use client";
 
+import { IntegrationsPanel } from "@/components/IntegrationsPanel";
 import type { Conversation } from "@/lib/types";
 
 interface Props {
@@ -10,6 +11,7 @@ interface Props {
   onDelete: (id: string) => void;
   disabled: boolean;
 }
+
 
 export function Sidebar({
   conversations,
@@ -75,6 +77,8 @@ export function Sidebar({
           </ul>
         )}
       </nav>
+
+      <IntegrationsPanel />
 
       <div className="border-t border-[var(--color-border)] px-4 py-3">
         <p className="text-xs text-[var(--color-muted)]">Mai · Stage 1</p>

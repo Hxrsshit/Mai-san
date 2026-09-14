@@ -6,10 +6,12 @@
  */
 
 import type {
+  AuthorizationStart,
   ChatResponse,
   Conversation,
   ConversationDetail,
   ConversationList,
+  IntegrationStatus,
 } from "./types";
 
 const API_URL =
@@ -100,3 +102,38 @@ export const api = {
 };
 
 export { API_URL };
+
+
+/**
+ * Integration status and connection.
+ *
+ * Every call goes to the Mai backend. The browser never talks to Google, never
+ * holds a token, and never sees one: the OAuth code is exchanged server-side
+ * and the credential is written to the backend's own store. What crosses to
+ * the browser is a state string, a boolean and the public scope names.
+ *
+ * Calendar and Gmail are deliberately separate endpoints. Connecting one says
+ * nothing about the other, and the UI reflects that rather than presenting a
+ * single "Google" switch.
+ */
+export async function getIntegrationStatus(
+  integration: "google" | "gmail",
+): Promise<IntegrationStatus> {
+  return request<IntegrationStatus>(`/api/integrations/${integration}/status`);
+}
+
+export async function beginIntegrationConnect(
+  integration: "google" | "gmail",
+): Promise<AuthorizationStart> {
+  return request<AuthorizationStart>(`/api/integrations/${integration}/connect`, {
+    method: "POST",
+  });
+}
+
+export async function disconnectIntegration(
+  integration: "google" | "gmail",
+): Promise<{ disconnected: boolean; revoked_remotely: boolean }> {
+  return request(`/api/integrations/${integration}/disconnect`, {
+    method: "POST",
+  });
+}

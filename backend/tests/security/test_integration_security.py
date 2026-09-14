@@ -274,6 +274,14 @@ def test_no_integration_module_turns_a_string_into_code() -> None:
         "eval", "exec", "compile", "__import__", "importlib", "pickle",
         "marshal", "setattr", "globals", "locals", "vars",
     }
+    #: `re.compile` builds a pattern and is not the `compile` builtin.
+    #:
+    #: Named explicitly rather than matched by bare attribute name, so the
+    #: exemption is one call and not a whole family. Recording only
+    #: `target.attr` flagged the first integration module to compile a regex
+    #: at import -- a test that cannot tell `re.compile` from `compile` gets
+    #: silenced rather than fixed.
+    permitted = {"re.compile", "re.sub", "re.escape", "re.match", "re.search"}
 
     for path in INTEGRATIONS.rglob("*.py"):
         tree = ast.parse(path.read_text())
@@ -284,7 +292,10 @@ def test_no_integration_module_turns_a_string_into_code() -> None:
                 if isinstance(target, ast.Name):
                     called.add(target.id)
                 elif isinstance(target, ast.Attribute):
-                    called.add(target.attr)
+                    base = getattr(target.value, "id", None)
+                    dotted = f"{base}.{target.attr}" if base else target.attr
+                    if dotted not in permitted:
+                        called.add(target.attr)
             elif isinstance(node, ast.Import):
                 called.update(alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom):

@@ -260,6 +260,20 @@ class Settings(BaseSettings):
     GOOGLE_OAUTH_REDIRECT_URI: str = (
         "http://127.0.0.1:8000/api/integrations/google/callback"
     )
+    #: Where the Gmail consent screen sends its code back.
+    #:
+    #: A *separate* path from the Calendar callback, and separate on purpose.
+    #: Each callback validates exactly one required scope set, so a Gmail
+    #: grant arriving at the Calendar callback is refused and vice versa --
+    #: sharing one route would mean dispatching on the pending authorization's
+    #: scopes, and a mis-dispatch there would store a grant under the wrong
+    #: provider key.
+    #:
+    #: This must also be registered in the Google Cloud console alongside the
+    #: Calendar one; Google requires an exact match.
+    GOOGLE_GMAIL_REDIRECT_URI: str = (
+        "http://127.0.0.1:8000/api/integrations/gmail/callback"
+    )
     #: Where OAuth tokens live. Outside the source tree, outside the image,
     #: mode 0700, files mode 0600. See app/integrations/token_store.py for
     #: why this is not encrypted.

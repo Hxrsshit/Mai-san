@@ -169,3 +169,110 @@ def sent_query(transport, index: int = 0) -> str:
     raise AssertionError(
         f"no query found in request {index}: url={url!r} body={body!r}"
     )
+
+
+def gmail_list_payload(count: int = 2) -> Dict[str, Any]:
+    """A Gmail listing response. Ids only, as Gmail actually returns."""
+    return {
+        "messages": [
+            {"id": f"msg-{index}", "threadId": f"thread-{index}"}
+            for index in range(1, count + 1)
+        ],
+        "resultSizeEstimate": count,
+    }
+
+
+def gmail_message_payload(
+    identifier: str = "msg-1",
+    sender: str = "Netflix <info@netflix.example>",
+    subject: str = "Your bill",
+    body: str = "Your subscription renews on Friday.",
+    unread: bool = True,
+    extras: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """A Gmail message, carrying everything Mai must not keep.
+
+    Attachments, extra headers, an HTML alternative and a raw field are all
+    present deliberately, so a test proves they are dropped rather than merely
+    absent from a thin fixture.
+    """
+    import base64
+
+    encoded = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
+    payload = {
+        "id": identifier,
+        "threadId": f"thread-{identifier}",
+        "labelIds": ["INBOX"] + (["UNREAD"] if unread else []),
+        "snippet": body[:80],
+        "historyId": "998877",
+        "internalDate": "1789000000000",
+        "sizeEstimate": 40000,
+        "raw": "RAWSENTINEL-should-never-be-read",
+        "payload": {
+            "mimeType": "multipart/alternative",
+            "headers": [
+                {"name": "From", "value": sender},
+                {"name": "To", "value": "TOSENTINEL@example.com"},
+                {"name": "Cc", "value": "CCSENTINEL@example.com"},
+                {"name": "Bcc", "value": "BCCSENTINEL@example.com"},
+                {"name": "Subject", "value": subject},
+                {"name": "Date", "value": "Mon, 14 Sep 2026 09:00:00 +0000"},
+                {"name": "Reply-To", "value": "REPLYTOSENTINEL@example.com"},
+                {"name": "Message-ID", "value": "<MSGIDSENTINEL@example.com>"},
+                {"name": "Received", "value": "RECEIVEDSENTINEL"},
+                {"name": "List-Unsubscribe", "value": "UNSUBSENTINEL"},
+                {"name": "DKIM-Signature", "value": "DKIMSENTINEL"},
+            ],
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"size": len(body), "data": encoded},
+                },
+                {
+                    "mimeType": "text/html",
+                    "body": {
+                        "size": 40,
+                        "data": base64.urlsafe_b64encode(
+                            b"<b>HTMLSENTINEL</b>"
+                        ).decode().rstrip("="),
+                    },
+                },
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "ATTACHSENTINEL.pdf",
+                    "body": {"attachmentId": "ATTACHIDSENTINEL", "size": 900},
+                },
+            ],
+        },
+    }
+    if extras:
+        payload.update(extras)
+    return payload
+
+
+class GmailTransport(StubTransport):
+    """Answers a Gmail listing and per-message fetches from a script.
+
+    Gmail needs two shapes from one host -- a listing at `/messages` and a
+    message at `/messages/{id}` -- so a single fixed payload cannot serve
+    both. This routes on the path and records every URL it was asked for,
+    which is what several bounds tests assert against.
+    """
+
+    def __init__(self, listing=None, messages=None, status_code: int = 200, **kwargs):
+        super().__init__(status_code=status_code, **kwargs)
+        self.listing = listing if listing is not None else gmail_list_payload()
+        self.messages = messages if messages is not None else {}
+        self.urls: List[str] = []
+
+    async def handle_async_request(self, request):
+        self.urls.append(str(request.url))
+        path = request.url.path
+        if path.endswith("/messages"):
+            self._payload = self.listing
+        else:
+            identifier = path.rsplit("/", 1)[-1]
+            self._payload = self.messages.get(
+                identifier, gmail_message_payload(identifier)
+            )
+        return await super().handle_async_request(request)

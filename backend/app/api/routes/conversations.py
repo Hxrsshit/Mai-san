@@ -26,6 +26,7 @@ from app.planning.schemas import PlanningRead
 from app.memory.tasks import run_memory_extraction
 from app.calendar.schemas import CalendarOutcome
 from app.schemas.calendar import CalendarRead
+from app.schemas.mail import MailRead
 from app.schemas.workflow import WorkflowRead
 from app.schemas.message import (
     ChatResponse,
@@ -56,6 +57,22 @@ def composition_touched_personal_data(workflow) -> bool:
         or workflow.research_attempted
         or workflow.research_block
     )
+
+
+def mail_touched_personal_data(mail) -> bool:
+    """Whether this turn involved the user's mailbox at all.
+
+    Stage 5B inherits the rule Stage 4F-G set for the calendar and Stage 4H
+    extended to compositions: nothing from this turn becomes a long-term
+    memory merely because Mai went and looked at something.
+
+    It matters more here. An email routinely states a fact about the user --
+    "your meeting with Netflix is tomorrow" -- and extracting it would teach
+    Mai something the user never told it, from a message a stranger may have
+    sent. Keyed on the turn having *touched* mail, not on the read having
+    succeeded.
+    """
+    return bool(mail is not None and mail.touched_mail)
 
 
 def touches_personal_data(calendar) -> bool:
@@ -186,6 +203,7 @@ async def send_message(
         research,
         workflow,
         calendar,
+        mail,
     ) = await chat.send_message(
         conversation_id=conversation_id, content=payload.content
     )
@@ -209,8 +227,10 @@ async def send_message(
     #
     # Request-scoped means request-scoped. A user who wants Mai to remember
     # something from their calendar can say so, and that is an ordinary turn.
-    reads_personal_data = touches_personal_data(calendar) or (
-        composition_touched_personal_data(workflow)
+    reads_personal_data = (
+        touches_personal_data(calendar)
+        or composition_touched_personal_data(workflow)
+        or mail_touched_personal_data(mail)
     )
 
     if (
@@ -252,6 +272,7 @@ async def send_message(
         # written. No fingerprint, no plan internals, no filesystem path
         # beyond the workspace-relative name the user was already shown.
         workflow=WorkflowRead.from_result(workflow),
+        mail=MailRead.from_result(mail),
         # Stage 4F-G. Whether a calendar read happened and how many
         # events it found -- never the events, which are private.
         calendar=CalendarRead.from_result(calendar),

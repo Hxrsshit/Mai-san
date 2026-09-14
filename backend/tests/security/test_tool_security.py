@@ -466,6 +466,7 @@ def test_nothing_outside_the_package_holds_a_tool_instance() -> None:
     # guarantee -- that a `Tool` defines no way to be run -- untouched.
     assert sorted(schema_importers) == [
         "execution/calendar_tool.py",
+        "execution/gmail_tools.py",
         "execution/tools.py",
         "execution/web_search_tool.py",
     ], schema_importers

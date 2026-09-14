@@ -425,13 +425,13 @@ async def test_orchestration_never_enters_the_prompt(
 
     await client.post(
         f"/api/conversations/{conversation_id}/messages",
-        json={"content": "Send an email to Gautam."},
+        json={"content": "Delete the file notes.txt."},
     )
 
     prompt = "\n".join(message.content for message in fake_provider.last_call)
     for leaked in (
-        "future_send_email", "approval_required", "action_requires_approval",
-        "orchestration", "requires_approval",
+        "future_delete_file", "future_send_email", "approval_required",
+        "action_requires_approval", "orchestration", "requires_approval",
     ):
         assert leaked not in prompt
 
@@ -446,7 +446,7 @@ async def test_the_prompt_is_identical_with_and_without_orchestration(
     first = (await client.post("/api/conversations", json={})).json()["id"]
     await client.post(
         f"/api/conversations/{first}/messages",
-        json={"content": "Send an email to Gautam."},
+        json={"content": "Delete the file notes.txt."},
     )
     with_orchestration = [m.to_dict() for m in fake_provider.last_call]
 
@@ -454,7 +454,7 @@ async def test_the_prompt_is_identical_with_and_without_orchestration(
     second = (await client.post("/api/conversations", json={})).json()["id"]
     await client.post(
         f"/api/conversations/{second}/messages",
-        json={"content": "Send an email to Gautam."},
+        json={"content": "Delete the file notes.txt."},
     )
     without = [m.to_dict() for m in fake_provider.last_call]
 

@@ -59,6 +59,9 @@ services:
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://127.0.0.1:8000/api/integrations/google/callback}
+      # Gmail has its own callback so each one validates a single scope set.
+      # Register both in the Google Cloud console.
+      GOOGLE_GMAIL_REDIRECT_URI: ${GOOGLE_GMAIL_REDIRECT_URI:-http://127.0.0.1:8000/api/integrations/gmail/callback}
       # OAuth tokens live here. A named volume, not a bind mount: the tokens
       # belong to the container's own state rather than the source tree, so
       # they cannot be committed and are not copied into an image.

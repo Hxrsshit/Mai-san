@@ -248,6 +248,10 @@ def test_the_catalogue_registers_the_expected_tools(registry) -> None:
         "future_generate_document",
         "future_send_email",
         "future_web_search",
+        # Stage 5B. Two reads, both approval-required, HIGH risk. There is
+        # deliberately no third: no send, reply, trash, label or draft.
+        "gmail_get_message",
+        "gmail_list_messages",
         "list_workspace_files",
         "read_text_file",
         "web_search",
@@ -268,8 +272,9 @@ def test_only_the_expected_tools_are_executable(registry) -> None:
         if registry.definition(name).execution_mode is not ExecutionMode.UNAVAILABLE
     )
     assert executable == (
-        "calendar_list_events", "create_text_file", "list_workspace_files",
-        "read_text_file", "web_search",
+        "calendar_list_events", "create_text_file", "gmail_get_message",
+        "gmail_list_messages", "list_workspace_files", "read_text_file",
+        "web_search",
     )
 
     for name in registry.names():

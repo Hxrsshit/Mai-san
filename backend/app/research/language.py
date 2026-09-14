@@ -55,17 +55,6 @@ _CONNECTOR = (
     r"explain|look\s+for|search\s+for|see\s+about|for|about|on)?\s*"
 )
 
-#: Google products Mai either integrates with or would have to.
-#:
-#: "google calendar" is the name of a thing. Treating it as "search the web
-#: for calendar" is the defect Stage 5A found -- and the neighbours are listed
-#: too, because "add this to my google drive" should reach an honest "I can't
-#: do that" rather than succeed as a web search for the word "drive".
-_GOOGLE_PRODUCT = (
-    r"(?:calendars?|drive|docs?|sheets|slides|meet|mail|gmail|"
-    r"photos|maps|keep|tasks|contacts|chat|workspace|account)"
-)
-
 #: Request shapes, most specific first. Each captures `subject`.
 #:
 #: Ordering matters: the scoped family must be tried before the bare ones, so
@@ -115,26 +104,25 @@ _FAMILIES = (
     ),
     # "Research X", "Google X"
     #
-    # `google` carries two guards that `research` does not need, because it is
-    # the only trigger here that is also a company whose products Mai
-    # integrates with.
+    # `google` must **open the request**, and `research` need not. It is the
+    # only trigger here that is also a company whose products Mai integrates
+    # with, so the same six letters are a command in one position and a noun
+    # in another:
     #
-    # Without them "what is on my google calendar tomorrow?" parsed as
-    # `google <subject>` and searched the web for "calendar tomorrow" -- a
-    # correctly spelled, entirely ordinary calendar question sent to a search
-    # provider. The typo report that prompted Stage 5A exposed this defect;
-    # the spelling was never the cause of it.
+    #     "google Gmail API documentation"       a command  -> search
+    #     "what is on my google calendar?"       a noun     -> not a search
+    #     "add google calendar to my phone"      a noun     -> not a search
     #
-    #   a determiner before it  "my google calendar" is a noun phrase, not an
-    #                           instruction. Nobody commands "the google X".
-    #   a product name after it "google calendar" names a thing, not a search
-    #                           subject.
+    # Stage 5A first fixed this with a determiner lookbehind and a product-name
+    # lookahead. Both were right about the cases they were written for and
+    # wrong in general: the product guard also refused "google Gmail API
+    # documentation", which is a perfectly ordinary search request. Position
+    # is the property that actually separates the two, and it needs no list of
+    # products to maintain.
     (
         "research_verb",
         re.compile(
-            rf"{_LEAD}(?:research|(?<!\bmy\s)(?<!\bthe\s)(?<!\byour\s)"
-            rf"(?<!\bour\s)(?<!\btheir\s)(?<!\bhis\s)(?<!\bher\s)"
-            rf"google(?!\s+{_GOOGLE_PRODUCT}\b))\s+(?P<subject>.+)",
+            rf"^{_LEAD}(?:research\s+|google\s+)(?P<subject>.+)",
             re.IGNORECASE | re.DOTALL,
         ),
     ),

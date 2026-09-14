@@ -176,12 +176,14 @@ def test_no_vocabulary_word_can_trigger_an_external_operation() -> None:
     A layer that could repair a broken verb into a working one could
     manufacture an instruction out of noise, so the vocabulary holds nouns.
 
-    The exception is worth naming precisely rather than hiding: **"schedule"
-    is in the set**, because "what's on my schedual" is a real question and
-    the word is a noun there. Its verb sense reaches exactly one place --
-    the write-request detector -- which performs nothing and produces a
-    refusal, because no calendar write capability exists. The test below
-    proves that, so the exception is verified rather than asserted.
+    Two exceptions are worth naming precisely rather than hiding:
+    **"schedule" and "email" are in the set**, because "what's on my
+    schedual" and "check my emials" are real questions and the words are
+    nouns there. Each has a verb sense, and each verb sense reaches exactly
+    one place -- a write-request detector -- which performs nothing and
+    produces a refusal, because no calendar-write and no mail-send capability
+    exists. The tests below prove that, so the exceptions are verified rather
+    than asserted.
 
     What the vocabulary may never contain is a verb that reaches an *external*
     operation: a search or a file write.
@@ -189,8 +191,8 @@ def test_no_vocabulary_word_can_trigger_an_external_operation() -> None:
     triggers = {
         "search", "google", "researching", "research", "find", "lookup",
         "create", "write", "make", "save", "generate", "produce", "send",
-        "email", "run", "execute", "approve", "authorize", "authorise",
-        "yes", "confirm", "delete", "remove",
+        "run", "execute", "approve", "authorize", "authorise",
+        "yes", "confirm", "delete", "remove", "forward", "reply", "archive",
     }
     assert not (CANONICAL_TERMS & triggers), CANONICAL_TERMS & triggers
     assert not (set(KNOWN_MISSPELLINGS.values()) & triggers)
@@ -459,3 +461,29 @@ def test_the_ratio_guard_was_removed_as_unreachable() -> None:
         if not (length < 8 and distance > 1) and distance * 3 > length
     ]
     assert reachable == [], reachable
+
+
+
+def test_repairing_a_mail_verb_produces_a_refusal_and_no_capability() -> None:
+    """The "email" exception, verified.
+
+    "emial this to everyone" repairs into a mail write request. That must
+    reach a truthful refusal and nothing else -- no capability appears,
+    because none exists to appear.
+    """
+    from app.orchestration.mail_language import recognise as recognise_mail
+
+    text = normalise("emial this to everyone").text
+    assert text == "email this to everyone"
+
+    request = recognise_mail(text)
+    assert request.is_write_request is True
+    assert request.is_readable is False
+
+    from app.execution.tools import get_executable_registry
+    from app.tools.registry import get_registry
+
+    for write in ("gmail_send_message", "gmail_reply", "gmail_forward",
+                  "gmail_trash", "gmail_archive", "gmail_create_draft"):
+        assert get_executable_registry().get(write) is None, write
+        assert get_registry().get(write) is None, write

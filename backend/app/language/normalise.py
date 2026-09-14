@@ -114,6 +114,14 @@ CANONICAL_TERMS: FrozenSet[str] = frozenset({
     # Things Mai produces
     "notification", "notifications", "briefing", "briefings", "summary",
     "document", "available",
+    # Mail (Stage 5B). Nouns, as everywhere else in this set -- "send",
+    # "reply", "forward" and "delete" are deliberately absent, so a broken
+    # mail *verb* is never repaired into a working one.
+    #: Only words a grammar actually matches on. "sender", "subject" and
+    #: "attachment" were here briefly and were removed: no recogniser reads
+    #: them, and every extra entry is another word a fragment can reach.
+    "email", "emails", "gmail", "inbox", "mailbox", "message", "messages",
+    "unread",
 })
 
 #: Misspellings seen in the wild, mapped explicitly.
@@ -147,6 +155,12 @@ KNOWN_MISSPELLINGS: Dict[str, str] = {
     "evning": "evening", "wendsday": "wednesday", "wensday": "wednesday",
     "thurday": "thursday", "thusday": "thursday", "saterday": "saturday",
     "tuesdy": "tuesday",
+    # mail
+    "emial": "email", "emails": "emails", "emil": "email", "eamil": "email",
+    "emais": "emails", "emials": "emails", "emaill": "email",
+    "gmial": "gmail", "gmal": "gmail", "gamil": "gmail", "gmaill": "gmail",
+    "inobx": "inbox", "inbx": "inbox", "mesage": "message",
+    "mesages": "messages", "messsage": "message", "unraed": "unread",
     # misc
     "breifing": "briefing", "brifing": "briefing", "summry": "summary",
     "documnet": "document", "avaliable": "available",
@@ -170,6 +184,11 @@ PROTECTED_WORDS: FrozenSet[str] = frozenset({
     "summer", "summary", "summaries", "summon",
     "monday", "money", "monkey", "sunday", "sundry", "friday", "fridge",
     "documents", "documented", "documenting",
+    # Real words close to the mail nouns.
+    "emailed", "emailing", "mailed", "mailing", "mailer",
+    "massage", "massages", "passage", "passages", "manage", "manages",
+    "sends", "sender", "sendera", "subjects", "subjected", "unreal",
+    "inbound", "outbox",
 })
 
 #: The token shape a correction may apply to: letters, with an optional
@@ -192,6 +211,26 @@ _GLUED_BEFORE = frozenset("@/\\._-:=#$0123456789")
 _GLUED_AFTER = frozenset("@/\\_:=#$0123456789")
 
 
+def _is_invisible(char: str) -> bool:
+    """A zero-width, format or combining character.
+
+    These separate a word only to a parser, never to a reader, so a token
+    beside one is a fragment. Found the same way the homoglyph case was: a
+    zero-width space split "cal\u200bender" into "cal" and "ender", and once
+    "sender" entered the vocabulary the fragment was one edit away from it --
+    producing "cal\u200bsender", a word nobody typed, assembled from an
+    invisible character.
+
+    The lesson generalises past the two characters that caused it: any
+    vocabulary word within an edit of a common fragment reopens this, so the
+    check belongs on the *shape* of the input rather than on a list of
+    dangerous characters.
+    """
+    import unicodedata
+
+    return unicodedata.category(char) in {"Cf", "Mn", "Me", "Cc"}
+
+
 def _is_glued(before: str, after: str) -> bool:
     """Whether a token sits inside an identifier, address, URL or other word.
 
@@ -208,9 +247,13 @@ def _is_glued(before: str, after: str) -> bool:
     confusable. A fragment touching a letter is not a word, whatever script
     that letter belongs to.
     """
-    if before and (before[-1] in _GLUED_BEFORE or before[-1].isalpha()):
+    if before and (
+        before[-1] in _GLUED_BEFORE
+        or before[-1].isalpha()
+        or _is_invisible(before[-1])
+    ):
         return True
-    if after and after[0].isalpha():
+    if after and (after[0].isalpha() or _is_invisible(after[0])):
         return True
     if not after:
         return False
