@@ -20,7 +20,7 @@ stated baseline exactly.
 
 ## Implementation commit
 
-_(recorded below)_
+`f9bb895`
 
 ## Architecture
 
