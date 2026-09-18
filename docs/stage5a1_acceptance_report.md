@@ -21,7 +21,7 @@ registry holds `google_calendar, google_gmail, web_search`; Gmail scope
 
 ## Implementation commit
 
-`(recorded below)`
+`2392c6d`
 
 ## Root cause
 
