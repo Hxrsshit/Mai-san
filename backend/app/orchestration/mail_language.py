@@ -116,12 +116,18 @@ _FAMILIES: Tuple[_Family, ...] = (
             re.IGNORECASE | re.DOTALL,
         ),
     ),
-    # "What emails did I get today?"
+    # "What emails did I get today?", "what are my latest emails?"
+    #
+    # Three intervening words rather than two: "what **are my latest**
+    # emails?" is an ordinary way to ask, and at two it fell through to no
+    # handler at all -- the user asked for their mail and got a general
+    # answer. The product guard below is what keeps the extra word from
+    # widening this into questions *about* Gmail.
     _Family(
         "what_emails",
         MailIntent.LIST,
         re.compile(
-            rf"^{_LEAD}(?:what|which|how\s+many)\s+(?:\w+\s+){{0,2}}?"
+            rf"^{_LEAD}(?:what|which|how\s+many)\s+(?:\w+\s+){{0,3}}?"
             rf"{_MAIL_NOUN}\b(?P<rest>.*)",
             re.IGNORECASE | re.DOTALL,
         ),
@@ -160,6 +166,21 @@ _ABOUT_THE_WEB = re.compile(
     r"google|look\s+up|research|on\s+the\s+web|online)\b",
     re.IGNORECASE,
 )
+#: Questions about the mail *product* rather than the user's mailbox.
+#:
+#: "What changed in Gmail recently?" and "what is the latest Gmail feature?"
+#: name Gmail and ask nothing about the mailbox -- they are news and product
+#: questions, and Stage 5A.1 requires them to reach web research. The tell is
+#: a change/feature/release word with **no possessive**: "check my gmail" is
+#: the user's mail however it is worded, and "what changed in Gmail" is not.
+_PRODUCT_QUESTION = re.compile(
+    r"(?!.*\b(?:my|our)\b)"
+    r".*\b(?:changed|change|new\s+features?|latest\s+features?|feature|"
+    r"features|release[ds]?|version|update[ds]?|pricing|price|outage|"
+    r"down|roadmap|announcement)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _EXPLANATORY = re.compile(
     r"\b(?:what\s+is\s+(?:a|an|the)\b|what(?:'|’)?s\s+(?:a|an)\b|"
     r"explain|how\s+(?:do|does|to|can)\b|"
@@ -289,6 +310,7 @@ def recognise(message: str) -> MailRequest:
         or _FIRST_PERSON_PAST.search(text)
         or _WISH.search(text)
         or _ABOUT_THE_WEB.search(text)
+        or _PRODUCT_QUESTION.match(text)
     ):
         # The last of these keeps "search the web for Gmail pricing" on the
         # research path, where it belongs.

@@ -487,3 +487,40 @@ def test_repairing_a_mail_verb_produces_a_refusal_and_no_capability() -> None:
                   "gmail_trash", "gmail_archive", "gmail_create_draft"):
         assert get_executable_registry().get(write) is None, write
         assert get_registry().get(write) is None, write
+
+
+# --- Stage 5A.1 additions to the closed vocabulary ----------------------------
+
+
+@pytest.mark.parametrize(
+    ("typo", "expected"),
+    [
+        ("lates", "latest"), ("latst", "latest"), ("laest", "latest"),
+        ("newst", "newest"), ("curent", "current"), ("currrent", "current"),
+        ("currnet", "current"), ("curently", "currently"),
+        ("recnet", "recent"), ("recentyl", "recently"),
+    ],
+)
+def test_recency_markers_are_repaired(typo, expected) -> None:
+    """Stage 5A.1 added six markers under the existing rule.
+
+    Each is a term a grammar already matches on -- the freshness assessor is
+    now such a grammar -- and each is an adjective or adverb, so the "no
+    verbs" property is unchanged.
+    """
+    assert normalise(typo).text == expected
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["currant", "currants", "decent", "decently", "recant", "latent",
+     "lateral", "later", "torrent", "cement", "curator", "recount"],
+)
+def test_real_words_near_the_recency_markers_are_protected(word) -> None:
+    """Each sits one edit from a marker and would otherwise be rewritten.
+
+    "a decent meal" becoming "a recent meal" is the quiet kind of wrong: the
+    sentence still parses, and the user never learns their words were changed.
+    """
+    assert normalise(word).text == word
+    assert normalise(f"a {word} thing").text == f"a {word} thing"

@@ -34,11 +34,12 @@ from app.context.service import ContextService
 from app.core.config import Settings, get_settings
 from app.core.errors import LLMError
 from app.core.logging import get_logger
-from app.research.schemas import ResearchResult
+from app.research.schemas import ResearchOutcome, ResearchResult
 from app.research.service import ResearchService
 from app.calendar.schemas import CalendarOutcome, CalendarResult
 from app.calendar.service import CalendarService
 from app.language.normalise import normalise
+from app.orchestration.freshness import assess as assess_freshness
 from app.mail.schemas import MailOutcome, MailResult
 from app.mail.service import MailService
 from app.workflows.schemas import WorkflowOutcome, WorkflowResult
@@ -264,6 +265,35 @@ class ChatService:
                 conversation_id, content, intent, normalised=reading.text
             )
         )
+
+        # Stage 5A.1. Freshness runs **last**, and only when every recogniser
+        # above has declined.
+        #
+        # That ordering is the whole of the personal-data guarantee. "What's
+        # on my calendar tomorrow?" is a currentness question, and so is "what
+        # are my latest emails?" -- but the calendar and mail recognisers have
+        # already claimed them by the time control reaches here, so freshness
+        # is structurally incapable of routing a personal question to the web.
+        # It is not a rule this layer follows; it is a place it stands.
+        #
+        # Assessed on `reading.text`, the *user's* repaired message. Never on
+        # a search result, an email body, a calendar title or a retrieved
+        # memory -- see `app.orchestration.freshness`.
+        if (
+            not research.has_reply
+            and research.outcome is ResearchOutcome.NOT_RESEARCH
+            and calendar.outcome is CalendarOutcome.NOT_CALENDAR
+            and mail.outcome is MailOutcome.NOT_MAIL
+            and workflow.outcome is WorkflowOutcome.NOT_WORKFLOW
+        ):
+            freshness = assess_freshness(reading.text)
+            if freshness.wants_web:
+                # A proposal, not a search. This returns the same
+                # `AWAITING_CONFIRMATION` a typed "search the web for X"
+                # returns, through the same gates, and the user still answers.
+                research = await self._research.propose_current_information(
+                    conversation_id, freshness.subject
+                )
 
         if research.has_reply:
             # The application is answering. A confirmation prompt, a refusal

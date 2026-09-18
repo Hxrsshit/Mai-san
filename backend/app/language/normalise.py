@@ -114,6 +114,18 @@ CANONICAL_TERMS: FrozenSet[str] = frozenset({
     # Things Mai produces
     "notification", "notifications", "briefing", "briefings", "summary",
     "document", "available",
+    # Recency markers (Stage 5A.1).
+    #
+    # Admitted under the same rule as everything else here: each is a term an
+    # existing grammar already matches on, and the freshness assessor is now
+    # such a grammar. "lates" and "curent" are the difference between a
+    # question being recognised as needing current information and being
+    # answered from training data -- the failure Stage 5A.1 exists to fix --
+    # so the words that carry it belong in the vocabulary.
+    #
+    # Adjectives and adverbs, not verbs. The Stage 5A rule holds: nothing
+    # here can repair a broken verb into a working one.
+    "latest", "newest", "current", "currently", "recent", "recently",
     # Mail (Stage 5B). Nouns, as everywhere else in this set -- "send",
     # "reply", "forward" and "delete" are deliberately absent, so a broken
     # mail *verb* is never repaired into a working one.
@@ -162,6 +174,12 @@ KNOWN_MISSPELLINGS: Dict[str, str] = {
     "inobx": "inbox", "inbx": "inbox", "mesage": "message",
     "mesages": "messages", "messsage": "message", "unraed": "unread",
     # misc
+    # Recency markers (Stage 5A.1).
+    "lates": "latest", "latst": "latest", "laest": "latest",
+    "newst": "newest", "newset": "newest",
+    "curent": "current", "currrent": "current", "currnet": "current",
+    "currenty": "currently", "currentyl": "currently", "curently": "currently",
+    "recnet": "recent", "recentyl": "recently", "recenty": "recently",
     "breifing": "briefing", "brifing": "briefing", "summry": "summary",
     "documnet": "document", "avaliable": "available",
     "availible": "available", "avialable": "available",
@@ -184,6 +202,10 @@ PROTECTED_WORDS: FrozenSet[str] = frozenset({
     "summer", "summary", "summaries", "summon",
     "monday", "money", "monkey", "sunday", "sundry", "friday", "fridge",
     "documents", "documented", "documenting",
+    # Real words a single edit from the recency markers above. Each would
+    # otherwise be silently rewritten into a word the user did not type.
+    "currant", "currants", "decent", "decently", "recant", "latent",
+    "lateral", "later", "torrent", "cement", "curator", "recount",
     # Real words close to the mail nouns.
     "emailed", "emailing", "mailed", "mailing", "mailer",
     "massage", "massages", "passage", "passages", "manage", "manages",

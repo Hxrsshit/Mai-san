@@ -152,6 +152,48 @@ class ResearchService:
                 )
             return ResearchResult(outcome=ResearchOutcome.NOT_RESEARCH)
 
+        return await self._propose_query(conversation_id, candidate)
+
+    async def propose_current_information(
+        self, conversation_id: uuid.UUID, subject: str
+    ) -> ResearchResult:
+        """Propose a search because the question needs current information.
+
+        Stage 5A.1's one entry point into this service. The freshness layer
+        decided the *question* needs fresh evidence; this decides nothing
+        except the wording, and then runs the identical gates a user-typed
+        "search the web for X" runs: execution must be switched on, the
+        provider must be configured, an execution record is created in
+        `PROPOSED`, and the user still has to say yes.
+
+        Freshness therefore cannot bypass consent, because there is no path
+        here that skips it -- the same `_propose_query` serves both callers.
+        """
+        subject = (subject or "").strip()
+        if not subject:
+            return ResearchResult(outcome=ResearchOutcome.NOT_RESEARCH)
+        return await self._propose_query(
+            conversation_id, subject, from_freshness=True
+        )
+
+    async def _propose_query(
+        self,
+        conversation_id: uuid.UUID,
+        candidate: str,
+        from_freshness: bool = False,
+    ) -> ResearchResult:
+        """The gates, the record and the disclosure. One implementation.
+
+        Shared by the explicit request path and the freshness path so there is
+        exactly one place where a search becomes proposable -- two would be
+        two places for a gate to be forgotten, and the freshness path is
+        precisely where someone would be tempted to skip one.
+
+        `from_freshness` changes the sentences and nothing else. It says *why*
+        Mai wants to look, which matters most when it cannot: telling someone
+        "there is no recent news" when the truth is "I could not go and look"
+        is the untruthfulness this stage exists to prevent.
+        """
         if not self._settings.EXECUTION_ENABLED:
             # Truthful, and specific about which switch. "I can't search" when
             # the real answer is "an operator has this switched off" sends
@@ -160,6 +202,12 @@ class ResearchService:
                 outcome=ResearchOutcome.DISABLED,
                 query=candidate,
                 reply=(
+                    "Answering that accurately needs current information from "
+                    "the web, and I can't look it up: action execution is "
+                    "switched off for this deployment. I'd rather say so than "
+                    "answer from what I was trained on and let it read as "
+                    "current."
+                    if from_freshness else
                     "I can't search the web right now: action execution is "
                     "switched off for this deployment. I can still help you "
                     "think the question through."
@@ -171,6 +219,11 @@ class ResearchService:
                 outcome=ResearchOutcome.NOT_CONFIGURED,
                 query=candidate,
                 reply=(
+                    "Answering that accurately needs current information from "
+                    "the web, and no search provider is configured for this "
+                    "instance. I'd rather tell you that than answer from "
+                    "training data and let it read as current."
+                    if from_freshness else
                     "I can't search the web because no search provider is "
                     "configured for this instance. I can still help you think "
                     "the question through, or suggest what to search for."
@@ -198,7 +251,18 @@ class ResearchService:
                 # diagnosis, and Stage 3D's rule is that such data does not go
                 # to INFO.
                 "query_chars": len(candidate),
+                "from_freshness": from_freshness,
             },
+        )
+
+        opening = (
+            "That looks like a question where the answer may have changed "
+            f"since I was trained, so I'd rather check than guess. I can "
+            f"search the web for **{candidate}** and answer from what comes "
+            "back."
+            if from_freshness else
+            f"I can search the web for **{candidate}** and use the "
+            "results to answer you."
         )
 
         return ResearchResult(
@@ -206,8 +270,7 @@ class ResearchService:
             query=candidate,
             execution_id=execution.id,
             reply=(
-                f'I can search the web for **{candidate}** and use the '
-                f"results to answer you.\n\n"
+                f"{opening}\n\n"
                 "That sends the query to an external search provider. Reply "
                 "\"yes\" to go ahead, or anything else to skip it."
             ),
