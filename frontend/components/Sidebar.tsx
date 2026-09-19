@@ -1,5 +1,6 @@
 "use client";
 
+import { HistoryImportPanel } from "@/components/HistoryImportPanel";
 import { IntegrationsPanel } from "@/components/IntegrationsPanel";
 import type { Conversation } from "@/lib/types";
 
@@ -79,6 +80,8 @@ export function Sidebar({
       </nav>
 
       <IntegrationsPanel />
+
+      <HistoryImportPanel />
 
       <div className="border-t border-[var(--color-border)] px-4 py-3">
         <p className="text-xs text-[var(--color-muted)]">Mai · Stage 1</p>

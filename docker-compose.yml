@@ -66,6 +66,13 @@ services:
       # belong to the container's own state rather than the source tree, so
       # they cannot be committed and are not copied into an image.
       MAI_CREDENTIAL_DIR: /var/lib/mai/credentials
+      # Stage 5C. Exports are read from a directory, not uploaded: an upload
+      # endpoint would mean multipart form parsing, adding `python-multipart`
+      # and putting Starlette's form parser on a reachable path -- which is
+      # what currently makes its form-parsing advisory inapplicable here.
+      # Mounted read-only, because the application only ever reads an export.
+      HISTORY_IMPORT_ENABLED: ${HISTORY_IMPORT_ENABLED:-true}
+      MAI_IMPORT_DIR: /var/lib/mai/imports
       # The zone calendar windows are built in. A container runs in UTC and
       # the user does not; "tomorrow" is a local idea, so this decides which
       # day a calendar question actually reads.
@@ -96,6 +103,9 @@ services:
       # OAuth tokens. A named volume so they survive a restart, stay out of
       # the source tree, and never enter an image layer.
       - mai_credentials:/var/lib/mai/credentials
+      # Where you drop a ChatGPT export. Read-only: the importer reads, and
+      # nothing in the application writes back to your export folder.
+      - ${MAI_IMPORT_DIR:-./imports}:/var/lib/mai/imports:ro
     restart: unless-stopped
 
   frontend:

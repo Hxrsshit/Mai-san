@@ -12,6 +12,7 @@ inside that package would be a circular import.
 from app.database.models import Base
 from app.entities import models as entity_models
 from app.execution import models as execution_models
+from app.history import models as history_models
 from app.knowledge import models as knowledge_models
 from app.memory import models as memory_models
 from app.relationships import models as relationship_models
@@ -26,4 +27,5 @@ __all__ = [
     "relationship_models",
     "knowledge_models",
     "execution_models",
+    "history_models",
 ]

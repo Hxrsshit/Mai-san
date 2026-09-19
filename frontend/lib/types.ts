@@ -61,3 +61,52 @@ export interface AuthorizationStart {
   authorization_url: string;
   disclosure: string;
 }
+
+/**
+ * Stage 5C: an export file available to import.
+ *
+ * Metadata only. There is deliberately no content field and no path: the
+ * import directory is server configuration, and archived conversation text
+ * never crosses to the browser.
+ */
+export interface ImportSource {
+  filename: string;
+  size_bytes: number;
+  modified_at: string;
+}
+
+export interface ImportSourceList {
+  sources: ImportSource[];
+  total: number;
+}
+
+/**
+ * One import run.
+ *
+ * `redactions` is a count of credential shapes masked on the way in -- never
+ * the values. `already_imported` is the idempotency answer: the same file
+ * imported twice returns the first run and does nothing.
+ */
+export interface ImportRun {
+  id: string;
+  source_filename: string;
+  source_fingerprint: string;
+  source_bytes: number;
+  import_format: string;
+  status: string;
+  conversations_imported: number;
+  messages_imported: number;
+  conversations_skipped: number;
+  messages_skipped: number;
+  redactions: number;
+  memories_derived: number;
+  error_code: string | null;
+  already_imported: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ImportRunList {
+  runs: ImportRun[];
+  total: number;
+}

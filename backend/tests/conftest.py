@@ -310,6 +310,160 @@ async def conversation_id(client: AsyncClient) -> uuid.UUID:
     assert response.status_code == 201
     return uuid.UUID(response.json()["id"])
 
+# --- Stage 5C: history import -----------------------------------------------
+
+
+def chatgpt_export(conversations) -> list:
+    """A ChatGPT export document from a compact description.
+
+    `conversations` is a list of dicts with `id`, `title`, `created` (epoch
+    seconds) and `turns` -- a list of `(role, text)` pairs. The function builds
+    the real export shape around them: a `mapping` of parent-linked nodes and a
+    `current_node` naming the leaf, because that graph *is* the thing the
+    parser has to get right, and a fixture that flattened it would test a
+    format ChatGPT does not produce.
+    """
+    document = []
+    for spec in conversations:
+        mapping = {
+            "root": {"id": "root", "parent": None, "children": [], "message": None}
+        }
+        parent = "root"
+        for index, (role, text) in enumerate(spec["turns"]):
+            node_id = f"{spec['id']}-n{index}"
+            mapping[parent]["children"].append(node_id)
+            mapping[node_id] = {
+                "id": node_id,
+                "parent": parent,
+                "children": [],
+                "message": {
+                    "id": f"{spec['id']}-m{index}",
+                    "author": {"role": role},
+                    "create_time": spec.get("created", 1690000000.0) + index,
+                    "content": {"content_type": "text", "parts": [text]},
+                },
+            }
+            parent = node_id
+        document.append(
+            {
+                "conversation_id": spec["id"],
+                "title": spec.get("title", ""),
+                "create_time": spec.get("created", 1690000000.0),
+                "update_time": spec.get("created", 1690000000.0) + 100,
+                "current_node": parent,
+                "mapping": mapping,
+            }
+        )
+    return document
+
+
+@pytest.fixture
+def import_dir(tmp_path):
+    """A real directory the importer reads from.
+
+    Real, because every guarantee in `app.history.sources` is about the
+    filesystem -- symlink resolution and path identity cannot be mocked
+    without mocking away the thing under test.
+    """
+    directory = tmp_path / "imports"
+    directory.mkdir()
+    return directory
+
+
+@pytest.fixture
+def import_settings(settings: Settings, import_dir) -> Settings:
+    return settings.model_copy(
+        update={
+            "MAI_IMPORT_DIR": str(import_dir),
+            "HISTORY_IMPORT_ENABLED": True,
+            "IMPORT_MEMORY_EXTRACTION_ENABLED": True,
+        }
+    )
+
+
+@pytest.fixture
+def write_export(import_dir):
+    """Write an export into the import directory; returns its filename."""
+    import json as _json
+    import zipfile as _zipfile
+
+    def write(conversations, name="export.zip", as_zip=True):
+        document = (
+            conversations
+            if isinstance(conversations, (dict, str))
+            else chatgpt_export(conversations)
+        )
+        raw = document if isinstance(document, str) else _json.dumps(document)
+        path = import_dir / name
+        if as_zip:
+            with _zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("conversations.json", raw)
+        else:
+            path.write_text(raw)
+        return name
+
+    return write
+
+
+@pytest_asyncio.fixture
+async def import_session_factory(tmp_path) -> AsyncIterator[
+    "async_sessionmaker[AsyncSession]"
+]:
+    """A file-backed database, because an import schedules background work.
+
+    The main `session_factory` is StaticPool over `:memory:`, which points
+    every session at one connection. The import route hands its derived
+    memory ids to `run_entity_extraction`, which opens its own session -- and
+    on a shared connection that fails with "cannot start a transaction within
+    a transaction", exactly as `concurrent_session_factory` documents.
+
+    A file gives each session its own connection, which is also the shape
+    production has. Testing the background chain against a single shared
+    connection would not be testing the thing that runs.
+    """
+    from app.database.session import configure_sqlite
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'import.db'}")
+    configure_sqlite(engine)
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    yield async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def import_client(
+    import_session_factory, fake_provider: FakeLLMProvider, import_settings: Settings
+) -> AsyncIterator[AsyncClient]:
+    """The app with history import switched on and pointed at a temp dir."""
+    app = create_app()
+    session_factory = import_session_factory
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+            if session.in_transaction():
+                await session.commit()
+
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    app.dependency_overrides[get_settings] = lambda: import_settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+        yield http_client
+
+    app.dependency_overrides.clear()
+
+
 # --- Stage 4E: controlled execution -----------------------------------------
 
 

@@ -35,7 +35,7 @@ from app.entities.models import Entity, EntityAlias, EntityStatus, MemoryEntity
 from app.knowledge import policies
 from app.knowledge.models import ConflictReason, ConflictResolution
 from app.knowledge.schemas import ConflictOutcome
-from app.memory.models import Memory, MemoryStatus
+from app.memory.models import Memory, MemoryOrigin, MemoryStatus
 from app.relationships.models import (
     Relationship,
     RelationshipEvidence,
@@ -240,12 +240,21 @@ class ConflictDetector:
     ) -> List[ConflictOutcome]:
         """Older active memories about the replaced entity.
 
-        Two guards keep this from over-reaching:
+        Three guards keep this from over-reaching:
 
         - only memories older than the trigger are eligible, so a statement
-          cannot retire something written after it;
+          cannot retire something said after it;
         - a memory that also mentions the *new* entity is left alone, because
-          it is already describing the change rather than the old state.
+          it is already describing the change rather than the old state;
+        - an imported memory can never retire a live one (Stage 5C).
+
+        Recency is judged on `stated_at`, not `created_at`. For live knowledge
+        the two are identical -- the migration backfilled them equal and the
+        default keeps them equal -- so this is a no-op for everything that
+        existed before Stage 5C. It stops mattering only when the two diverge,
+        which is exactly the imported case: a 2023 opinion inserted today has
+        `created_at` of now and would otherwise look newer than something the
+        user said last week, letting an archive silently retire current truth.
         """
         old_name = old_entity.normalized_name
         if not old_name:
@@ -271,10 +280,11 @@ class ConflictDetector:
             .where(
                 Memory.status == MemoryStatus.ACTIVE,
                 Memory.id != trigger.id,
-                Memory.created_at <= trigger.created_at,
+                Memory.stated_at <= trigger.stated_at,
                 or_(text_match, Memory.id.in_(linked)),
+                *_origin_guard(trigger),
             )
-            .order_by(Memory.created_at.desc())
+            .order_by(Memory.stated_at.desc())
             .limit(MAX_CANDIDATES)
         )
         candidates = (await self._session.execute(statement)).scalars().all()
@@ -401,6 +411,29 @@ class ConflictDetector:
         return {
             (row.source_entity_id, row.relationship_type): row.id for row in rows
         }
+
+
+def _origin_guard(trigger: Memory) -> tuple:
+    """Extra WHERE clauses keeping imported history from overruling the present.
+
+    History explains the present; it does not overrule it. An imported memory
+    may retire another imported memory -- an archive can contain its own
+    correction, and honouring that is the point of importing it -- but it may
+    never retire a live one.
+
+    This is deliberately separate from the `stated_at` ordering above, because
+    the two answer different questions. `stated_at` handles honest chronology.
+    This handles the case where the chronology itself cannot be trusted: an
+    export with a wrong clock, a hand-edited timestamp, or a conversation the
+    user had elsewhere after telling Mai something different. Ordering alone
+    would let any of those rewrite current truth.
+
+    Returned as a tuple so the caller can splat it into `where()`; an empty
+    tuple adds no clause, which is what a live trigger needs.
+    """
+    if trigger.origin is MemoryOrigin.IMPORTED:
+        return (Memory.origin == MemoryOrigin.IMPORTED,)
+    return ()
 
 
 def _deduplicate(outcomes: Sequence[ConflictOutcome]) -> List[ConflictOutcome]:

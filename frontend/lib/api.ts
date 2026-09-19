@@ -11,6 +11,9 @@ import type {
   Conversation,
   ConversationDetail,
   ConversationList,
+  ImportRun,
+  ImportRunList,
+  ImportSourceList,
   IntegrationStatus,
 } from "./types";
 
@@ -41,6 +44,17 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   llm_invalid_response: "Mai returned an unusable response. Please try again.",
   database_error: "The database is unavailable. Please try again shortly.",
   conversation_not_found: "That conversation no longer exists.",
+  // Stage 5C import refusals, in words that say what to do next.
+  source_not_found: "That file is no longer in the import folder.",
+  invalid_filename: "That file name cannot be used.",
+  outside_import_directory: "That file is outside the import folder.",
+  unsupported_format: "That is not a ChatGPT export. Use the .zip, or conversations.json.",
+  zip_missing_conversations: "That .zip has no conversations.json inside it.",
+  malformed_json: "That export could not be read — the JSON is damaged.",
+  not_utf8: "That export is not UTF-8 text.",
+  source_too_large: "That file is larger than the configured import limit.",
+  uncompressed_too_large: "That archive expands to more than the configured limit.",
+  history_import_disabled: "History import is switched off on this server.",
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -100,6 +114,30 @@ export const api = {
       body: JSON.stringify({ content }),
     }),
 };
+
+/**
+ * Stage 5C: history import.
+ *
+ * There is no upload function here, and that is deliberate rather than
+ * missing. The backend imports from a directory it already has, so the
+ * browser never carries a multi-hundred-megabyte export and the server never
+ * needs multipart form parsing. The UI lists what is on the server and asks
+ * it to import one by name.
+ */
+export async function listImportSources(): Promise<ImportSourceList> {
+  return request<ImportSourceList>("/api/history/sources");
+}
+
+export async function startImport(filename: string): Promise<ImportRun> {
+  return request<ImportRun>("/api/history/imports", {
+    method: "POST",
+    body: JSON.stringify({ filename }),
+  });
+}
+
+export async function listImportRuns(): Promise<ImportRunList> {
+  return request<ImportRunList>("/api/history/imports");
+}
 
 export { API_URL };
 

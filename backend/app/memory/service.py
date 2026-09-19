@@ -8,6 +8,8 @@ Only this module writes memories. The LLM proposes; the application decides.
 """
 
 import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional, Sequence
 
 from sqlalchemy import delete, func, select
@@ -17,10 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.errors import DatabaseError, MemoryNotFoundError
 from app.core.logging import get_logger
+from app.database.models.base import utcnow
 from app.llm.base import LLMProvider
 from app.memory.deduplication import DuplicateMatch, find_duplicate, normalize
 from app.memory.extractor import MemoryExtractor
-from app.memory.models import Memory, MemoryStatus, MemoryType
+from app.memory.models import Memory, MemoryOrigin, MemoryStatus, MemoryType
 from app.memory.schemas import MemoryCandidate
 
 logger = get_logger(__name__)
@@ -30,6 +33,51 @@ _DB_ERRORS = (SQLAlchemyError, OSError)
 
 # Width of the indexed normalized_content column.
 NORMALIZED_CONTENT_LENGTH = 1000
+
+
+@dataclass(frozen=True)
+class MemoryProvenance:
+    """Where a memory came from, and when it was said.
+
+    One object rather than a widening parameter list, so there stays exactly
+    one place that inserts a memory. Stage 5C added a second kind of source
+    (an archived message from an imported export) and the alternative -- a
+    parallel insert path for imported memories -- would have meant two
+    implementations of deduplication and, before long, two behaviours.
+
+    `stated_at` defaults to now for live memories, which is the truth: the
+    user just said it. For imported memories the caller supplies the original
+    timestamp, and that is what conflict resolution judges recency on.
+    """
+
+    origin: MemoryOrigin
+    conversation_id: Optional[uuid.UUID] = None
+    imported_message_id: Optional[uuid.UUID] = None
+    #: Live only: the model may name a source message within the turn.
+    fallback_message_id: Optional[uuid.UUID] = None
+    stated_at: Optional[datetime] = None
+
+    @classmethod
+    def live(
+        cls,
+        conversation_id: uuid.UUID,
+        fallback_message_id: Optional[uuid.UUID] = None,
+    ) -> "MemoryProvenance":
+        return cls(
+            origin=MemoryOrigin.LIVE,
+            conversation_id=conversation_id,
+            fallback_message_id=fallback_message_id,
+        )
+
+    @classmethod
+    def imported(
+        cls, imported_message_id: uuid.UUID, stated_at: Optional[datetime]
+    ) -> "MemoryProvenance":
+        return cls(
+            origin=MemoryOrigin.IMPORTED,
+            imported_message_id=imported_message_id,
+            stated_at=stated_at,
+        )
 
 
 class MemoryService:
@@ -92,8 +140,10 @@ class MemoryService:
             for candidate in accepted:
                 memory = await self._store_candidate(
                     candidate=candidate,
-                    conversation_id=conversation_id,
-                    fallback_message_id=source_message_id,
+                    provenance=MemoryProvenance.live(
+                        conversation_id=conversation_id,
+                        fallback_message_id=source_message_id,
+                    ),
                 )
                 if memory is None:
                     duplicates += 1
@@ -117,6 +167,75 @@ class MemoryService:
                 "stored": len(stored),
             },
         )
+        return stored
+
+    @property
+    def extractor(self) -> Optional[MemoryExtractor]:
+        """The configured extractor, or None. Read-only.
+
+        Exposed so a caller can ask whether extraction is possible before
+        doing the work of assembling input for it, without reaching into a
+        private attribute.
+        """
+        return self._extractor
+
+    async def store_imported(
+        self, user_text: str, provenance: "MemoryProvenance"
+    ) -> List[Memory]:
+        """Derive memories from imported user text. Stage 5C.
+
+        Only the user's own words are passed in, and `assistant_message` is
+        deliberately empty. The extraction prompt already forbids deriving
+        facts from assistant text, but a prompt is an instruction and this is
+        untrusted archive content: giving the model no assistant text at all
+        makes "an assistant claim became a user fact" structurally impossible
+        rather than merely disallowed.
+
+        Everything after extraction is the live path -- the same thresholds,
+        the same deduplication, the same single insert site. An imported
+        memory that restates one Mai already holds is dropped exactly as a
+        live duplicate would be.
+
+        Never raises, for the same reason `extract_and_store` never raises: an
+        import must not fail because one conversation confused a model.
+        """
+        if not self._settings.MEMORY_EXTRACTION_ENABLED:
+            return []
+        if self._extractor is None:
+            return []
+        if provenance.origin is not MemoryOrigin.IMPORTED:
+            # A programming error, not a runtime condition: this path writes
+            # imported provenance and nothing else should reach it.
+            raise ValueError("store_imported requires imported provenance")
+
+        try:
+            candidates = await self._extractor.extract(
+                user_message=user_text, assistant_message=""
+            )
+        except Exception as exc:  # noqa: BLE001 - must never escape an import
+            logger.error(
+                "Imported memory extraction raised unexpectedly",
+                extra={"error": str(exc)},
+                exc_info=exc,
+            )
+            return []
+
+        accepted = self._filter_by_thresholds(candidates)
+
+        stored: List[Memory] = []
+        for candidate in accepted:
+            try:
+                memory = await self._store_candidate(
+                    candidate=candidate, provenance=provenance
+                )
+            except DatabaseError as exc:
+                logger.error(
+                    "Failed to store an imported memory",
+                    extra={"error": str(exc)},
+                )
+                continue
+            if memory is not None:
+                stored.append(memory)
         return stored
 
     def _filter_by_thresholds(
@@ -151,8 +270,7 @@ class MemoryService:
     async def _store_candidate(
         self,
         candidate: MemoryCandidate,
-        conversation_id: uuid.UUID,
-        fallback_message_id: Optional[uuid.UUID],
+        provenance: "MemoryProvenance",
     ) -> Optional[Memory]:
         """Store one candidate, or return None if it duplicates an existing one."""
         normalized = normalize(candidate.content)
@@ -190,12 +308,21 @@ class MemoryService:
             status=MemoryStatus.ACTIVE,
             importance_score=candidate.importance_score,
             confidence_score=candidate.confidence_score,
-            source_conversation_id=conversation_id,
+            origin=provenance.origin,
+            stated_at=provenance.stated_at or utcnow(),
+            source_conversation_id=provenance.conversation_id,
+            source_imported_message_id=provenance.imported_message_id,
             # The model may name a source message; fall back to the turn's
             # user message. An invented id would break the FK, so it is only
-            # trusted when it resolves.
-            source_message_id=await self._resolve_source_message(
-                candidate.source_message_id, fallback_message_id
+            # trusted when it resolves. Imported memories have no live message
+            # to point at, so the lookup is skipped entirely rather than
+            # resolving a live id against archived content.
+            source_message_id=(
+                await self._resolve_source_message(
+                    candidate.source_message_id, provenance.fallback_message_id
+                )
+                if provenance.origin is MemoryOrigin.LIVE
+                else None
             ),
         )
         try:

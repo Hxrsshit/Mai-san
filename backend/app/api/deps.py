@@ -12,6 +12,7 @@ from app.llm.base import LLMProvider
 from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
 from app.execution.service import ExecutionService
+from app.history.service import HistoryImportService
 from app.intent.service import IntentService
 from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
@@ -150,6 +151,20 @@ def get_memory_service(
     return MemoryService(session=session, provider=provider, settings=settings)
 
 
+def get_history_import_service(
+    session: DbSession, provider: Provider, settings: AppSettings
+) -> HistoryImportService:
+    """Stage 5C. Takes the memory service so derived knowledge goes through
+    the one pipeline that deduplicates and conflict-resolves it."""
+    return HistoryImportService(
+        session=session,
+        memory_service=MemoryService(
+            session=session, provider=provider, settings=settings
+        ),
+        settings=settings,
+    )
+
+
 def get_entity_service(
     session: DbSession, provider: Provider, settings: AppSettings
 ) -> EntityService:
@@ -168,6 +183,9 @@ Memories = Annotated[MemoryService, Depends(get_memory_service)]
 Entities = Annotated[EntityService, Depends(get_entity_service)]
 Relationships = Annotated[RelationshipService, Depends(get_relationship_service)]
 Retrieval = Annotated[RetrievalService, Depends(get_retrieval_service)]
+HistoryImport = Annotated[
+    HistoryImportService, Depends(get_history_import_service)
+]
 Context = Annotated[ContextService, Depends(get_context_service)]
 Formatter = Annotated[PromptFormatter, Depends(get_prompt_formatter)]
 Knowledge = Annotated[KnowledgeService, Depends(get_knowledge_service)]

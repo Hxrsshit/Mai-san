@@ -246,15 +246,25 @@ def test_the_mail_result_is_not_a_database_model() -> None:
 
 
 def test_stage_5b_added_no_migration() -> None:
-    """§: do not create unnecessary tables."""
+    """§: do not create unnecessary tables.
+
+    The claim is about Stage 5B, so the list is pinned through `0009` and
+    later migrations are checked only for being later. Freezing the whole
+    directory would turn this into a tripwire that every subsequent stage has
+    to edit, which teaches people to edit it without reading it.
+
+    Stage 5C added `0010` deliberately: imported history needs tables of its
+    own precisely so it cannot be mistaken for live conversation.
+    """
     versions = sorted(p.name for p in pathlib.Path("alembic/versions").glob("*.py"))
-    assert versions == [
+    through_5b = [v for v in versions if v[:4] <= "0009"]
+    assert through_5b == [
         "0001_initial_schema.py", "0002_memories.py",
         "0003_memory_unique_constraint.py", "0004_entities.py",
         "0005_relationships.py", "0006_knowledge_conflicts.py",
         "0007_execution.py", "0008_execution_conversation.py",
         "0009_workflows.py",
-    ], versions
+    ], through_5b
 
 
 # --- No automatic Gmail-triggered execution -------------------------------------

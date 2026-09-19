@@ -302,6 +302,51 @@ class Settings(BaseSettings):
     # but never surfaces in chat.
     HISTORICAL_RETRIEVAL_ENABLED: bool = True
 
+    # --- History import (Stage 5C) ---
+    #
+    # Imports read from a directory, not an HTTP upload. That is a security
+    # decision, not an ergonomic one: an upload endpoint means multipart form
+    # parsing, which means adding `python-multipart` and putting Starlette's
+    # form parser on a reachable path. This application has no form parsing
+    # today, which is exactly why PYSEC-2026-249 is unreachable here, and an
+    # import feature is a poor reason to give that up. A bind-mounted
+    # directory also keeps a multi-hundred-megabyte export out of the ASGI
+    # request path entirely.
+    HISTORY_IMPORT_ENABLED: bool = True
+    #: Where export files are looked for. Read-only to the application.
+    MAI_IMPORT_DIR: str = "~/.mai/imports"
+
+    # Bounds. Every one of these is a hard stop, not a hint: an export is
+    # attacker-influenced input in the sense that matters -- it is a large
+    # document from outside the system, and a parser without limits is a
+    # denial-of-service waiting for a big file.
+    IMPORT_MAX_FILE_BYTES: int = 500_000_000
+    #: Guards a zip bomb: the *uncompressed* size of any single member, and
+    #: the total, are both checked before extraction.
+    IMPORT_MAX_UNCOMPRESSED_BYTES: int = 2_000_000_000
+    IMPORT_MAX_ZIP_MEMBERS: int = 10_000
+    IMPORT_MAX_CONVERSATIONS: int = 10_000
+    IMPORT_MAX_MESSAGES_PER_CONVERSATION: int = 2_000
+    IMPORT_MAX_TOTAL_MESSAGES: int = 200_000
+    IMPORT_MAX_MESSAGE_CHARS: int = 20_000
+    IMPORT_MAX_PARTS_PER_MESSAGE: int = 50
+    #: Depth cap when walking the export's parent/child node graph. A cyclic
+    #: or absurdly deep graph stops here instead of exhausting the stack.
+    IMPORT_MAX_THREAD_DEPTH: int = 10_000
+
+    # Derived-memory extraction. Bounded separately, because this is the part
+    # that costs model calls: a 5,000-conversation archive must not turn into
+    # 5,000 requests the moment someone clicks import.
+    IMPORT_MEMORY_EXTRACTION_ENABLED: bool = True
+    #: Extraction calls per import run. The run reports what it did not reach,
+    #: and re-running continues from there.
+    IMPORT_MAX_EXTRACTION_CALLS: int = 200
+    #: A conversation needs at least this many user characters to be worth a
+    #: model call. Short exchanges carry little durable context.
+    IMPORT_MIN_CONVERSATION_CHARS: int = 200
+    #: Characters of user text handed to the extractor per conversation.
+    IMPORT_EXTRACTION_WINDOW_CHARS: int = 6_000
+
     # --- Context retrieval (Stage 2D) ---
     # Retrieval runs on the request path before the chat call. It adds no
     # model calls -- every step is a bounded database query.

@@ -51,6 +51,13 @@ SETTINGS_NOT_SURFACED = {
     "RELATIONSHIP_EXTRACTION_ENABLED": "sub-switch of memory_enabled",
     "CONFLICT_DETECTION_ENABLED": "sub-switch of memory_enabled",
     "HISTORICAL_RETRIEVAL_ENABLED": "sub-switch of retrieval_enabled",
+    # Stage 5C. Neither is a conversational capability, and reporting one
+    # would make Mai claim something it cannot do on request: an import is an
+    # operator action against a server-side directory, with no chat trigger.
+    # What an import *produces* is already visible the honest way -- derived
+    # memories reach a turn through retrieval, like every other memory.
+    "HISTORY_IMPORT_ENABLED": "operator action, not a conversational capability",
+    "IMPORT_MEMORY_EXTRACTION_ENABLED": "sub-switch of history_import_enabled",
 }
 
 

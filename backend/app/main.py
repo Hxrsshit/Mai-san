@@ -20,6 +20,7 @@ from app.api.routes import (
     context_preview_router,
     context_router,
     execution_router,
+    history_router,
     integrations_router,
     intent_router,
     knowledge_router,
@@ -164,6 +165,13 @@ def create_app() -> FastAPI:
         # Stage 3C lifecycle inspection reads memories and relationships,
         # so it shares their master switch.
         app.include_router(knowledge_router)
+        # Stage 5C history import derives memories, so it shares the memory
+        # master switch too: a deployment with memory off has nowhere to put
+        # what an import would produce, and the raw archive alone would be
+        # storage with no purpose. The service refuses independently on
+        # HISTORY_IMPORT_ENABLED -- this is the outer of two doors.
+        if settings.HISTORY_IMPORT_ENABLED:
+            app.include_router(history_router)
 
     return app
 

@@ -7,6 +7,7 @@ from app.api.routes.execution import router as execution_router
 from app.api.routes.health import router as health_router
 from app.api.routes.integrations import router as integrations_router
 from app.api.routes.intent import router as intent_router
+from app.api.routes.history import router as history_router
 from app.api.routes.knowledge import router as knowledge_router
 from app.api.routes.orchestration import router as orchestration_router
 from app.api.routes.planning import router as planning_router
@@ -29,6 +30,7 @@ __all__ = [
     "context_preview_router",
     "context_router",
     "prompt_router",
+    "history_router",
     "knowledge_router",
     "intent_router",
     "planning_router",

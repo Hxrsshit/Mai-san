@@ -71,3 +71,5 @@ backend/mai_workspace/
 # OAuth token store, if a local path is used instead of the volume.
 .mai/
 credentials/
+imports/*
+!imports/.gitkeep
