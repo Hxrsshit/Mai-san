@@ -39,6 +39,8 @@ from app.research.service import ResearchService
 from app.calendar.schemas import CalendarOutcome, CalendarResult
 from app.calendar.service import CalendarService
 from app.language.normalise import normalise
+from app.prompt.formatter import with_recovery_instruction
+from app.synthesis.contract import validate as validate_response
 from app.orchestration.freshness import assess as assess_freshness
 from app.mail.schemas import MailOutcome, MailResult
 from app.mail.service import MailService
@@ -373,7 +375,32 @@ class ChatService:
             )
             raise
 
-        reply = llm_response.content
+        # Stage 5A.2. What the model returned is a *candidate*, not an answer.
+        #
+        # Before this, `llm_response.content` went straight into conversation
+        # history. When the model answered a research turn with a tool-call
+        # object instead of prose, the object became the assistant's message:
+        # the user saw JSON, and the blob entered history, where the model
+        # read it next turn as an example of how Mai replies and produced
+        # another one. One malformed response became a pattern.
+        validated = validate_response(llm_response.content)
+
+        if not validated.accepted:
+            validated, llm_response = await self._recover_synthesis(
+                prompt, llm_response, validated, conversation_id
+            )
+
+        if validated.accepted:
+            reply = validated.text
+        else:
+            # Truthful, and built from what actually ran -- never from the
+            # model's own account of it. A turn whose synthesis failed after a
+            # real search must say the search happened, and a turn where
+            # nothing ran must not imply it did.
+            reply = self._synthesis_failed_reply(
+                validated, research=research, calendar=calendar,
+                mail=mail, workflow=workflow,
+            )
 
         if workflow.needs_synthesis and workflow.artifact_requested:
             # The synthesis just generated becomes the artifact's body. This
@@ -477,6 +504,94 @@ class ChatService:
 
         return " ".join(parts)
 
+
+    async def _recover_synthesis(
+        self, prompt, llm_response, validated, conversation_id
+    ):
+        """One more attempt, with the contract restated. Exactly one.
+
+        Bounded at a single retry on purpose. A model that has just ignored
+        the contract is not obviously going to honour it on the third ask, and
+        an unbounded loop would be a denial of service the model triggers
+        against itself. No new research runs, no tool is reached and no
+        approval is consulted -- the same prompt goes back with one corrective
+        instruction appended, so the recovery costs one generation and can
+        acquire nothing.
+        """
+        logger.warning(
+            "Synthesis did not meet the response contract; retrying once",
+            extra={
+                "conversation_id": str(conversation_id),
+                "kind": validated.kind.value,
+            },
+        )
+
+        # Built by the formatter, which owns chat prompt text. Reuses the
+        # original parts exactly -- nothing is retrieved or researched again.
+        retry_prompt = with_recovery_instruction(prompt)
+        try:
+            retried = await self._provider.generate_response(retry_prompt.messages)
+        except LLMError:
+            # The recovery call failed. That is a provider failure on top of a
+            # contract failure; the caller writes a truthful line rather than
+            # raising, because the turn already has real work behind it.
+            logger.warning(
+                "Synthesis recovery call failed",
+                extra={"conversation_id": str(conversation_id)},
+            )
+            return validated, llm_response
+
+        recovered = validate_response(retried.content)
+        if recovered.accepted:
+            logger.info(
+                "Synthesis recovered on the retry",
+                extra={"conversation_id": str(conversation_id)},
+            )
+            return recovered, retried
+
+        logger.warning(
+            "Synthesis recovery also failed the response contract",
+            extra={"kind": recovered.kind.value},
+        )
+        return recovered, retried
+
+    @staticmethod
+    def _synthesis_failed_reply(
+        validated, research=None, calendar=None, mail=None, workflow=None
+    ) -> str:
+        """What to say when nothing usable was generated.
+
+        Every clause is built from execution state. The distinction the brief
+        insists on is real and easy to get wrong: "no answer was generated" is
+        not "no information was found", and neither is "the search failed".
+        Collapsing them would report a working search as an empty internet.
+        """
+        did = []
+        if calendar is not None and getattr(calendar, "events_block", ""):
+            did.append("read your calendar")
+        if mail is not None and getattr(mail, "messages_block", ""):
+            did.append("read your mail")
+        if research is not None and getattr(research, "succeeded", False):
+            did.append("searched the web")
+        elif workflow is not None and getattr(workflow, "researched", False):
+            did.append("searched the web")
+
+        if did:
+            performed = did[0] if len(did) == 1 else (
+                ", ".join(did[:-1]) + " and " + did[-1]
+            )
+            return (
+                f"I {performed} and got the information back, but I couldn't "
+                "turn it into an answer just then — what came back from the "
+                "model wasn't usable. Nothing was lost; ask me again and I'll "
+                "have another go."
+            )
+
+        return (
+            "I couldn't produce an answer just then — what came back from the "
+            "model wasn't usable. Nothing was searched or read, so nothing "
+            "was lost. Ask me again and I'll have another go."
+        )
 
     async def _answer_without_the_model(
         self, conversation, conversation_id, content, research,

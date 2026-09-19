@@ -69,6 +69,14 @@ class FakeLLMProvider(LLMProvider):
 
     def __init__(self, reply: str = "Hello from Mai.") -> None:
         self.reply = reply
+        #: A scripted sequence of chat replies, consumed one per chat call.
+        #:
+        #: Stage 5A.2 needs a model that answers badly and then well, which a
+        #: single fixed reply cannot express. `None` keeps the old behaviour
+        #: exactly, and the script falls back to `self.reply` once exhausted
+        #: -- so a test scripting one bad turn does not have to predict how
+        #: many calls the recovery path will make.
+        self.replies: Optional[List[str]] = None
         self.calls: List[List[LLMMessage]] = []
         self.extraction_calls: List[List[LLMMessage]] = []
         self.entity_calls: List[List[LLMMessage]] = []
@@ -147,7 +155,10 @@ class FakeLLMProvider(LLMProvider):
             self.calls.append(list(messages))
             if self.raise_error is not None:
                 raise self.raise_error
-            content = self.reply
+            if self.replies:
+                content = self.replies.pop(0)
+            else:
+                content = self.reply
 
         return LLMResponse(
             content=content,

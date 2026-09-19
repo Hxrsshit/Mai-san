@@ -33,11 +33,22 @@ venv/
 **/.venv/
 **/__pycache__/
 **/*.py[cod]
+# Anchored patterns match only the context root. The backend is copied with
+# `COPY backend/ ./`, so a root-anchored `.pytest_cache/` let
+# `backend/.pytest_cache/` into the image -- where its `nodeids` file carries
+# test names like `test_a_gsk_key_is_masked`, which trip a secret scanner on
+# the prefix alone. No key material, but precisely the false finding the note
+# at the top of this file warns about. Hence `**/` on every cache.
 .pytest_cache/
+**/.pytest_cache/
 .mypy_cache/
+**/.mypy_cache/
 .ruff_cache/
+**/.ruff_cache/
 htmlcov/
+**/htmlcov/
 .coverage
+**/.coverage
 
 # --- Node -------------------------------------------------------------------
 node_modules/
