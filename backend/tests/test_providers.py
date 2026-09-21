@@ -184,8 +184,11 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
 
     assert assistant_message.content == "reply from a different vendor"
     assert user_message.content == "hello from the test"
-    # The provider received the system prompt plus the user turn.
-    assert [m.role for m in provider.received] == ["system", "user"]
+    # The provider received the system prompt, the Stage 5D.1 execution-state
+    # block, and the user turn. The point of the test is unchanged: a foreign
+    # provider sees exactly the same normalised messages as any other, and the
+    # execution block is application text like the rest of the instructions.
+    assert [m.role for m in provider.received] == ["system", "system", "user"]
 
     # Stage 4A rides the same abstraction. A provider with a different wire
     # format, no native JSON mode and no OpenAI-compatible transport still

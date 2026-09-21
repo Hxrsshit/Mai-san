@@ -39,8 +39,16 @@ from app.research.service import ResearchService
 from app.calendar.schemas import CalendarOutcome, CalendarResult
 from app.calendar.service import CalendarService
 from app.language.normalise import normalise
-from app.prompt.formatter import with_recovery_instruction
+from app.prompt.formatter import with_execution_correction, with_recovery_instruction
 from app.synthesis.contract import validate as validate_response
+from app.synthesis.execution_truth import (
+    ExecutionRecord,
+    TruthVerdict,
+    record_for_turn,
+    render_note as render_execution_note,
+    truthful_reply as execution_truthful_reply,
+    validate as validate_execution_truth,
+)
 from app.orchestration.freshness import assess as assess_freshness
 from app.mail.schemas import MailOutcome, MailResult
 from app.mail.service import MailService
@@ -385,13 +393,32 @@ class ChatService:
         # another one. One malformed response became a pattern.
         validated = validate_response(llm_response.content)
 
-        if not validated.accepted:
-            validated, llm_response = await self._recover_synthesis(
-                prompt, llm_response, validated, conversation_id
+        # Stage 5D.1. The authoritative account of what this turn actually
+        # did, built from the layer results -- never from the model's prose.
+        record = record_for_turn(
+            research=research, mail=mail, calendar=calendar, workflow=workflow
+        )
+        # Two different failures, one budget. A well-formed paragraph
+        # announcing search results that were never retrieved passes the
+        # Stage 5A.2 contract -- it *is* valid prose -- so the claims are
+        # checked separately. Both share the single recovery attempt, which
+        # keeps the turn at the two generation calls Stage 5A.2 guaranteed.
+        truth = (
+            validate_execution_truth(validated.text, record)
+            if validated.accepted
+            else TruthVerdict()
+        )
+
+        if not validated.accepted or not truth.ok:
+            validated, llm_response, truth = await self._recover_synthesis(
+                prompt, llm_response, validated, truth, record, conversation_id
             )
 
-        if validated.accepted:
+        if validated.accepted and truth.ok:
             reply = validated.text
+        elif validated.accepted:
+            # Shape was fine, claims were not. Answer from the record.
+            reply = execution_truthful_reply(record, truth.violations)
         else:
             # Truthful, and built from what actually ran -- never from the
             # model's own account of it. A turn whose synthesis failed after a
@@ -506,7 +533,7 @@ class ChatService:
 
 
     async def _recover_synthesis(
-        self, prompt, llm_response, validated, conversation_id
+        self, prompt, llm_response, validated, truth, record, conversation_id
     ):
         """One more attempt, with the contract restated. Exactly one.
 
@@ -518,17 +545,29 @@ class ChatService:
         instruction appended, so the recovery costs one generation and can
         acquire nothing.
         """
+        shape_failed = not validated.accepted
         logger.warning(
-            "Synthesis did not meet the response contract; retrying once",
+            "Synthesis failed a check; retrying once",
             extra={
                 "conversation_id": str(conversation_id),
                 "kind": validated.kind.value,
+                "failure": "shape" if shape_failed else "execution_claim",
+                "channels": ",".join(c.value for c in truth.violations),
             },
         )
 
         # Built by the formatter, which owns chat prompt text. Reuses the
         # original parts exactly -- nothing is retrieved or researched again.
-        retry_prompt = with_recovery_instruction(prompt)
+        #
+        # The instruction is chosen by which check failed. Sending the shape
+        # correction to a model that produced perfectly good prose containing
+        # a false claim would tell it to fix something that was not wrong, and
+        # leave the thing that was.
+        retry_prompt = (
+            with_recovery_instruction(prompt)
+            if shape_failed
+            else with_execution_correction(prompt, record)
+        )
         try:
             retried = await self._provider.generate_response(retry_prompt.messages)
         except LLMError:
@@ -539,21 +578,38 @@ class ChatService:
                 "Synthesis recovery call failed",
                 extra={"conversation_id": str(conversation_id)},
             )
-            return validated, llm_response
+            return validated, llm_response, truth
 
+        # Both checks run again on the retry. A recovery asked about claims
+        # must still not be allowed to return a tool-call blob, and one asked
+        # about shape must still not be allowed to fabricate an execution.
         recovered = validate_response(retried.content)
-        if recovered.accepted:
+        if not recovered.accepted:
+            logger.warning(
+                "Synthesis recovery also failed the response contract",
+                extra={"kind": recovered.kind.value},
+            )
+            return recovered, retried, truth
+
+        recovered_truth = validate_execution_truth(recovered.text, record)
+        if recovered_truth.ok:
             logger.info(
                 "Synthesis recovered on the retry",
-                extra={"conversation_id": str(conversation_id)},
+                extra={
+                    "conversation_id": str(conversation_id),
+                    "failure": "shape" if shape_failed else "execution_claim",
+                },
             )
-            return recovered, retried
+            return recovered, retried, recovered_truth
 
         logger.warning(
-            "Synthesis recovery also failed the response contract",
-            extra={"kind": recovered.kind.value},
+            "Synthesis recovery still claimed an action that did not happen",
+            extra={
+                "conversation_id": str(conversation_id),
+                "channels": ",".join(c.value for c in recovered_truth.violations),
+            },
         )
-        return recovered, retried
+        return recovered, retried, recovered_truth
 
     @staticmethod
     def _synthesis_failed_reply(
@@ -712,6 +768,12 @@ class ChatService:
         # A formatter carrying this turn's results, or the shared one. Never
         # the shared instance mutated: results left on it would appear in the
         # next turn of an unrelated conversation.
+        # Stage 5D.1. Built from the layer results this method already
+        # receives -- the existing outcome enums, never model output.
+        execution_record = record_for_turn(
+            research=research, mail=mail, calendar=calendar, workflow=workflow
+        )
+
         formatter = self._formatter
         # Both layers render into the *same* untrusted-research section. A
         # workflow's results are web content exactly as a bare search's are,
@@ -750,6 +812,15 @@ class ChatService:
             )
         if block:
             formatter = formatter.with_research(block)
+
+        # Stage 5D.1. Always attached, including -- especially -- when nothing
+        # ran. Every other block above appears only when it has content, so a
+        # turn where no action happened previously carried no statement about
+        # actions at all. That silence is what the model filled when it
+        # announced search results it had invented.
+        formatter = formatter.with_execution_state(
+            render_execution_note(execution_record)
+        )
 
         if workflow is not None and workflow.needs_synthesis and workflow.artifact_path:
             # Told what the application has already decided, so it does not

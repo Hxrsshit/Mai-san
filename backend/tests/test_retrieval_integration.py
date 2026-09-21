@@ -175,12 +175,16 @@ async def test_context_order_puts_the_user_message_last(
 
     sent = fake_provider.last_call
     roles = [m.role for m in sent]
-    # instructions, runtime facts, knowledge block, then the conversation.
-    # Stage 4D.1 inserted the facts block above the reference block, so that
-    # authoritative configuration outranks retrieved knowledge.
+    # instructions, runtime facts, execution state, knowledge block, then the
+    # conversation. Stage 4D.1 inserted the facts block above the reference
+    # block so authoritative configuration outranks retrieved knowledge;
+    # Stage 5D.1 inserted the execution-state block directly after it, for the
+    # same reason -- what actually ran this turn is authoritative too, and
+    # nothing retrieved may be mistaken for a report of an action.
     assert roles[0] == "system"
     assert roles[1] == "system"
-    assert REFERENCE_HEADER in sent[2].content
+    assert roles[2] == "system"
+    assert REFERENCE_HEADER in sent[3].content
     assert sent[-1].role == "user"
     assert sent[-1].content == "What database does Mai use?"
 

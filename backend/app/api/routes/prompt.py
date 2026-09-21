@@ -27,6 +27,7 @@ from fastapi import APIRouter
 
 from app.api.deps import Context, Formatter
 from app.prompt.formatter import detect_duplicates
+from app.synthesis.execution_truth import ExecutionRecord, render_note
 from app.prompt.schemas import (
     PromptDebugContext,
     PromptDebugMessage,
@@ -65,7 +66,13 @@ async def debug_prompt(
     package = await context.build(
         current_message=payload.message, conversation_id=payload.conversation_id
     )
-    prompt = formatter.format(package)
+    # Stage 5D.1. This endpoint exists to show what production would send, so
+    # it must carry the same execution-state note. Debug inspects nothing --
+    # no research, mail or calendar runs here -- so the honest record is the
+    # default one: every channel not requested.
+    prompt = formatter.with_execution_state(
+        render_note(ExecutionRecord())
+    ).format(package)
 
     messages: List[PromptDebugMessage] = []
     current_index = -1

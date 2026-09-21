@@ -183,17 +183,66 @@ def test_the_permitted_outbound_hosts_are_unchanged() -> None:
     }, sorted(hosts)
 
 
-def test_only_the_chat_service_consumes_the_contract() -> None:
-    """One consumer, so there is one place the boundary is enforced."""
-    consumers = []
+#: Names from `app.synthesis` that enforce a boundary rather than describe one.
+#:
+#: Importing one of these means deciding whether a response may be stored. That
+#: decision belongs in exactly one place.
+ENFORCING_NAMES = frozenset({
+    "validate", "validate_response", "validate_execution_truth",
+    "record_for_turn", "AssistantResponse", "TruthVerdict",
+})
+
+#: Names that only *render* already-decided facts into text. Safe to import
+#: anywhere the prompt is built, because rendering a fact cannot change it.
+RENDERING_NAMES = frozenset({
+    "render_note", "truthful_reply", "ExecutionRecord", "ExecutionState",
+    "Channel", "ResponseKind", "known_tool_call_shapes", "known_claim_channels",
+    "MAX_RECOVERY_ATTEMPTS", "MAX_EXAMINED_CHARS", "CLAIMABLE_STATES",
+    "ACCEPTED_KIND",
+})
+
+
+def synthesis_imports(tree: ast.Module):
+    """(module, imported name) pairs for every `app.synthesis` import."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if not node.module.startswith("app.synthesis"):
+                continue
+            for alias in node.names:
+                yield node.module, alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("app.synthesis"):
+                    yield alias.name, "*module*"
+
+
+def test_only_the_chat_service_enforces_the_contract() -> None:
+    """One enforcer, so there is one place the boundary is decided.
+
+    Stage 5D.1 widened this from "one importer" to "one *enforcer*", and the
+    distinction is the point rather than a concession. The prompt layer now
+    imports `render_note` so it can state the execution facts to the model,
+    and the debug route imports it so it shows the same prompt production
+    sends. Neither decides anything: rendering a fact cannot change the fact.
+
+    Deciding whether a response may be stored -- `validate`,
+    `validate_execution_truth`, `record_for_turn` -- remains confined to the
+    chat service, and an import of any of those from anywhere else fails here.
+    """
+    offenders = []
+    unknown = []
     for path in sorted(pathlib.Path("app").rglob("*.py")):
         if str(path).startswith("app/synthesis/"):
             continue
-        for name in imported_names(ast.parse(path.read_text())):
-            if "synthesis" in name:
-                consumers.append(str(path))
+        for _module, name in synthesis_imports(ast.parse(path.read_text())):
+            if name in ENFORCING_NAMES and str(path) != CHAT:
+                offenders.append(f"{path}:{name}")
+            elif name not in ENFORCING_NAMES and name not in RENDERING_NAMES:
+                # A new export nobody has classified. Fails until someone does.
+                unknown.append(f"{path}:{name}")
 
-    assert sorted(set(consumers)) == [CHAT], consumers
+    assert offenders == [], f"enforcement escaped the chat service: {offenders}"
+    assert unknown == [], f"unclassified synthesis import: {unknown}"
 
 
 # --- Recovery is bounded ----------------------------------------------------------------

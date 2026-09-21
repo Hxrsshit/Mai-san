@@ -68,9 +68,10 @@ async def test_context_includes_the_system_prompt_and_full_history(
     # retrieved.
     assert sent[1].role == "system"
     assert RUNTIME_FACTS_HEADER in sent[1].content
-    # instructions + facts + (user, assistant) + user
+    # instructions + facts + execution state + (user, assistant) + user.
+    # Stage 5D.1 added the third system message: what this turn actually did.
     assert [m.role for m in sent] == [
-        "system", "system", "user", "assistant", "user",
+        "system", "system", "system", "user", "assistant", "user",
     ]
     assert sent[-1].content == "Second"
 
@@ -115,9 +116,9 @@ async def test_context_window_is_capped(
         )
 
     sent = fake_provider.last_call
-    # 2 system messages (instructions + runtime facts) + the 4 most recent
-    # stored messages + the current one.
-    assert len(sent) == 7
+    # 3 system messages (instructions + runtime facts + Stage 5D.1 execution
+    # state) + the 4 most recent stored messages + the current one.
+    assert len(sent) == 8
     assert sent[-1].content == "msg-4"
     # The cap is real: 8 messages were stored by the time of the last turn.
     assert len([m for m in sent if m.role != "system"]) == 5

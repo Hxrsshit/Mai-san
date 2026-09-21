@@ -202,8 +202,11 @@ async def test_debug_does_not_echo_the_system_instructions(
         for m in body["messages"]
         if m["section"] == PromptSection.SYSTEM_INSTRUCTIONS.value
     ]
-    assert len(instructions) == 1
-    assert instructions[0]["content"] is None
+    # Two since Stage 5D.1: the system prompt and the execution-state block.
+    # Both are withheld, which is the property under test -- debug reports
+    # that instruction text exists and how long it is, never what it says.
+    assert len(instructions) == 2
+    assert all(entry["content"] is None for entry in instructions)
     assert instructions[0]["chars"] == len(settings.MAI_SYSTEM_PROMPT)
     assert "SECRET-IMPLEMENTATION-DETAIL" not in json.dumps(body)
 
