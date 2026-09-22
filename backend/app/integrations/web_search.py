@@ -166,7 +166,6 @@ class WebSearchIntegration(Integration):
 
     name = "web_search"
     description = "Search the public web through a configured search provider."
-    provider = "brave"
 
     def __init__(
         self,
@@ -191,6 +190,25 @@ class WebSearchIntegration(Integration):
             resolve=resolve,
         )
         super().__init__(credentials=credentials, enabled=enabled)
+
+    @property
+    def provider(self) -> str:
+        """Which third party this instance actually talks to.
+
+        Derived from the resolved descriptor, never stored separately. It was
+        a class attribute reading `"brave"` -- correct when Brave was the only
+        provider, and silently wrong from the moment a second one was added
+        and selected. The value is provenance: it names the external party
+        that received the user's query, and it reached both the completion log
+        and the integration health report while the request went to Tavily.
+
+        A property rather than a field assigned in `__init__` so there is no
+        second copy that can drift from `_provider` again. Every reader --
+        this module's own logging, `Integration.credential_requirement`'s
+        default, and `app.integrations.health` -- now reads the same
+        authoritative source.
+        """
+        return self._provider.name
 
     def declare_operations(self) -> Tuple[OperationSpec, ...]:
         return (
