@@ -134,6 +134,29 @@ _FAMILIES = (
             re.IGNORECASE | re.DOTALL,
         ),
     ),
+    # "Search it", "Look it up", "Check that" -- a search command whose object
+    # is a bare anaphor. Stage 5D.2.
+    #
+    # The other families all require a scope ("the web") or a preposition
+    # ("for", "up X"), so a two-word imperative matched nothing at all and the
+    # turn was handled as ordinary conversation. That was defensible while
+    # nothing could resolve "it"; with Stage 5D.2 the antecedent is reachable,
+    # and refusing to even recognise the request is the wrong failure.
+    #
+    # Deliberately the narrowest possible addition: the object is a closed set
+    # of anaphora and the pattern is anchored to the end of the message, so it
+    # can neither shadow a more specific family nor swallow arbitrary text. It
+    # always yields `anaphoric_subject`, never a query -- recognising the
+    # request is not the same as knowing what it is about.
+    (
+        "anaphoric_command",
+        re.compile(
+            rf"(?:^|[,;]\s*){_LEAD}(?:search|google|check|look)(?:\s+up)?\s+"
+            r"(?P<subject>it|this|that|them|these|those)"
+            r"(?:\s+up)?\s*[.!?]*$",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 #: A trailing instruction to search, after the subject has already been given.
@@ -224,6 +247,12 @@ _SUBJECT_IS_A_QUESTION = re.compile(
 )
 
 
+#: Shared with `app.orchestration.resolution`, deliberately rather than
+#: duplicated: the question "does this text name anything?" has one answer in
+#: this system, and two copies of the vocabulary would drift apart.
+from app.orchestration.resolution import is_substantive  # noqa: E402
+
+
 class Recognition(NamedTuple):
     """What the recogniser made of one message.
 
@@ -277,9 +306,17 @@ def recognise(message: str) -> Recognition:
 
         subject = _clean_subject(match.group("subject"))
 
-        if _SUBJECT_STARTS_WITH_PREDICATE.match(subject):
+        if family != "anaphoric_command" and _SUBJECT_STARTS_WITH_PREDICATE.match(
+            subject
+        ):
             # The verb was a noun. This message is about research, not a
             # request for it.
+            #
+            # Exempted for `anaphoric_command`, whose subject alternation is a
+            # closed set of anaphora. The guard exists to catch a captured
+            # "subject" that is really a verb phrase, and it lists "that" --
+            # so without the exemption "check that" was read as a sentence
+            # *about* checking and silently dropped.
             return Recognition()
 
         if subject.lower() in _ANAPHORIC:
@@ -288,6 +325,20 @@ def recognise(message: str) -> Recognition:
             )
         if not subject or subject.lower() in _EMPTY_SUBJECT:
             return Recognition(family=family, needs_clarification="empty_subject")
+        if not is_substantive(subject):
+            # Stage 5D.2. The two sets above match the *whole* subject, so an
+            # anaphor or filler inside a longer phrase walked straight past
+            # them: "search up the net and let me know" yielded the subject
+            # "let me know", and Mai offered to search the web for it.
+            #
+            # This asks the question the sets were approximating -- does what
+            # remains name anything at all? -- using the same vocabulary the
+            # context resolver uses, so the two cannot drift. A request whose
+            # subject names nothing is a request whose subject lives in an
+            # earlier turn, which is exactly what Stage 5D.2 resolves.
+            return Recognition(
+                family=family, needs_clarification="anaphoric_subject"
+            )
         if len(subject) < MIN_QUERY_CHARS:
             return Recognition(family=family, needs_clarification="subject_too_short")
 

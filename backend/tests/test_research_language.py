@@ -94,6 +94,10 @@ def test_every_family_is_reachable() -> None:
             "Find out about X ray crystallography",
             "Research X ray crystallography",
             "Look up X ray crystallography",
+            # Stage 5D.2: a search command whose object is a bare anaphor.
+            # Reaching it yields no query by design -- the subject lives in an
+            # earlier user turn and the context resolver supplies it.
+            "Search it",
         )
     }
 

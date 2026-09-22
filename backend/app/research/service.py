@@ -44,6 +44,7 @@ from app.execution.schemas import ExecutionRequest
 from app.execution.service import ExecutionService
 from app.execution.states import ExecutionState
 from app.intent.schemas import IntentResult
+from app.orchestration.resolution import ResolvedTurn
 from app.orchestration import matching
 from app.research.confirmation import Confirmation, interpret
 from app.research.schemas import ResearchOutcome, ResearchResult
@@ -92,6 +93,7 @@ class ResearchService:
         message: str,
         intent: IntentResult,
         normalised: Optional[str] = None,
+        resolved: Optional[ResolvedTurn] = None,
     ) -> ResearchResult:
         """Examine one turn. Never raises; degrades to NOT_RESEARCH.
 
@@ -112,7 +114,7 @@ class ResearchService:
                 return await self._resolve(pending, message)
 
             return await self._maybe_propose(
-                conversation_id, message, intent, normalised
+                conversation_id, message, intent, normalised, resolved
             )
         except Exception:  # noqa: BLE001
             # Research must never fail a chat turn. A failure here degrades to
@@ -132,6 +134,7 @@ class ResearchService:
         message: str,
         intent: IntentResult,
         normalised: Optional[str] = None,
+        resolved: Optional[ResolvedTurn] = None,
     ) -> ResearchResult:
         """Identify a research request and record it. Sends nothing anywhere."""
         # Recognition reads the repaired text; everything else reads what the
@@ -140,6 +143,29 @@ class ResearchService:
         candidate = self._research_candidate(reading)
         if candidate is None:
             if self._clarification_needed(reading):
+                # Stage 5D.2. Recognised as a request, but its subject is not
+                # in this message -- "search up the net and let me know". The
+                # subject may be in something the user said earlier.
+                #
+                # The resolved subject is a *reading*, not a permission. It
+                # goes through `_propose_query` exactly as a typed-out subject
+                # does, so the user still sees the exact query and still has
+                # to say yes before anything leaves the process.
+                inherited = self._inherited_subject(resolved)
+                if inherited is not None:
+                    logger.info(
+                        "Research subject resolved from earlier user turns",
+                        extra={
+                            "conversation_id": str(conversation_id),
+                            # The provenance, not the text: the subject is the
+                            # user's own words and belongs in the proposal
+                            # shown to them, not in a log with different
+                            # retention.
+                            "resolution_source": resolved.source.value,
+                            "subject_chars": len(inherited),
+                        },
+                    )
+                    return await self._propose_query(conversation_id, inherited)
                 # Recognised, unreadable. Asking costs a turn; guessing would
                 # send a query nobody wrote to an external provider.
                 return ResearchResult(
@@ -367,6 +393,20 @@ class ResearchService:
                 if query and query != "(empty)":
                     return query
         return None
+
+    @staticmethod
+    def _inherited_subject(resolved: Optional[ResolvedTurn]) -> Optional[str]:
+        """The subject carried over from earlier user turns, if there is one.
+
+        Returns None for every unresolved and ambiguous case, which sends the
+        turn to the existing clarification reply. Refusing to guess is the
+        point: a wrong guess here is a query nobody wrote being shown to a
+        third party, and asking costs one message.
+        """
+        if resolved is None or not resolved.is_resolved:
+            return None
+        subject = resolved.subject.strip()
+        return subject or None
 
     @staticmethod
     def _clarification_needed(message: str) -> bool:

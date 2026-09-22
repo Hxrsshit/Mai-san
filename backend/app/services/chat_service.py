@@ -50,6 +50,12 @@ from app.synthesis.execution_truth import (
     validate as validate_execution_truth,
 )
 from app.orchestration.freshness import assess as assess_freshness
+from app.orchestration.resolution import (
+    MAX_USER_TURNS,
+    ResolvedTurn,
+    UserTurn,
+    resolve as resolve_context,
+)
 from app.mail.schemas import MailOutcome, MailResult
 from app.mail.service import MailService
 from app.workflows.schemas import WorkflowOutcome, WorkflowResult
@@ -212,6 +218,19 @@ class ChatService:
         # string until it matched a request grammar.
         reading = normalise(content)
 
+        # Stage 5D.2. What the user is talking about, worked out from their
+        # own earlier turns. Computed once, here, and handed to the routing
+        # layer that needs it -- one authoritative reading per turn rather
+        # than each layer inventing its own.
+        #
+        # The window is built from stored roles, not from text: only rows the
+        # user actually typed become `UserTurn`s. That filter lives here,
+        # where the role is known, and the resolver's signature accepts
+        # nothing else -- so an assistant message carrying a summarised web
+        # page, an email body or a calendar title cannot reach the thing that
+        # decides what gets searched for.
+        resolved = await self._resolve_context(conversation_id, reading.text)
+
         calendar = await self._calendar.handle(
             conversation_id, content, normalised=reading.text
         )
@@ -272,7 +291,12 @@ class ChatService:
                 or mail.outcome is not MailOutcome.NOT_MAIL
             )
             else await self._research.handle(
-                conversation_id, content, intent, normalised=reading.text
+                conversation_id, content, intent, normalised=reading.text,
+                # Stage 5D.2. The turn's resolved reading, so a request whose
+                # subject lives in an earlier user turn can still name it. The
+                # research layer consults this only when its own grammar found
+                # a request it could not read a subject from.
+                resolved=resolved,
             )
         )
 
@@ -531,6 +555,38 @@ class ChatService:
 
         return " ".join(parts)
 
+
+    async def _resolve_context(
+        self, conversation_id: uuid.UUID, current_message: str
+    ) -> ResolvedTurn:
+        """The bounded window of the user's own turns, resolved. Never raises.
+
+        Reads at most `MAX_USER_TURNS` user messages. The database read is
+        over-fetched slightly and then filtered by role, because a
+        conversation alternates user and assistant rows and asking for six
+        messages would yield roughly three user turns.
+
+        A failure here degrades to "nothing resolved", which is the same thing
+        an unresolvable reference produces: the caller asks the user. Context
+        resolution must never be able to fail a turn.
+        """
+        try:
+            messages = await self._conversations.get_messages(
+                conversation_id, limit=MAX_USER_TURNS * 2
+            )
+        except Exception:  # noqa: BLE001 - context is an optimisation
+            logger.warning(
+                "Recent user turns unavailable for context resolution",
+                extra={"conversation_id": str(conversation_id)},
+            )
+            return ResolvedTurn()
+
+        turns = [
+            UserTurn(content=message.content)
+            for message in messages
+            if getattr(message.role, "value", message.role) == "user"
+        ]
+        return resolve_context(current_message, turns)
 
     async def _recover_synthesis(
         self, prompt, llm_response, validated, truth, record, conversation_id
