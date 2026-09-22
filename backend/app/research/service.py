@@ -259,7 +259,17 @@ class ResearchService:
         execution = await self._executions.create(
             ExecutionRequest(
                 tool_name="web_search",
-                arguments={"query": candidate},
+                # Stage 5E.2. The application's freshness judgement travels
+                # in the approved payload, so the user sees and approves the
+                # search they are actually getting -- and so the approval
+                # fingerprint covers it. A recency-scoped search approved here
+                # cannot be re-run as a plain one, or the reverse.
+                #
+                # `from_freshness` is the *only* input. It is set by
+                # `propose_current_information`, which Stage 5A.1's freshness
+                # layer alone calls, from a judgement made on the user's own
+                # typed message. No model and no retrieved content reaches it.
+                arguments={"query": candidate, "prefer_recent": from_freshness},
                 # Scoped to the conversation and the query, so proposing the
                 # same search twice in one conversation reuses one record
                 # rather than accumulating them.

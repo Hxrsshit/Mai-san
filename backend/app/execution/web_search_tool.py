@@ -25,13 +25,14 @@ class WebSearchTool(AsyncIntegrationTool):
         return WebSearchArguments
 
     def build_operation_arguments(self, arguments) -> Dict[str, Any]:
-        # Three values cross the boundary. Not the argument object, not a
+        # Four values cross the boundary. Not the argument object, not a
         # context, not a conversation, not a memory -- and nothing the user
         # did not put in the approved payload.
         return {
             "query": arguments.query,
             "max_results": arguments.max_results,
             "safe_search": arguments.safe_search,
+            "prefer_recent": arguments.prefer_recent,
         }
 
 

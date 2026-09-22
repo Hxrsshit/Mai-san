@@ -13,8 +13,9 @@ claim to, and the attribution would be to something that was never there.
 """
 
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -90,6 +91,19 @@ class SearchResults(BaseModel):
                 f"[{index}] {_flatten(result.title)} — {_flatten(result.domain)}"
             )
             lines.append(f"    URL: {_flatten(result.url)}")
+            if result.published_at is not None:
+                # Stage 5E.2. Date-stamped so the model can say *when* a
+                # source said something. Rendered only when the provider
+                # supplied one: an absent date stays absent rather than
+                # becoming "unknown", which would read as a fact about the
+                # source rather than about the search.
+                #
+                # This is evidence metadata, not a ranking. Nothing here
+                # decides that newer is better; that decision does not exist
+                # in this stage.
+                lines.append(
+                    f"    Published: {result.published_at.date().isoformat()}"
+                )
             if result.snippet:
                 lines.append(f"    Snippet: {_flatten(result.snippet)}")
 
@@ -161,6 +175,87 @@ def safe_result_url(raw: Any) -> str:
     return candidate
 
 
+#: Query parameters that identify a *visit*, not a document.
+#:
+#: The measured failure returned the same CNBC article four times, differing
+#: only by `msockid` and a fragment. Stripping these is what makes five result
+#: slots buy five documents.
+#:
+#: A closed list, and deliberately short: a parameter not named here is kept,
+#: so two genuinely different pages are never merged. The failure direction is
+#: to keep a duplicate, not to lose an article.
+_TRACKING_PARAMS = frozenset({
+    "msockid", "utm_source", "utm_medium", "utm_campaign", "utm_term",
+    "utm_content", "utm_id", "gclid", "fbclid", "mc_cid", "mc_eid",
+    "ref", "ref_src", "source", "cmpid", "ncid", "spm", "igshid",
+    "_hsenc", "_hsmi", "icid", "sref",
+})
+
+
+def canonical_url(url: str) -> str:
+    """The identity of a document, for deduplication only. Stage 5E.3-lite.
+
+    Drops the fragment and known tracking parameters, lowercases the host, and
+    removes a trailing slash. **Never used as the URL Mai shows or cites** --
+    attribution uses the URL the provider returned, because a rewritten link is
+    a link the user did not receive.
+
+    Deliberately conservative. Ordinary query parameters are kept, since
+    `?page=2` and `?id=7` are different documents, and merging them would lose
+    an article rather than a duplicate.
+    """
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+
+    kept = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in _TRACKING_PARAMS
+    ]
+    path = parsed.path.rstrip("/") or "/"
+    return urlunparse(
+        (
+            parsed.scheme.lower(),
+            (parsed.hostname or "").lower()
+            + (f":{parsed.port}" if parsed.port else ""),
+            path,
+            "",
+            urlencode(kept),
+            "",
+        )
+    )
+
+
+def parse_published_at(value: Any) -> Optional[datetime]:
+    """Read a provider's publication date, or None. Never raises.
+
+    Providers send several shapes: RFC 2822 (`Mon, 31 Aug 2026 10:23:13 GMT`),
+    ISO 8601, and ISO with a `Z`. Each is tried by name; anything unrecognised
+    yields None.
+
+    None is the honest answer for an unparseable date, and it is important
+    that it stays None: an invented or inferred date would be evidence
+    metadata Mai made up, and the next stage's ranking would act on it. Dates
+    are never derived from a URL or from article text.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    text = value.strip()
+    try:
+        return parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        pass
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def parse_results(
     payload: Dict[str, Any],
     query: str,
@@ -183,6 +278,8 @@ def parse_results(
         raw_results = []
 
     collected: List[SearchResult] = []
+    seen: set = set()
+    duplicates = 0
     for item in raw_results:
         if len(collected) >= min(max_results, MAX_RESULTS):
             break
@@ -192,6 +289,15 @@ def parse_results(
         url = safe_result_url(item.get("url"))
         if not url:
             continue
+
+        # Stage 5E.2/5E.3-lite. One document per slot. The measured failure
+        # filled all five slots with one article, so `result_count` reported
+        # five sources while the evidence set was one.
+        identity = canonical_url(url)
+        if identity in seen:
+            duplicates += 1
+            continue
+        seen.add(identity)
 
         collected.append(
             SearchResult(
@@ -208,6 +314,14 @@ def parse_results(
                     or item.get("content"),
                     MAX_SNIPPET_CHARS,
                 ),
+                # Stage 5E.2. Read by name like every other field. Providers
+                # differ: Tavily sends `published_date`, and only for a news
+                # search. Absent stays absent.
+                published_at=parse_published_at(
+                    item.get("published_date")
+                    or item.get("published")
+                    or item.get("page_age")
+                ),
             )
         )
 
@@ -216,7 +330,12 @@ def parse_results(
         logger.info(
             "Search results were bounded or dropped",
             # Counts only. Never a title, a URL or the query itself.
-            extra={"provider": provider, "dropped": dropped},
+            extra={
+                "provider": provider,
+                "dropped": dropped,
+                "duplicates": duplicates,
+                "dated": sum(1 for r in collected if r.published_at is not None),
+            },
         )
 
     return SearchResults(
@@ -260,5 +379,7 @@ __all__ = [
     "SearchResults",
     "normalise_query",
     "parse_results",
+    "canonical_url",
+    "parse_published_at",
     "safe_result_url",
 ]

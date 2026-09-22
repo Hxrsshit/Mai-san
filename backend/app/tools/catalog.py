@@ -129,6 +129,15 @@ class WebSearchArguments(ToolArguments):
     #: Defaults to on. A research assistant has no reason to default to
     #: fewer filters, and turning it off is part of the approved payload.
     safe_search: bool = True
+    #: Stage 5E.2. Whether the *application* judged this question to need
+    #: current information, from `app.orchestration.freshness`.
+    #:
+    #: A boolean, not a date range and not a provider parameter name: the
+    #: user approves a payload they can read, and "recent" is a thing a person
+    #: can agree to in a way that `{"topic": "news", "days": 30}` is not. The
+    #: integration decides how to express it, which also keeps provider
+    #: vocabulary out of the approved payload.
+    prefer_recent: bool = False
 
 
 class CalendarReadIntent(str, enum.Enum):

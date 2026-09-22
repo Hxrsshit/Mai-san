@@ -429,8 +429,19 @@ def test_the_operation_arguments_are_exactly_the_approved_payload() -> None:
     tool = WebSearchTool()
     arguments = tool.validate_arguments({"query": "weather"})
 
+    # Stage 5E.2 added `prefer_recent` deliberately: the application's
+    # freshness judgement has to reach the request, and it travels in the
+    # approved payload so the approval fingerprint covers it. Updated here
+    # rather than loosened -- the list stays exact.
     assert tool.build_operation_arguments(arguments) == {
         "query": "weather", "max_results": 5, "safe_search": True,
+        "prefer_recent": False,
+    }
+
+    recent = tool.validate_arguments({"query": "weather", "prefer_recent": True})
+    assert tool.build_operation_arguments(recent) == {
+        "query": "weather", "max_results": 5, "safe_search": True,
+        "prefer_recent": True,
     }
 
 

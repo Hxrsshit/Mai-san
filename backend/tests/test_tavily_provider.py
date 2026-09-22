@@ -122,6 +122,43 @@ async def test_the_body_carries_only_the_approved_fields() -> None:
     ]
 
 
+async def test_a_recent_search_sends_the_provider_recency_parameters() -> None:
+    """Stage 5E.2, asserted on the **actual outbound body**.
+
+    Mutation testing found the first version of this guarantee tested only
+    that the source text contained `body['topic'] = 'news'` -- which a
+    mutation replacing the surrounding condition with `if False:` leaves
+    untouched, because the line is still there and simply never runs. A
+    source-text assertion cannot see reachability. This one reads the bytes
+    that went to the socket.
+    """
+    transport = StubTransport(payload=tavily_payload())
+    integration = _integration(transport)
+
+    await integration.ainvoke(
+        "search", {"query": "q", "max_results": 3, "prefer_recent": True}
+    )
+
+    body = json.loads(transport.bodies[0].decode())
+    assert body["topic"] == "news"
+    assert body["days"] == 30
+    assert sorted(body) == ["days", "max_results", "query", "search_depth", "topic"]
+
+
+async def test_an_ordinary_search_sends_no_recency_parameters() -> None:
+    """The default path is byte-for-byte what it was before Stage 5E.2."""
+    transport = StubTransport(payload=tavily_payload())
+    integration = _integration(transport)
+
+    await integration.ainvoke(
+        "search", {"query": "q", "max_results": 3, "prefer_recent": False}
+    )
+
+    body = json.loads(transport.bodies[0].decode())
+    assert "topic" not in body
+    assert "days" not in body
+
+
 # --- The response Tavily actually returns -----------------------------------
 
 

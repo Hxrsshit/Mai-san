@@ -342,12 +342,23 @@ async def test_the_credential_never_reaches_the_model_prompt(
 
 
 def test_no_tool_argument_can_carry_a_credential_or_a_url() -> None:
-    """Structural: there is no field for either."""
+    """Structural: there is no field for either.
+
+    The field set is pinned, so a new argument is a decision someone has to
+    write down. Stage 5E.2 added `prefer_recent` -- a bool carrying the
+    application's own freshness judgement. Note what it is *not*: not a
+    provider parameter name, not a date range, not a topic string. The
+    integration turns it into `topic`/`days`, so provider vocabulary never
+    becomes something a caller can name.
+    """
     from app.tools.catalog import WebSearchArguments
 
     assert set(WebSearchArguments.model_fields) == {
-        "query", "max_results", "safe_search"
+        "query", "max_results", "safe_search", "prefer_recent"
     }
+
+    # And it is a bool, so it cannot smuggle a string anywhere.
+    assert WebSearchArguments.model_fields["prefer_recent"].annotation is bool
 
     for forbidden in ("api_key", "url", "endpoint", "headers", "method", "token"):
         with pytest.raises(Exception):

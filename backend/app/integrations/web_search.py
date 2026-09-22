@@ -50,6 +50,16 @@ from app.integrations.search import (
 
 logger = get_logger(__name__)
 
+#: How long "recent" means, for a freshness-marked search. Stage 5E.2.
+#:
+#: Thirty days is chosen against the measured failure: the stale answer came
+#: from an article eleven months old, and a month-wide window still returns
+#: release notes and announcements while excluding it. It is a constant rather
+#: than a parameter because it is not a thing a caller -- or a model -- should
+#: be able to widen.
+RECENT_WINDOW_DAYS = 30
+
+
 class SearchProvider(NamedTuple):
     """Everything that differs between one search API and another.
 
@@ -74,6 +84,12 @@ class SearchProvider(NamedTuple):
     #: How the credential is formatted in that header. Brave sends the key
     #: bare, Tavily expects the `Bearer` scheme.
     auth_prefix: str = ""
+    #: Whether this provider accepts a recency-scoped news search. Stage 5E.2.
+    #:
+    #: Declared per provider so the request builder asks the descriptor rather
+    #: than testing the provider's name, and so a provider that cannot do it
+    #: silently gets a plain search instead of a parameter it would reject.
+    supports_recency: bool = False
 
 
 #: The two providers Mai can talk to. Both single-host, both read-only.
@@ -84,6 +100,10 @@ PROVIDERS = {
         url="https://api.search.brave.com/res/v1/web/search",
         method="GET",
         auth_header="X-Subscription-Token",
+        # Brave has its own freshness parameter with a different name and
+        # vocabulary. Out of scope for Stage 5E.2, which does not add a second
+        # provider's request shape; left False so Brave keeps today's request.
+        supports_recency=False,
     ),
     "tavily": SearchProvider(
         name="tavily",
@@ -92,6 +112,7 @@ PROVIDERS = {
         method="POST",
         auth_header="Authorization",
         auth_prefix="Bearer ",
+        supports_recency=True,
     ),
 }
 
@@ -240,6 +261,11 @@ class WebSearchIntegration(Integration):
         query = normalise_query(arguments.get("query", ""))
         count = max(1, min(int(arguments.get("max_results", 5)), MAX_RESULTS))
         safe_search = "strict" if arguments.get("safe_search", True) else "moderate"
+        # Stage 5E.2. The application's freshness judgement, already made by
+        # `app.orchestration.freshness` and carried through the approved
+        # payload. Coerced to a bool here: what arrives is whatever survived
+        # the tool schema, and this decides a request parameter.
+        prefer_recent = bool(arguments.get("prefer_recent", False))
 
         secret = self._credentials.resolve_secret(self.credential_requirement)
         chosen = self._provider
@@ -252,14 +278,24 @@ class WebSearchIntegration(Integration):
         auth = (chosen.auth_header, f"{chosen.auth_prefix}{secret}")
 
         if chosen.method == "POST":
+            body: Dict[str, Any] = {
+                "query": query,
+                "max_results": count,
+                "search_depth": "basic",
+            }
+            if prefer_recent and chosen.supports_recency:
+                # Measured, not assumed. With the plain request the provider
+                # returned five slots filled by one eleven-month-old article
+                # and no publication dates at all; with these two parameters
+                # the same query returned five distinct sources, all dated.
+                #
+                # Both are provider-documented parameter names, and both are
+                # written here as constants -- neither the caller nor a model
+                # can name a topic or widen the window.
+                body["topic"] = "news"
+                body["days"] = RECENT_WINDOW_DAYS
             response = await self._client.post_json(
-                chosen.url,
-                json_body={
-                    "query": query,
-                    "max_results": count,
-                    "search_depth": "basic",
-                },
-                auth_header=auth,
+                chosen.url, json_body=body, auth_header=auth
             )
         else:
             response = await self._client.get(
@@ -291,6 +327,7 @@ class WebSearchIntegration(Integration):
                 "provider": self.provider,
                 "result_count": len(results.results),
                 "query_chars": len(query),
+                "prefer_recent": prefer_recent,
                 "latency_ms": response.elapsed_ms,
             },
         )

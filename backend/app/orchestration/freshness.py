@@ -62,9 +62,13 @@ round trip.
 
 import enum
 import re
-from typing import NamedTuple, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 from app.core.logging import get_logger
+#: Shared with `app.orchestration.resolution` rather than duplicated: "does
+#: this word name anything?" has one answer in this system. `research.language`
+#: imports it for the same reason.
+from app.orchestration.resolution import is_substantive
 
 logger = get_logger(__name__)
 
@@ -329,6 +333,78 @@ _TRAILING = re.compile(
 )
 
 
+#: A word, for clause merging. Trailing punctuation is not part of it.
+_WORDS = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]*")
+
+#: The same interrogative frame as `_FRAME`, unanchored, to find a *second*
+#: question inside one message. Stage 5E.1.
+#:
+#: Shares `_FRAME`'s vocabulary deliberately: "a thing that opens a question"
+#: has one definition here, and two copies would drift. The leading
+#: separator is part of the match so the clause boundary is consumed rather
+#: than left dangling on the front of the next clause.
+_INNER_FRAME = re.compile(
+    r"(?:\s*[,;]\s*|\s+and\s+|\s*\?\s*)"
+    r"(?=(?:can|could|would|will|do|does|did)\s+you\b"
+    r"|(?:what|which|who|when|where|how)\b)",
+    re.IGNORECASE,
+)
+
+#: Most clauses read from one message. A question with more parts than this is
+#: not a research request anyone expects one query to answer, and an unbounded
+#: split is an unbounded query.
+MAX_CLAUSES = 4
+
+
+def _clauses(text: str) -> List[str]:
+    """Split a compound question into its parts, longest-first-clause first.
+
+    A message carrying a *second* interrogative frame is two questions:
+
+        "what is the latest model by Claude, what is the latest model of opus"
+
+    `_subject_of` strips one leading frame by design -- its contract is to stay
+    faithful to the user's wording -- so before Stage 5E.1 the second frame
+    survived into the search query verbatim, and the provider matched one
+    noisy string against one article.
+    """
+    parts = [part.strip() for part in _INNER_FRAME.split(text) if part.strip()]
+    return parts[:MAX_CLAUSES] if parts else []
+
+
+def _merge_clauses(clauses: List[str]) -> str:
+    """One query from several clauses, adding only what is genuinely new.
+
+    The first clause is kept whole, because it is the question the user led
+    with and its wording is theirs. Later clauses contribute only their
+    *substantive* new words -- so "what is the latest model of opus" adds
+    "opus" and not a second copy of "latest model".
+
+    Nothing is invented. Every word in the result was typed by the user, which
+    is what keeps this a reduction of their question rather than a rewrite of
+    it. `is_substantive` is the resolver's vocabulary, shared rather than
+    duplicated for the reason the same import exists in `research.language`.
+    """
+    if not clauses:
+        return ""
+
+    base = clauses[0]
+    seen = {word.lower() for word in _WORDS.findall(base)}
+    extra: List[str] = []
+
+    for clause in clauses[1:]:
+        for word in _WORDS.findall(clause):
+            lowered = word.lower()
+            if lowered in seen:
+                continue
+            if not is_substantive(word):
+                continue
+            seen.add(lowered)
+            extra.append(word)
+
+    return " ".join([base] + extra) if extra else base
+
+
 def assess(message: str) -> FreshnessAssessment:
     """Judge one **user** message. Never raises; NOT_REQUIRED is the default.
 
@@ -418,6 +494,18 @@ def _subject_of(text: str) -> str:
     stripped = _FRAME.sub("", text, count=1)
     stripped = _TRAILING.sub("", stripped)
     stripped = " ".join(stripped.split())
+
+    # Stage 5E.1. A second interrogative frame means a second question, and
+    # the whole sentence is then a poor search string -- measured: the
+    # compound form returned five slots filled by one article, while the
+    # merged form returned five distinct sources.
+    #
+    # Only reached when a compound question is actually present, so a simple
+    # question takes exactly the path it took before.
+    clauses = _clauses(stripped)
+    if len(clauses) > 1:
+        stripped = _TRAILING.sub("", _merge_clauses(clauses))
+        stripped = " ".join(stripped.split())
 
     if len(stripped) < 3:
         return ""
