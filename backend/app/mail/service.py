@@ -240,6 +240,12 @@ class MailService:
         if request.unread_only:
             what.append("unread")
         what.append("messages")
+        if request.priority:
+            # Said plainly, because the user asked a question the mailbox
+            # cannot answer: Gmail is not being asked for "important" ones.
+            # A bounded recent set is read and the judgement is made from
+            # what comes back, and the sentence should not imply otherwise.
+            what.append("to see which look worth your attention")
         if request.sender:
             what.append(f'from "{request.sender}"')
         if request.subject_terms:
@@ -301,13 +307,20 @@ class MailService:
 
         block, count = self._rendered(outcome)
         bodies = int(arguments.get("body_count") or 0)
+        intent = self._intent_of(arguments)
         return MailResult(
             outcome=MailOutcome.COMPLETED,
+            # From the approved arguments, like the intent it is derived
+            # from. A summary read that the user asked a priority question
+            # about keeps its bodies and its own instruction.
+            priority=(
+                intent == mail_language.MailIntent.ATTENTION.value
+            ),
             # Derived from the *approved* arguments rather than remembered
             # across the turn. The approval is the authoritative record of
             # what was agreed to, so reporting from it cannot describe a read
             # other than the one that happened.
-            intent=self._intent_of(arguments),
+            intent=intent,
             messages_block=block,
             message_count=count,
             body_count=bodies,
@@ -315,9 +328,26 @@ class MailService:
 
     @staticmethod
     def _intent_of(arguments) -> str:
-        """Which kind of read the approved arguments describe."""
+        """Which kind of read the approved arguments describe.
+
+        Read off the *approved* arguments, never remembered across the two
+        turns, so what is reported cannot describe a read other than the one
+        the user agreed to.
+
+        An attention read is a bodiless listing with its own result bound --
+        the shapes are distinguishable because `MAX_ATTENTION_RESULTS` and
+        `MAX_LIST_RESULTS` differ, and a test pins that they do. The flag is
+        not stored in the arguments because the arguments are the tool's
+        payload: `GmailListMessagesArguments` is `extra="forbid"`, and a
+        field that is not part of the query has no business travelling with
+        one.
+        """
         bodies = int(arguments.get("body_count") or 0)
         if not bodies:
+            if int(arguments.get("max_results") or 0) == (
+                mail_language.MAX_ATTENTION_RESULTS
+            ):
+                return mail_language.MailIntent.ATTENTION.value
             return mail_language.MailIntent.LIST.value
         if bodies == 1:
             return mail_language.MailIntent.READ.value

@@ -939,7 +939,9 @@ class ChatService:
             # Its own section. Mail is the user's own correspondence and
             # carries the strongest untrusted framing in the system -- anyone
             # who knows an address can put text here.
-            formatter = formatter.with_mail(mail.messages_block)
+            formatter = formatter.with_mail(
+                mail.messages_block, attention=mail.priority
+            )
         if calendar is not None and calendar.events_block:
             # Calendar events go into the *personal data* section, not the
             # research one. They are the user's own schedule rather than a

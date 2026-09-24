@@ -113,6 +113,13 @@ class ExecutionRecord(NamedTuple):
     mail: ExecutionState = ExecutionState.NOT_REQUESTED
     calendar: ExecutionState = ExecutionState.NOT_REQUESTED
 
+    #: How many messages the mail read actually returned.
+    #:
+    #: `None` when no mail read happened, which is different from zero: zero
+    #: is a fact about the mailbox, `None` is the absence of a fact. Only the
+    #: application sets it, from `MailResult.message_count`.
+    mail_count: Optional[int] = None
+
     def state_for(self, channel: Channel) -> ExecutionState:
         return {
             Channel.WEB: self.web,
@@ -233,10 +240,22 @@ def record_for_turn(
         if getattr(workflow, "calendar_block", ""):
             calendar_state = ExecutionState.EXECUTED_SUCCESSFULLY
 
+    mail_state = _state(mail, _MAIL_STATES, "messages_block")
+
+    # The count, only when a read actually succeeded. Read off the layer
+    # result -- the application's own record of what came back -- never off
+    # the prose, which is the thing being checked.
+    mail_count: Optional[int] = None
+    if mail_state is ExecutionState.EXECUTED_SUCCESSFULLY and mail is not None:
+        candidate = getattr(mail, "message_count", None)
+        if isinstance(candidate, int) and candidate >= 0:
+            mail_count = candidate
+
     return ExecutionRecord(
         web=web,
-        mail=_state(mail, _MAIL_STATES, "messages_block"),
+        mail=mail_state,
         calendar=calendar_state,
+        mail_count=mail_count,
     )
 
 
@@ -359,6 +378,40 @@ def claims(text: str) -> FrozenSet[Channel]:
     return frozenset(found)
 
 
+#: A stated number of messages.
+#:
+#: Deliberately narrow. It matches a digit or a small number-word immediately
+#: qualifying a mail noun -- "3 unread emails", "you have two messages" -- and
+#: not prose that merely contains a number near the word "email". A detector
+#: that over-matches would reject true answers, and a truth check that cries
+#: wolf gets the budget spent on regenerating correct text.
+_COUNT_CLAIM = re.compile(
+    r"\b(?P<count>\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?:new\s+|unread\s+|recent\s+|important\s+|urgent\s+){0,2}"
+    r"(?:e-?mails?|messages)\b",
+    re.IGNORECASE,
+)
+
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+
+def stated_counts(text: str) -> FrozenSet[int]:
+    """Every message count the text asserts. Data, never a claim of truth."""
+    found = set()
+    for match in _COUNT_CLAIM.finditer(text or ""):
+        raw = match.group("count").lower()
+        if raw.isdigit():
+            # A three-digit cap is already in the pattern; this guards the
+            # int() against nothing surprising, and keeps the set small.
+            found.add(int(raw))
+        elif raw in _NUMBER_WORDS:
+            found.add(_NUMBER_WORDS[raw])
+    return frozenset(found)
+
+
 def validate(text: str, record: ExecutionRecord) -> TruthVerdict:
     """Check the response's claims against what actually ran."""
     asserted = claims(text)
@@ -371,6 +424,9 @@ def validate(text: str, record: ExecutionRecord) -> TruthVerdict:
         if channel in asserted and not record.may_claim(channel)
     )
     if not violations:
+        miscount = _count_violation(text, record)
+        if miscount is not None:
+            return miscount
         return TruthVerdict(ok=True, reason="claims_supported")
 
     logger.warning(
@@ -390,6 +446,42 @@ def validate(text: str, record: ExecutionRecord) -> TruthVerdict:
         ok=False,
         violations=violations,
         reason="unsupported_execution_claim",
+    )
+
+
+def _count_violation(text: str, record: ExecutionRecord) -> Optional[TruthVerdict]:
+    """Refuse an answer that states a message count the read did not produce.
+
+    The channel check above proves a mail read *happened*. It says nothing
+    about the number, and "you have 5 unread emails" over a window of 2 is a
+    fabrication of exactly the kind this layer exists to stop -- a true claim
+    about the action wrapped around a false claim about the result.
+
+    Only applies when a read succeeded and a count is known. A turn with no
+    mail, or one whose count was never recorded, is not second-guessed here;
+    and a stated count that *matches* is left alone, as is prose with no
+    count in it at all.
+    """
+    if record.mail_count is None or not record.may_claim(Channel.MAIL):
+        return None
+
+    stated = stated_counts(text)
+    if not stated or record.mail_count in stated:
+        return None
+
+    logger.warning(
+        "Refused a response stating a message count the read did not produce",
+        # Numbers, never the text or any part of a message.
+        extra={
+            "retrieved": record.mail_count,
+            "stated": ",".join(str(value) for value in sorted(stated)),
+            "response_chars": len(text),
+        },
+    )
+    return TruthVerdict(
+        ok=False,
+        violations=(Channel.MAIL,),
+        reason="mail_count_mismatch",
     )
 
 
@@ -454,6 +546,27 @@ def truthful_reply(record: ExecutionRecord, violations: Tuple[Channel, ...]) -> 
         ", ".join(named[:-1]) + " and " + named[-1]
     )
 
+    # A channel that *is* claimable but still appears in the violations did
+    # happen -- what was wrong was the number. Saying "I have not read your
+    # email" here would be its own untruth, which is the fault this whole
+    # module exists to prevent, so the miscount gets its own sentence with
+    # the real figure in it.
+    miscounted = [channel for channel in violations if record.may_claim(channel)]
+    if miscounted and record.mail_count is not None and Channel.MAIL in miscounted:
+        if record.mail_count == 0:
+            return (
+                "I did read your mail, but I had the number wrong a moment "
+                "ago: nothing matched what you asked for. I would rather say "
+                "that than invent messages."
+            )
+        one = record.mail_count == 1
+        return (
+            f"I did read your mail and found {record.mail_count} "
+            f"message{'' if one else 's'}, but I could not describe "
+            f"{'it' if one else 'them'} accurately just then. Ask me again "
+            "and I will answer from what actually came back."
+        )
+
     proposed = [
         channel for channel in violations
         if record.state_for(channel) is ExecutionState.PROPOSED_NOT_EXECUTED
@@ -488,6 +601,7 @@ def known_claim_channels() -> Tuple[Channel, ...]:
 
 
 __all__ = [
+    "stated_counts",
     "CLAIMABLE_STATES",
     "MAX_EXAMINED_CHARS",
     "MAX_RECOVERY_ATTEMPTS",

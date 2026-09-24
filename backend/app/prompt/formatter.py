@@ -205,6 +205,28 @@ MAIL_HEADER = "EMAIL (the user's own messages, read just now)"
 #: content type where an arbitrary stranger can put text in front of Mai, at
 #: will, in volume, and with a subject line chosen to look like an
 #: instruction. Everything below was written by whoever sent it.
+#: Added when the user asked which messages matter, rather than for all.
+#:
+#: Application text, not the user's and not the mail's. It exists because
+#: "which of these needs attention?" is the one mail question whose answer is
+#: a *judgement*, and a model asked for a judgement will readily supply a
+#: confident one about messages it was never shown. Three things are pinned:
+#: judge only from what is listed, do not state a different total, and be
+#: willing to answer "none of these".
+#:
+#: Note what it does not say. It gives no criteria for importance -- no
+#: sender allowlist, no keyword list -- because any such list would be Mai
+#: deciding whose mail matters, and because a criterion in the prompt is a
+#: criterion an email can learn to match.
+MAIL_ATTENTION_NOTE = (
+    "The user asked which of these messages deserve their attention. Make "
+    "that judgement only from the messages listed below -- their senders, "
+    "subjects and read state. Do not mention a message that is not listed, "
+    "do not state a total different from the number listed, and if none of "
+    "them looks pressing, say so plainly rather than promoting one to fill "
+    "the answer."
+)
+
 MAIL_PREAMBLE = (
     "The following messages were read from the user's own mailbox a moment "
     "ago. Answer questions about their mail from these rather than from "
@@ -374,6 +396,7 @@ class PromptFormatter:
         self._calendar_is_availability = False
         #: One turn's mail, set only via `with_mail`.
         self._mail_block = ""
+        self._mail_attention = False
 
     # --- Public API ---------------------------------------------------------
 
@@ -436,7 +459,9 @@ class PromptFormatter:
         clone._calendar_is_availability = bool(availability)
         return clone
 
-    def with_mail(self, messages_block: str) -> "PromptFormatter":
+    def with_mail(
+        self, messages_block: str, attention: bool = False
+    ) -> "PromptFormatter":
         """A formatter that will render one turn's mail.
 
         A section of its own rather than the calendar or research one. Mail is
@@ -450,6 +475,7 @@ class PromptFormatter:
         clone._calendar_window = self._calendar_window
         clone._calendar_is_availability = self._calendar_is_availability
         clone._mail_block = messages_block or ""
+        clone._mail_attention = bool(attention)
         return clone
 
     def with_workflow_note(self, note: str) -> "PromptFormatter":
@@ -503,6 +529,7 @@ class PromptFormatter:
         clone._calendar_window = self._calendar_window
         clone._calendar_is_availability = self._calendar_is_availability
         clone._mail_block = self._mail_block
+        clone._mail_attention = self._mail_attention
         clone._execution_note = self._execution_note
         return clone
 
@@ -549,7 +576,10 @@ class PromptFormatter:
         if not self._mail_block:
             return
 
-        content = f"{MAIL_HEADER}\n\n{MAIL_PREAMBLE}\n\n{self._mail_block}"
+        preamble = MAIL_PREAMBLE
+        if self._mail_attention:
+            preamble = f"{preamble}\n\n{MAIL_ATTENTION_NOTE}"
+        content = f"{MAIL_HEADER}\n\n{preamble}\n\n{self._mail_block}"
         parts.append(
             PromptPart(
                 message=LLMMessage(role="system", content=content),

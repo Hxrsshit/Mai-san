@@ -66,6 +66,12 @@ class MailResult(BaseModel):
     #: never about the mail.
     intent: Optional[str] = Field(default=None, max_length=32)
 
+    #: Whether the user asked which messages matter rather than for all of
+    #: them. Metadata about the question, like `intent` -- it selects an
+    #: application-written synthesis instruction and nothing else. It is not
+    #: derived from any message and never reaches Gmail.
+    priority: bool = False
+
     #: An application reason code. Never a Google message, never an exception.
     reason: Optional[str] = Field(default=None, max_length=64)
 
