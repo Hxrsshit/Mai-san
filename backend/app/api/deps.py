@@ -22,6 +22,7 @@ from app.runtime.facts import build as build_runtime_facts
 from app.tools.authorization import AuthorizationService
 from app.tools.registry import ToolRegistry, get_registry
 from app.prompt.formatter import PromptFormatter
+from app.reminders.service import ReminderService
 from app.relationships.service import RelationshipService
 from app.retrieval.service import RetrievalService
 from app.services.chat_service import ChatService
@@ -165,6 +166,14 @@ def get_history_import_service(
     )
 
 
+def get_reminder_service(
+    session: DbSession, settings: AppSettings
+) -> ReminderService:
+    """Stage 5F.1. Takes no provider: reminder scheduling makes no model call
+    anywhere -- the schedule is parsed deterministically."""
+    return ReminderService(session=session, settings=settings)
+
+
 def get_entity_service(
     session: DbSession, provider: Provider, settings: AppSettings
 ) -> EntityService:
@@ -183,6 +192,7 @@ Memories = Annotated[MemoryService, Depends(get_memory_service)]
 Entities = Annotated[EntityService, Depends(get_entity_service)]
 Relationships = Annotated[RelationshipService, Depends(get_relationship_service)]
 Retrieval = Annotated[RetrievalService, Depends(get_retrieval_service)]
+Reminders = Annotated[ReminderService, Depends(get_reminder_service)]
 HistoryImport = Annotated[
     HistoryImportService, Depends(get_history_import_service)
 ]

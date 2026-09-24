@@ -9,6 +9,7 @@ from app.api.routes.integrations import router as integrations_router
 from app.api.routes.intent import router as intent_router
 from app.api.routes.history import router as history_router
 from app.api.routes.knowledge import router as knowledge_router
+from app.api.routes.reminders import router as reminders_router
 from app.api.routes.orchestration import router as orchestration_router
 from app.api.routes.planning import router as planning_router
 from app.api.routes.prompt import router as prompt_router
@@ -32,6 +33,7 @@ __all__ = [
     "prompt_router",
     "history_router",
     "knowledge_router",
+    "reminders_router",
     "intent_router",
     "planning_router",
     "tools_router",

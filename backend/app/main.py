@@ -26,6 +26,7 @@ from app.api.routes import (
     knowledge_router,
     orchestration_router,
     planning_router,
+    reminders_router,
     prompt_router,
     tools_router,
 )
@@ -67,10 +68,24 @@ async def lifespan(app: FastAPI):
             extra={"provider": provider.name},
         )
 
+    # Stage 5F.1. The poller lives in the app lifespan because that is where
+    # the engine it needs is already initialised and torn down. It holds no
+    # state: a reminder's next occurrence is a column, so a restart resumes
+    # from the database rather than from anything kept here.
+    scheduler = None
+    if settings.REMINDERS_ENABLED and settings.REMINDER_SCHEDULER_ENABLED:
+        from app.database.session import get_session_factory
+        from app.reminders.scheduler import ReminderScheduler
+
+        scheduler = ReminderScheduler(get_session_factory(), settings)
+        scheduler.start()
+
     logger.info("Mai backend ready")
     yield
 
     logger.info("Shutting down Mai backend")
+    if scheduler is not None:
+        await scheduler.stop()
     await dispose_provider()
     await dispose_engine()
     logger.info("Shutdown complete")
@@ -172,6 +187,12 @@ def create_app() -> FastAPI:
         # HISTORY_IMPORT_ENABLED -- this is the outer of two doors.
         if settings.HISTORY_IMPORT_ENABLED:
             app.include_router(history_router)
+
+    # Stage 5F.1. Reminders are local-only and have their own master switch:
+    # they depend on no integration and no model, so they are not gated on the
+    # memory subsystem the way the inspection routes above are.
+    if settings.REMINDERS_ENABLED:
+        app.include_router(reminders_router)
 
     return app
 

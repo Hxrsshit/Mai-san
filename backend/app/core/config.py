@@ -347,6 +347,25 @@ class Settings(BaseSettings):
     #: Characters of user text handed to the extractor per conversation.
     IMPORT_EXTRACTION_WINDOW_CHARS: int = 6_000
 
+    # --- Reminders (Stage 5F.1) ---
+    #
+    # A reminder is local-only: it makes no external call, reads no
+    # integration and sends nothing anywhere. What it produces is a row the
+    # user reads back through the API.
+    REMINDERS_ENABLED: bool = True
+    #: How often the scheduler looks for due reminders.
+    #:
+    #: Thirty seconds is the granularity a person notices for "remind me at
+    #: 10am" and cheap enough to run forever: the query is one indexed range
+    #: scan over a table holding a handful of rows.
+    REMINDER_POLL_SECONDS: int = 30
+    #: Whether the poller runs in this process.
+    #:
+    #: Separate from `REMINDERS_ENABLED` so reminders can be created and
+    #: listed with the loop off -- which is what the test suite does, and what
+    #: a second process would want if one ever existed.
+    REMINDER_SCHEDULER_ENABLED: bool = True
+
     # --- Context retrieval (Stage 2D) ---
     # Retrieval runs on the request path before the chat call. It adds no
     # model calls -- every step is a bounded database query.

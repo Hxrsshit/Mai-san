@@ -231,7 +231,13 @@ def test_the_scrubber_shares_one_pattern_vocabulary_with_the_log_redactor() -> N
 
 
 def test_stage_5c_added_exactly_one_migration() -> None:
-    """Three tables and four columns, in one revision."""
+    """Three tables and four columns, in one revision.
+
+    The claim is about Stage 5C, so the window is 5C's own: everything after
+    `0009` and no later than `0010`. Freezing the whole directory would make
+    this a tripwire every subsequent stage has to edit, which teaches people
+    to edit it without reading it -- the same reasoning as the Stage 5B pin.
+    """
     versions = sorted(p.name for p in pathlib.Path("alembic/versions").glob("*.py"))
-    after_5b = [v for v in versions if v[:4] > "0009"]
-    assert after_5b == ["0010_history_import.py"], after_5b
+    stage_5c = [v for v in versions if "0009" < v[:4] <= "0010"]
+    assert stage_5c == ["0010_history_import.py"], stage_5c

@@ -129,6 +129,13 @@ class RuntimeFacts(BaseModel):
     #: How many tools the application has declared. Registry count, not a guess.
     registered_tool_count: int = 0
 
+    #: Whether Mai can set reminders (Stage 5F.1).
+    #:
+    #: A real conversational capability, so it is reported rather than
+    #: omitted: with reminders off, Mai offering to set one would be exactly
+    #: the untruth Stage 4E.1 exists to prevent.
+    reminders_enabled: bool = True
+
     #: Whether the operator has switched controlled execution on (Stage 4E).
     #: False by default, and False is the state Mai ships in.
     execution_enabled: bool = False

@@ -37,6 +37,7 @@ CAPABILITY_SETTINGS = {
     "intent_classification_enabled": "INTENT_CLASSIFICATION_ENABLED",
     "action_orchestration_enabled": "ORCHESTRATION_ENABLED",
     "execution_enabled": "EXECUTION_ENABLED",
+    "reminders_enabled": "REMINDERS_ENABLED",
 }
 
 #: Settings deliberately *not* surfaced, each with the reason.
@@ -58,6 +59,10 @@ SETTINGS_NOT_SURFACED = {
     # memories reach a turn through retrieval, like every other memory.
     "HISTORY_IMPORT_ENABLED": "operator action, not a conversational capability",
     "IMPORT_MEMORY_EXTRACTION_ENABLED": "sub-switch of history_import_enabled",
+    # Stage 5F.1. Whether the poller runs in *this process* is deployment
+    # topology, not a capability: a reminder can be created and listed either
+    # way, and the user is told about the capability, not the loop.
+    "REMINDER_SCHEDULER_ENABLED": "sub-switch of reminders_enabled",
 }
 
 

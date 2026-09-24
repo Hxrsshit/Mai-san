@@ -50,6 +50,10 @@ from app.synthesis.execution_truth import (
     validate as validate_execution_truth,
 )
 from app.orchestration.freshness import assess as assess_freshness
+from app.reminders import language as reminder_language
+from app.reminders.chat import ReminderChat
+from app.reminders.schemas import ReminderOutcome, ReminderResult
+from app.reminders.service import ReminderService
 from app.orchestration.resolution import (
     MAX_USER_TURNS,
     ResolvedTurn,
@@ -107,6 +111,11 @@ class ChatService:
             session, settings=settings
         )
         self._mail = mail_service or MailService(session, settings=settings)
+        # Stage 5F.1. Local-only and deterministic: no provider, no model
+        # call, no integration.
+        self._reminders = ReminderChat(
+            ReminderService(session, settings=self._settings)
+        )
         self._research = research_service or ResearchService(
             session, settings=self._settings
         )
@@ -231,14 +240,65 @@ class ChatService:
         # decides what gets searched for.
         resolved = await self._resolve_context(conversation_id, reading.text)
 
-        calendar = await self._calendar.handle(
-            conversation_id, content, normalised=reading.text
+        # Stage 5F.1. Listing and cancelling reminders jump ahead of the
+        # calendar. Both grammars require the literal word "reminder", so
+        # such a message cannot be about anything else -- whereas the
+        # calendar's own cancel grammar matches "cancel my reminder about the
+        # plants" and refuses it as a read-only-calendar mutation. Live
+        # verification found exactly that: the reply said Mai cannot cancel
+        # calendar events, and the reminder stayed set.
+        #
+        # Creation is deliberately *not* moved: "remind me about my 3pm
+        # meeting" names a calendar noun, and the calendar grammar is the
+        # narrower of the two there.
+        manages_reminders = bool(
+            self._settings.REMINDERS_ENABLED
+            and reminder_language.is_management_request(reading.text)
+        )
+
+        calendar = (
+            CalendarResult()
+            if manages_reminders
+            else await self._calendar.handle(
+                conversation_id, content, normalised=reading.text
+            )
         )
 
         if calendar.has_reply:
             return await self._answer_without_the_model(
                 conversation, conversation_id, content, ResearchResult(),
                 intent, planning, orchestration, calendar=calendar,
+            )
+
+        # Stage 5F.1. Reminders are recognised after the calendar and before
+        # everything else.
+        #
+        # After the calendar because "remind me about my 3pm meeting" names a
+        # calendar noun and the calendar grammar is the narrower of the two.
+        # Before mail, workflow and research because the reminder grammar
+        # requires an imperative aimed at Mai ("remind me", "set a reminder"),
+        # so anything it claims is unambiguously a reminder -- and because
+        # freshness would otherwise read "remind me tomorrow" as a question
+        # about tomorrow and offer to search the web for it.
+        reminder = (
+            ReminderResult()
+            if (
+                not self._settings.REMINDERS_ENABLED
+                or calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+            )
+            else await self._reminders.handle(
+                conversation_id, content, normalised=reading.text
+            )
+        )
+
+        if reminder.has_reply:
+            # Application-written text for every reminder outcome, so the
+            # sentence and the record cannot disagree. Stage 5D.1's rule, in
+            # a new place: "I'll remind you" is emitted on exactly one branch,
+            # and only after the row committed.
+            return await self._answer_without_the_model(
+                conversation, conversation_id, content, ResearchResult(),
+                intent, planning, orchestration, reminder=reminder,
             )
 
         # Stage 5B. Mail is recognised after the calendar and before the
@@ -252,7 +312,10 @@ class ChatService:
         # is what keeps "search the web for Gmail pricing" on the research path.
         mail = (
             MailResult()
-            if calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+            if (
+                calendar.outcome is not CalendarOutcome.NOT_CALENDAR
+                or reminder.outcome is not ReminderOutcome.NOT_REMINDER
+            )
             else await self._mail.handle(
                 conversation_id, content, normalised=reading.text
             )
@@ -705,10 +768,34 @@ class ChatService:
             "was lost. Ask me again and I'll have another go."
         )
 
+    @staticmethod
+    def _application_reply(*layers) -> str:
+        """The text of whichever layer answered this turn.
+
+        Written as a loop over the layers rather than a chain of conditionals
+        ending in `research.reply`, because that chain had a silent failure
+        mode and Stage 5F.1 hit it: a new layer was routed, its branch called
+        this method, and -- not being named in the chain -- it fell through to
+        an empty `ResearchResult()`. Every test passed, because every test
+        called the layer directly. The live conversation returned two empty
+        assistant messages.
+
+        A loop makes the omission impossible: any layer passed in that has a
+        reply is used. An empty result here now means no layer had one, which
+        is a routing bug worth a log line rather than a blank message.
+        """
+        for layer in layers:
+            if layer is not None and getattr(layer, "has_reply", False):
+                return layer.reply
+        logger.error(
+            "A turn was routed to the application but no layer produced a reply"
+        )
+        return ""
+
     async def _answer_without_the_model(
         self, conversation, conversation_id, content, research,
         intent, planning, orchestration, workflow=None, calendar=None,
-        mail=None,
+        mail=None, reminder=None,
     ):
         """Persist a turn the application answered itself. No model call.
 
@@ -736,11 +823,8 @@ class ChatService:
             role=MessageRole.ASSISTANT,
             # Whichever layer answered. Both texts are written in
             # application code precisely so they are true by construction.
-            content=(
-                calendar.reply if calendar is not None and calendar.has_reply
-                else mail.reply if mail is not None and mail.has_reply
-                else workflow.reply if workflow is not None and workflow.has_reply
-                else research.reply
+            content=self._application_reply(
+                calendar, reminder, mail, workflow, research
             ),
         )
         await self._conversations.touch_conversation(conversation)
