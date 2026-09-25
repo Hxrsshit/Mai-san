@@ -58,3 +58,17 @@ MAX_CONSTRAINTS = 10
 MAX_PLANNED_MESSAGE_CHARS = 4000
 
 __all__ = [name for name in dir() if name.isupper()]
+
+# --- Stage 6C: capability binding -------------------------------------------
+#
+# A step may name a capability it needs. The name is model output and is
+# checked against the tool registry before it means anything; these bounds
+# stop an oversized name or argument payload reaching that check at all.
+
+#: Longest capability name a step may name. Comfortably past the longest
+#: registered tool name, and far short of anything that could carry a payload.
+MAX_CAPABILITY_CHARS = 64
+#: Most argument keys one step may supply.
+MAX_ARGUMENT_KEYS = 20
+#: Longest a single argument value may be once stringified.
+MAX_ARGUMENT_VALUE_CHARS = 2_000

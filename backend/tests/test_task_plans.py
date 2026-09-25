@@ -387,7 +387,9 @@ async def test_a_plan_cannot_move_a_task_into_running(service) -> None:
     created = await service.create_for_user("Plan the offsite")
     await service.attach_plan(created.task_id, plan_of(*VALID))
 
-    for state in (TaskState.RUNNING, TaskState.QUEUED, TaskState.COMPLETED):
+    # `queued` became reachable in 6C, through `authorize_plan` and only
+    # through it. Attaching a plan still reaches neither of these.
+    for state in (TaskState.RUNNING, TaskState.COMPLETED):
         result = await service.transition(created.task_id, state)
         assert result.outcome is TaskOutcome.REFUSED
         assert result.reason == "state_not_reachable_in_this_stage"
@@ -503,9 +505,10 @@ async def test_the_preview_exposes_no_sensitive_field(
     body = (await client.get(f"/api/tasks/{task_id}/plan")).json()
 
     assert sorted(body) == [
-        "assumptions", "budget", "current_step", "executed_step_count",
-        "goal_summary", "objective", "plan_id", "risks", "spent",
-        "step_count", "steps", "success_criteria", "task_id", "task_state",
+        "assumptions", "authorized_at", "budget", "current_step",
+        "executed_step_count", "goal_summary", "objective", "plan_id",
+        "risks", "spent", "step_count", "steps", "success_criteria",
+        "task_id", "task_state",
     ]
     blob = str(body).lower()
     for leak in ("token", "secret", "credential", "authorization", "api_key",

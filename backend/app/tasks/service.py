@@ -41,9 +41,11 @@ from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.planning import limits
 from app.tasks import events as journal
+from app.tasks.capabilities import BindingStatus, bind_plan
 from app.tasks.plans import PlanCheck, validate_for_task
 from app.tasks.models import (
     LOCAL_OWNER_ID,
+    MAX_CAPABILITY_CHARS,
     MAX_OBJECTIVE_CHARS,
     MAX_STEP_KEY_CHARS,
     MAX_STEP_TITLE_CHARS,
@@ -60,11 +62,13 @@ from app.tasks.schemas import (
     TaskResult,
 )
 from app.tasks.states import (
-    STAGE_6A_REACHABLE,
+    REACHABLE_STATES,
     WAITING_STATES,
     TaskState,
     TaskStepState,
+    can_step_transition,
     can_transition,
+    is_step_terminal,
     is_terminal,
 )
 
@@ -353,6 +357,381 @@ class TaskService:
 
         return await self.attach_plan(task_id, plan)
 
+    # --- Stage 6C: capability binding and authorization ---------------------
+
+    async def authorize_plan(self, task_id: uuid.UUID) -> TaskResult:
+        """Bind every step's capability, then decide whether execution may begin.
+
+        The one place a persisted plan becomes permission, and the reason it
+        is a separate call rather than part of `attach_plan`: a plan that
+        authorised itself on arrival would make planning and permission the
+        same act, which is exactly the boundary Stage 6B established.
+
+        All or nothing. A plan whose steps do not all bind is refused before
+        any execution state exists -- deciding halfway through would leave a
+        task that can never finish and a journal that says it started.
+
+        Nothing runs here. What this produces is a task in `queued` (or
+        `awaiting_approval`) with each step's capability bound to the
+        registry's canonical name. Creating the execution records is
+        `create_step_execution`; running one needs a runner, which does not
+        exist.
+        """
+        task = await self.get_detail(task_id)
+        if task is None:
+            return TaskResult(outcome=TaskOutcome.NOT_FOUND, reason="task_not_found")
+        if is_terminal(task.state):
+            return TaskResult(
+                outcome=TaskOutcome.TERMINAL, task_id=task.id, state=task.state,
+                reason="task_is_terminal",
+            )
+        if task.plan is None:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="no_plan_attached",
+            )
+        if task.authorized_at is not None:
+            # Authorising twice would re-open a decision a person already
+            # made, and the second answer could differ from the first.
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="already_authorized",
+            )
+        if task.state is not TaskState.PLANNED:
+            return TaskResult(
+                outcome=TaskOutcome.INVALID_TRANSITION, task_id=task.id,
+                state=task.state, reason="cannot_authorize_from_state",
+            )
+
+        steps = sorted(task.steps, key=lambda step: step.sequence)
+        # Read from the *plan*, which is what the model proposed. The rows do
+        # not carry a capability until this method writes one.
+        proposed = {
+            str(entry.get("id")): entry
+            for entry in (task.plan.get("tasks") or [])
+            if isinstance(entry, dict)
+        }
+
+        class _Proposed:
+            __slots__ = ("step_key", "capability", "arguments")
+
+            def __init__(self, key, entry):
+                self.step_key = key
+                self.capability = entry.get("capability")
+                self.arguments = entry.get("arguments") or {}
+
+        binding = bind_plan(
+            [_Proposed(step.step_key, proposed.get(step.step_key, {})) for step in steps]
+        )
+        if not binding.ok:
+            logger.info(
+                "Plan authorization refused",
+                # A reason code, a task id and a count. Never a capability
+                # name the model supplied, and never an argument value.
+                extra={
+                    "task_id": str(task.id),
+                    "reason": binding.reason,
+                    "step_count": len(steps),
+                },
+            )
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason=binding.reason,
+            )
+
+        now = datetime.now(timezone.utc)
+        target = (
+            TaskState.AWAITING_APPROVAL if binding.needs_approval else TaskState.QUEUED
+        )
+        by_key = {b.step_key: b for b in binding.bindings}
+
+        try:
+            async with self._session.begin_nested():
+                for step in steps:
+                    bound = by_key[step.step_key]
+                    # The registry's canonical name, never the model's
+                    # spelling. This is the value execution reads.
+                    step.capability = (bound.capability or "")[:MAX_CAPABILITY_CHARS]
+                    step.arguments = dict(
+                        (proposed.get(step.step_key) or {}).get("arguments") or {}
+                    )
+                    step.updated_at = now
+
+                task.authorized_at = now
+                task.state = target
+                task.updated_at = now
+                await self._session.flush()
+
+                await journal.record(
+                    self._session, task.id,
+                    TaskEventType.APPROVAL_REQUESTED
+                    if target is TaskState.AWAITING_APPROVAL
+                    else TaskEventType.APPROVAL_GRANTED,
+                    actor="policy",
+                    metadata={
+                        "step_count": len(steps),
+                        "requires_approval": binding.needs_approval,
+                        "to": target.value,
+                    },
+                )
+        except _DB_ERRORS as exc:
+            logger.error(
+                "Failed to authorize a plan",
+                extra={"task_id": str(task_id), "error": str(exc)},
+            )
+            return TaskResult(outcome=TaskOutcome.FAILED, reason="persistence_failed")
+
+        logger.info(
+            "Plan authorized",
+            extra={
+                "task_id": str(task.id),
+                "state": target.value,
+                "step_count": len(steps),
+            },
+        )
+        return TaskResult(
+            outcome=TaskOutcome.UPDATED, task_id=task.id, state=target
+        )
+
+    # --- Stage 6C: dependency-aware readiness --------------------------------
+
+    async def runnable_steps(self, task_id: uuid.UUID) -> List[TaskStep]:
+        """The steps whose dependencies are all satisfied, in plan order.
+
+        The validated graph decides the order, not the sequence number. A
+        plan whose edges permit `c` before `b` gets `c` offered, and a step
+        whose dependency failed is never offered at all -- a dependent of a
+        failed step cannot become runnable by waiting.
+        """
+        task = await self.get_detail(task_id)
+        if task is None or task.authorized_at is None:
+            # An unauthorised plan has no runnable steps, whatever its graph
+            # says. Readiness is downstream of permission.
+            return []
+        if is_terminal(task.state):
+            return []
+
+        by_key = {step.step_key: step for step in task.steps}
+        ready: List[TaskStep] = []
+        for step in sorted(task.steps, key=lambda s: s.sequence):
+            if step.state is not TaskStepState.PENDING:
+                continue
+            blocked = False
+            for dependency in step.depends_on or []:
+                prior = by_key.get(dependency)
+                if prior is None or prior.state is not TaskStepState.COMPLETED:
+                    blocked = True
+                    break
+            if not blocked:
+                ready.append(step)
+        return ready
+
+    async def create_step_execution(
+        self, task_id: uuid.UUID, step_key: str, executions=None
+    ) -> TaskResult:
+        """Record the execution one ready step would perform. Runs nothing.
+
+        Uses `ExecutionService.create`, which already owns the authorization
+        decision, the idempotency key, the duplicate handling and the audit
+        event. Nothing here re-implements any of that: a second execution
+        system would be a second place for the authorization decision to be
+        got wrong.
+
+        The execution is left `PROPOSED`. Approving and running it is the
+        existing execution lifecycle's, and wiring it to happen here would
+        make attaching a plan begin work -- the thing Stage 6B forbade.
+        """
+        task = await self.get_detail(task_id)
+        if task is None:
+            return TaskResult(outcome=TaskOutcome.NOT_FOUND, reason="task_not_found")
+        if task.authorized_at is None:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="plan_not_authorized",
+            )
+        if is_terminal(task.state):
+            return TaskResult(
+                outcome=TaskOutcome.TERMINAL, task_id=task.id, state=task.state,
+                reason="task_is_terminal",
+            )
+
+        step = next((s for s in task.steps if s.step_key == step_key), None)
+        if step is None:
+            return TaskResult(
+                outcome=TaskOutcome.NOT_FOUND, task_id=task.id, reason="step_not_found"
+            )
+        if step.execution_id is not None:
+            # One execution per step. Returning the existing record is what
+            # makes this safe to call twice.
+            return TaskResult(
+                outcome=TaskOutcome.UPDATED, task_id=task.id, state=task.state,
+                reason="execution_already_created",
+            )
+        if not step.capability:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="step_declares_no_capability",
+            )
+
+        ready = {s.step_key for s in await self.runnable_steps(task_id)}
+        if step_key not in ready:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="dependencies_incomplete",
+            )
+
+        if executions is None:
+            from app.execution.service import ExecutionService
+
+            executions = ExecutionService(self._session, settings=self._settings)
+
+        from app.execution.errors import ExecutionError
+        from app.execution.schemas import ExecutionRequest
+
+        try:
+            execution = await executions.create(
+                ExecutionRequest(
+                    tool_name=step.capability,
+                    arguments=dict(step.arguments or {}),
+                    # Derived, not random: the same step of the same task is
+                    # one action however many times it is requested.
+                    idempotency_key=f"task:{task.id}:{step.step_key}"[:128],
+                ),
+                conversation_id=task.conversation_id,
+            )
+        except ExecutionError as refusal:
+            logger.info(
+                "Step execution refused",
+                extra={"task_id": str(task.id), "reason": refusal.reason},
+            )
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason=refusal.reason,
+            )
+        except _DB_ERRORS as exc:
+            logger.error(
+                "Failed to create a step execution",
+                extra={"task_id": str(task.id), "error": str(exc)},
+            )
+            return TaskResult(outcome=TaskOutcome.FAILED, reason="persistence_failed")
+
+        step.execution_id = execution.id
+        step.updated_at = datetime.now(timezone.utc)
+        await self._session.flush()
+
+        logger.info(
+            "Step execution created",
+            extra={"task_id": str(task.id), "execution_id": str(execution.id)},
+        )
+        return TaskResult(
+            outcome=TaskOutcome.UPDATED, task_id=task.id, state=task.state
+        )
+
+    # --- Stage 6C: step lifecycle --------------------------------------------
+    #
+    # Transitions only. Each is driven by an external caller -- there is no
+    # loop here, and nothing calls these on its own.
+
+    async def mark_step_started(
+        self, task_id: uuid.UUID, step_key: str
+    ) -> TaskResult:
+        return await self._move_step(
+            task_id, step_key, TaskStepState.RUNNING,
+            TaskEventType.STEP_STARTED, require_ready=True,
+        )
+
+    async def mark_step_completed(
+        self, task_id: uuid.UUID, step_key: str
+    ) -> TaskResult:
+        return await self._move_step(
+            task_id, step_key, TaskStepState.COMPLETED,
+            TaskEventType.STEP_COMPLETED,
+        )
+
+    async def mark_step_failed(
+        self, task_id: uuid.UUID, step_key: str, reason: Optional[str] = None
+    ) -> TaskResult:
+        return await self._move_step(
+            task_id, step_key, TaskStepState.FAILED,
+            TaskEventType.STEP_FAILED, reason=reason,
+        )
+
+    async def _move_step(
+        self,
+        task_id: uuid.UUID,
+        step_key: str,
+        target: TaskStepState,
+        event: TaskEventType,
+        require_ready: bool = False,
+        reason: Optional[str] = None,
+    ) -> TaskResult:
+        """Move one step, enforcing the step state machine and the graph."""
+        task = await self.get_detail(task_id)
+        if task is None:
+            return TaskResult(outcome=TaskOutcome.NOT_FOUND, reason="task_not_found")
+        if task.authorized_at is None:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="plan_not_authorized",
+            )
+        if is_terminal(task.state):
+            return TaskResult(
+                outcome=TaskOutcome.TERMINAL, task_id=task.id, state=task.state,
+                reason="task_is_terminal",
+            )
+
+        step = next((s for s in task.steps if s.step_key == step_key), None)
+        if step is None:
+            return TaskResult(
+                outcome=TaskOutcome.NOT_FOUND, task_id=task.id, reason="step_not_found"
+            )
+        if is_step_terminal(step.state):
+            return TaskResult(
+                outcome=TaskOutcome.TERMINAL, task_id=task.id, state=task.state,
+                reason="step_is_terminal",
+            )
+        if not can_step_transition(step.state, target):
+            return TaskResult(
+                outcome=TaskOutcome.INVALID_TRANSITION, task_id=task.id,
+                state=task.state, reason="undeclared_step_transition",
+            )
+        if require_ready:
+            ready = {s.step_key for s in await self.runnable_steps(task_id)}
+            if step_key not in ready:
+                return TaskResult(
+                    outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                    reason="dependencies_incomplete",
+                )
+
+        now = datetime.now(timezone.utc)
+        try:
+            async with self._session.begin_nested():
+                step.state = target
+                step.updated_at = now
+                if target is TaskStepState.RUNNING:
+                    step.started_at = now
+                if target in {TaskStepState.COMPLETED, TaskStepState.FAILED}:
+                    step.completed_at = now
+                await self._session.flush()
+                await journal.record(
+                    self._session, task.id, event, actor="system",
+                    metadata={
+                        "step": step.step_key,
+                        "sequence": step.sequence,
+                        "reason": reason,
+                    },
+                )
+        except _DB_ERRORS as exc:
+            logger.error(
+                "Failed to move a step",
+                extra={"task_id": str(task_id), "error": str(exc)},
+            )
+            return TaskResult(outcome=TaskOutcome.FAILED, reason="persistence_failed")
+
+        return TaskResult(
+            outcome=TaskOutcome.UPDATED, task_id=task.id, state=task.state
+        )
+
     # --- Transitions --------------------------------------------------------
 
     async def transition(
@@ -368,7 +747,7 @@ class TaskService:
         refuses every state Stage 6A cannot reach -- so a caller cannot use
         this to declare a task `completed` in a stage with no runner.
         """
-        if target not in STAGE_6A_REACHABLE:
+        if target not in REACHABLE_STATES:
             return TaskResult(
                 outcome=TaskOutcome.REFUSED, task_id=task_id,
                 reason="state_not_reachable_in_this_stage",

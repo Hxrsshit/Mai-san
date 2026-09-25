@@ -379,7 +379,9 @@ async def test_a_declared_transition_is_performed(service, db_session) -> None:
 async def test_a_state_outside_this_stage_is_refused(service, db_session) -> None:
     """Refused by the stage boundary, before the transition table is read."""
     created = await service.create_for_user("Do the thing")
-    result = await service.transition(created.task_id, TaskState.AWAITING_APPROVAL)
+    # `awaiting_approval` became reachable in 6C, so the state that proves
+    # the boundary is one execution would have to reach.
+    result = await service.transition(created.task_id, TaskState.RUNNING)
 
     assert result.outcome is TaskOutcome.REFUSED
     assert result.reason == "state_not_reachable_in_this_stage"
@@ -475,10 +477,7 @@ async def test_failure_records_a_reason_and_counts(service, db_session) -> None:
 # --- The no-execution boundary ---------------------------------------------
 
 
-@pytest.mark.parametrize("state", [
-    TaskState.RUNNING, TaskState.COMPLETED, TaskState.QUEUED, TaskState.PAUSED,
-    TaskState.AWAITING_APPROVAL,
-])
+@pytest.mark.parametrize("state", [TaskState.RUNNING, TaskState.COMPLETED])
 async def test_stage_6a_cannot_reach_an_execution_state(
     state, service, db_session
 ) -> None:
@@ -495,17 +494,28 @@ async def test_stage_6a_cannot_reach_an_execution_state(
 
 
 def test_the_reachable_set_is_exactly_this() -> None:
+    """Widened by Stage 6C, deliberately.
+
+    Stage 6A pinned five states and said a stage that started moving a task
+    towards execution would have to change this line. 6C is that stage:
+    authorising a plan reaches `awaiting_approval` or `queued`.
+
+    `running` and `completed` are still absent, and that is the boundary
+    that matters -- reaching either means a step actually ran.
+    """
     assert sorted(s.value for s in STAGE_6A_REACHABLE) == [
-        "blocked", "cancelled", "failed", "planned", "proposed"
+        "awaiting_approval", "blocked", "cancelled", "failed", "paused",
+        "planned", "proposed", "queued",
     ]
+    assert "running" not in {s.value for s in STAGE_6A_REACHABLE}
+    assert "completed" not in {s.value for s in STAGE_6A_REACHABLE}
 
 
+#: Still refused after Stage 6C widened the set. Each describes a runner's
+#: work, and there is no runner.
 @pytest.mark.parametrize("event_type", [
-    TaskEventType.STEP_STARTED, TaskEventType.STEP_COMPLETED,
-    TaskEventType.STEP_FAILED, TaskEventType.TASK_COMPLETED,
-    TaskEventType.APPROVAL_REQUESTED, TaskEventType.APPROVAL_GRANTED,
-    TaskEventType.OBSERVATION_RECORDED, TaskEventType.REPLANNED,
-    TaskEventType.BUDGET_EXCEEDED,
+    TaskEventType.TASK_COMPLETED, TaskEventType.OBSERVATION_RECORDED,
+    TaskEventType.REPLANNED, TaskEventType.BUDGET_EXCEEDED,
 ])
 async def test_an_execution_event_cannot_be_recorded(
     event_type, service, db_session

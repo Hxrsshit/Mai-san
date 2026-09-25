@@ -26,14 +26,16 @@ logger = get_logger(__name__)
 #: The only actors that may appear. The same three `execution_events` uses.
 ACTORS: FrozenSet[str] = frozenset({"user", "system", "policy"})
 
-#: The events Stage 6A is permitted to write.
+#: The events the service is permitted to write.
 #:
-#: Everything else in `TaskEventType` describes something a runner does, and
-#: writing one now would be recording an action that did not happen -- the
-#: exact fault Stage 5D.1 exists to prevent, moved into the audit trail where
-#: it would be harder to notice. A test pins this set against the ones the
-#: service can actually emit.
-STAGE_6A_EVENTS: FrozenSet[TaskEventType] = frozenset({
+#: Stage 6A allowed seven and refused the rest, because writing one for
+#: something that did not happen is the Stage 5D.1 fault moved into the audit
+#: trail. Stage 6C adds the four that now describe things that *do* happen:
+#: approval being asked for and granted, and a step starting or finishing.
+#:
+#: Still refused: `task_completed`, `replanned`, `observation_recorded` and
+#: `budget_exceeded`. Each describes a runner's work, and there is no runner.
+EMITTABLE_EVENTS: FrozenSet[TaskEventType] = frozenset({
     TaskEventType.TASK_CREATED,
     TaskEventType.PLAN_ATTACHED,
     TaskEventType.ASSUMPTION_RECORDED,
@@ -41,7 +43,16 @@ STAGE_6A_EVENTS: FrozenSet[TaskEventType] = frozenset({
     TaskEventType.TASK_BLOCKED,
     TaskEventType.TASK_CANCELLED,
     TaskEventType.TASK_FAILED,
+    # Stage 6C.
+    TaskEventType.APPROVAL_REQUESTED,
+    TaskEventType.APPROVAL_GRANTED,
+    TaskEventType.STEP_STARTED,
+    TaskEventType.STEP_COMPLETED,
+    TaskEventType.STEP_FAILED,
 })
+
+#: Kept so Stage 6A's own tests keep naming what they pinned.
+STAGE_6A_EVENTS = EMITTABLE_EVENTS
 
 
 class TaskEventRefused(RuntimeError):
@@ -63,7 +74,7 @@ async def record(
     outcome. A journal with two "step 3"s would be worse than one that
     briefly conflicts.
     """
-    if event_type not in STAGE_6A_EVENTS:
+    if event_type not in EMITTABLE_EVENTS:
         # Refused rather than dropped. A caller trying to record a step
         # completion in a stage with no runner has a bug, and swallowing it
         # would leave a task whose journal quietly disagrees with its state.
@@ -103,4 +114,10 @@ async def record(
     return event
 
 
-__all__ = ["ACTORS", "STAGE_6A_EVENTS", "TaskEventRefused", "record"]
+__all__ = [
+    "ACTORS",
+    "EMITTABLE_EVENTS",
+    "STAGE_6A_EVENTS",
+    "TaskEventRefused",
+    "record",
+]

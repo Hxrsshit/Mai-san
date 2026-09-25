@@ -153,19 +153,37 @@ WAITING_STATES: FrozenSet[TaskState] = frozenset({
     TaskState.PAUSED,
 })
 
-#: The states Stage 6A's service is permitted to move a task into.
+#: The states the service is permitted to move a task into.
 #:
-#: This is the no-execution boundary, written down. Every other transition in
-#: the table above is declared for later stages and unreachable today; a test
-#: pins this set against what the service can actually do, so a stage that
-#: starts executing has to change this line deliberately.
-STAGE_6A_REACHABLE: FrozenSet[TaskState] = frozenset({
+#: Stage 6A set this to five and said a stage that starts executing would
+#: have to change the line deliberately. Stage 6C is that stage, and this is
+#: that change: authorising a plan moves a task towards execution, so
+#: `awaiting_approval` and `queued` join the set.
+#:
+#: `running` and `completed` deliberately do **not**. Reaching either means a
+#: step actually ran, and nothing in Mai runs one yet -- there is no runner,
+#: no scheduler and no dispatch loop. A step's own state may reach `running`
+#: through `TaskService.mark_step_started`, which an external caller drives;
+#: the *task* reaching `running` is 6D's to justify.
+REACHABLE_STATES: FrozenSet[TaskState] = frozenset({
     TaskState.PROPOSED,
     TaskState.PLANNED,
+    TaskState.AWAITING_APPROVAL,
+    TaskState.QUEUED,
+    TaskState.PAUSED,
     TaskState.BLOCKED,
     TaskState.CANCELLED,
     TaskState.FAILED,
 })
+
+#: The states that mean execution has actually begun. Unreachable in 6C.
+EXECUTING_STATES: FrozenSet[TaskState] = frozenset({
+    TaskState.RUNNING,
+    TaskState.COMPLETED,
+})
+
+#: Kept so Stage 6A's own tests keep naming what they pinned.
+STAGE_6A_REACHABLE = REACHABLE_STATES
 
 
 def can_transition(current: TaskState, target: TaskState) -> bool:
@@ -187,6 +205,8 @@ def is_step_terminal(state: TaskStepState) -> bool:
 
 __all__ = [
     "ALLOWED_STEP_TRANSITIONS",
+    "EXECUTING_STATES",
+    "REACHABLE_STATES",
     "ALLOWED_TRANSITIONS",
     "STAGE_6A_REACHABLE",
     "TERMINAL_STATES",

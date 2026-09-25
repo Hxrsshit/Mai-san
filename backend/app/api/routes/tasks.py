@@ -153,6 +153,10 @@ async def get_plan(task_id: uuid.UUID, service: Tasks) -> PlanPreview:
         if isinstance(step, dict)
     }
 
+    # Stage 6C. Readiness is computed from the graph, so the preview can say
+    # which steps could be worked next without a runner existing.
+    ready = {s.step_key for s in await service.runnable_steps(task_id)}
+
     steps = []
     for row in sorted(task.steps, key=lambda s: s.sequence):
         extra = detail.get(row.step_key, {})
@@ -165,6 +169,8 @@ async def get_plan(task_id: uuid.UUID, service: Tasks) -> PlanPreview:
                 depends_on=list(row.depends_on or []),
                 expected_outcome=extra.get("expected_outcome"),
                 completion_criteria=list(extra.get("completion_criteria") or []),
+                capability=row.capability,
+                runnable=row.step_key in ready,
                 state=row.state,
                 execution_id=row.execution_id,
             )
@@ -186,6 +192,7 @@ async def get_plan(task_id: uuid.UUID, service: Tasks) -> PlanPreview:
         budget=task.budget or {},
         spent=task.spent or {},
         current_step=task.current_step,
+        authorized_at=task.authorized_at,
         step_count=len(steps),
         executed_step_count=sum(1 for s in steps if s.execution_id is not None),
     )

@@ -150,6 +150,13 @@ class PlanStepPreview(BaseModel):
     depends_on: List[str] = Field(default_factory=list)
     expected_outcome: Optional[str] = None
     completion_criteria: List[str] = Field(default_factory=list)
+    #: Stage 6C. The capability the application **bound**, from the
+    #: registry -- not the name the model wrote. NULL until the plan is
+    #: authorised, and NULL forever for a prose-only step.
+    capability: Optional[str] = None
+    #: Whether this step's dependencies are satisfied and it could be worked
+    #: next. Computed from the graph, never stored.
+    runnable: bool = False
     #: Where this step is. Always `pending` while nothing executes.
     state: TaskStepState
     #: Present only once a step has actually run. A reference to the
@@ -192,6 +199,8 @@ class PlanPreview(BaseModel):
     current_step: Optional[str] = None
     step_count: int = 0
     executed_step_count: int = 0
+    #: Stage 6C. When the plan became permission. NULL until it did.
+    authorized_at: Optional[datetime] = None
 
     @property
     def has_executed(self) -> bool:

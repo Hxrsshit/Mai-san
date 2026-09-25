@@ -16,7 +16,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -96,6 +96,38 @@ class Goal(BaseModel):
 # --- What a model may propose -----------------------------------------------
 
 
+def _normalise_capability(value):
+    """Whitespace-normalised, or None if nothing is left.
+
+    Case is deliberately **not** folded: `ToolRegistry.canonical` already
+    does that, and folding twice would be a duplicate guard -- mutation
+    testing showed the second one unobservable. What this owns is emptiness:
+    a capability of `"   "` is not a capability, and storing it would put a
+    step in the plan that looks declared and binds to nothing.
+    """
+    if value is None:
+        return None
+    cleaned = " ".join(value.split()).strip()
+    return cleaned or None
+
+
+def _bound_arguments(value):
+    """Bounded before anything reads them. Refuses rather than truncates.
+
+    A silently shortened argument is a call the plan did not describe, and
+    this is model output: the safe response to too much of it is to reject
+    the plan, not to keep part of it.
+    """
+    if len(value) > limits.MAX_ARGUMENT_KEYS:
+        raise ValueError(
+            f"a step may not supply more than {limits.MAX_ARGUMENT_KEYS} arguments"
+        )
+    for key, item in value.items():
+        if len(str(item)) > limits.MAX_ARGUMENT_VALUE_CHARS:
+            raise ValueError(f"argument {key!r} exceeds the value bound")
+    return value
+
+
 class ProposedTask(BaseModel):
     """One step, as proposed. Validated for shape only; the graph comes later."""
 
@@ -120,6 +152,23 @@ class ProposedTask(BaseModel):
     completion_criteria: List[str] = Field(
         default_factory=list, max_length=limits.MAX_COMPLETION_CRITERIA
     )
+
+    #: Stage 6C. See `PlanTask.capability` -- model output, checked against
+    #: the tool registry before it means anything.
+    capability: Optional[str] = Field(
+        default=None, max_length=limits.MAX_CAPABILITY_CHARS
+    )
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("capability")
+    @classmethod
+    def _tidy_capability(cls, value):
+        return _normalise_capability(value)
+
+    @field_validator("arguments")
+    @classmethod
+    def _check_arguments(cls, value):
+        return _bound_arguments(value)
 
     @field_validator("id")
     @classmethod
@@ -224,6 +273,31 @@ class PlanTask(BaseModel):
     dependencies: List[str] = Field(default_factory=list)
     expected_outcome: Optional[str] = None
     completion_criteria: List[str] = Field(default_factory=list)
+
+    #: Stage 6C. The capability this step needs, as the model named it.
+    #:
+    #: A string, and only a string. It is not a handle, not an import path
+    #: and not a callable: `app.tasks.capabilities` looks it up in the tool
+    #: registry, and a name that is not registered binds to nothing. Until
+    #: that lookup succeeds the value means no more than the title does.
+    capability: Optional[str] = Field(
+        default=None, max_length=limits.MAX_CAPABILITY_CHARS
+    )
+    #: Arguments the capability would be called with, as proposed.
+    #:
+    #: Validated against the capability's own argument model by the existing
+    #: authorization service, never trusted as given.
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("capability")
+    @classmethod
+    def _tidy_capability(cls, value):
+        return _normalise_capability(value)
+
+    @field_validator("arguments")
+    @classmethod
+    def _check_arguments(cls, value):
+        return _bound_arguments(value)
 
     #: Position in the deterministic topological order, from 1.
     order: int = 0

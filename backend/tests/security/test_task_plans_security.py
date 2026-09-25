@@ -124,9 +124,14 @@ async def test_a_hostile_dependency_name_cannot_resolve(
 #: The first version derived these cases from the set it was guarding, so
 #: emptying the set made the test check fewer keys and still pass. Mutation
 #: testing found it -- the same self-defeating shape as 5D.2, 5F.1 and 5F.2.
+#: `capability` and `arguments` left this list in Stage 6C: a plan step now
+#: legitimately declares both, and a blocklist cannot tell a declaration from
+#: a grant. What replaced the guarantee is stronger -- the name is inert
+#: until `app.tasks.capabilities` resolves it against the registry, and
+#: `test_no_plan_schema_names_a_tool_or_capability` pins every field set.
 EXECUTION_KEYS = [
-    "tool", "tool_name", "capability", "execute", "execution_id", "command",
-    "arguments", "url", "endpoint", "headers", "authorization", "approved",
+    "tool", "tool_name", "execute", "execution_id", "command",
+    "url", "endpoint", "headers", "authorization", "approved",
     "credentials", "token", "api_key", "permissions",
 ]
 
@@ -169,17 +174,25 @@ def test_no_plan_schema_names_a_tool_or_capability() -> None:
         "assumptions", "created_at", "goal", "id", "risks",
         "success_criteria", "tasks",
     ]
+    # Stage 6C added `capability` and `arguments`, deliberately: a step that
+    # cannot say what it needs cannot be bound to a capability, and binding
+    # is the whole of the plan-to-execution boundary. The names are pinned so
+    # a *third* execution-shaped field has to be argued for too.
     assert sorted(PlanTask.model_fields) == [
-        "completion_criteria", "dependencies", "depth", "description",
-        "expected_outcome", "id", "order", "priority", "title",
+        "arguments", "capability", "completion_criteria", "dependencies",
+        "depth", "description", "expected_outcome", "id", "order",
+        "priority", "title",
     ]
     assert sorted(ProposedTask.model_fields) == [
-        "completion_criteria", "dependencies", "description",
-        "expected_outcome", "id", "priority", "title",
+        "arguments", "capability", "completion_criteria", "dependencies",
+        "description", "expected_outcome", "id", "priority", "title",
     ]
+    # `capability` and `arguments` are now legitimate plan vocabulary, so
+    # they leave the blocklist -- which is why the pin above matters more.
+    still_forbidden = FORBIDDEN_KEYS - {"capability", "arguments"}
     for model in (Plan, PlanTask, ProposedTask, PlanProposal):
         for field in model.model_fields:
-            assert field.lower() not in FORBIDDEN_KEYS, (model.__name__, field)
+            assert field.lower() not in still_forbidden, (model.__name__, field)
 
 
 def test_a_smuggled_field_is_dropped_by_the_schema() -> None:
@@ -389,7 +402,16 @@ def test_no_execution_path_was_introduced() -> None:
     assert not (set(dir(TaskService)) & forbidden)
 
 
-def test_nothing_in_the_task_package_writes_spent_or_execution_id() -> None:
+def test_nothing_in_the_task_package_spends_a_budget() -> None:
+    """`spent` and `current_step` are a runner's, and there is no runner.
+
+    Narrowed by Stage 6C. `execution_id`, `started_at` and `completed_at` are
+    now written -- by `create_step_execution` and the step lifecycle, which
+    exist precisely so a caller can record that a step began or finished.
+    What still has no writer is the budget counter and the task's own
+    execution cursor, and those are what would have to move for a task to be
+    running.
+    """
     offenders = []
     for path in (BACKEND / "app" / "tasks").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -401,8 +423,7 @@ def test_nothing_in_the_task_package_writes_spent_or_execution_id() -> None:
                 targets = [node.target]
             for target in targets:
                 if isinstance(target, ast.Attribute) and target.attr in {
-                    "spent", "execution_id", "started_at", "completed_at",
-                    "current_step",
+                    "spent", "current_step",
                 }:
                     offenders.append((path.name, node.lineno, target.attr))
     assert offenders == [], offenders

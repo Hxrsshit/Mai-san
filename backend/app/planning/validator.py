@@ -195,6 +195,11 @@ def build_plan(proposal: PlanProposal, goal: Goal) -> Plan:
                 dependencies=list(task.dependencies),
                 expected_outcome=task.expected_outcome,
                 completion_criteria=list(task.completion_criteria),
+                # Stage 6C. Carried through unchanged: the validator's job is
+                # the graph, and a capability name means nothing until
+                # `app.tasks.capabilities` looks it up.
+                capability=task.capability,
+                arguments=dict(task.arguments),
                 order=position,
                 depth=report.depths.get(task_id, 0),
             )

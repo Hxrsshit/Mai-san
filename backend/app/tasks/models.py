@@ -133,6 +133,9 @@ MAX_ERROR_CODE_CHARS = 64
 MAX_RESULT_CHARS = 4_000
 MAX_STEP_KEY_CHARS = 40
 MAX_STEP_TITLE_CHARS = 120
+#: Longest bound capability name. Matches the plan schema's bound, asserted
+#: equal by a test so a name that fits a plan always fits a row.
+MAX_CAPABILITY_CHARS = 64
 #: After this many consecutive failures a task is given up on. The same
 #: reasoning, and the same number, as `app.reminders.service`.
 MAX_CONSECUTIVE_FAILURES = 3
@@ -233,6 +236,15 @@ class Task(Base):
         Integer, nullable=False, default=0, server_default="0"
     )
 
+    #: Stage 6C. When the plan was authorised for execution, and by whom.
+    #:
+    #: NULL until an application-side decision says so, which is the
+    #: difference between having a plan and having permission. Nothing in the
+    #: plan can set it: `authorize_plan` is the only writer.
+    authorized_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -321,6 +333,22 @@ class TaskStep(Base):
     #: so a runner can ask "is this runnable?" without re-parsing the plan.
     depends_on: Mapped[List[str]] = mapped_column(
         JSONColumn, nullable=False, default=list
+    )
+
+    #: Stage 6C. The capability this step needs, as the **registry** named it.
+    #:
+    #: Written only by `TaskService.authorize_plan`, from a
+    #: `CapabilityBinding` -- never copied from the plan. The plan holds what
+    #: the model asked for; this holds what the application bound, and the
+    #: difference is the whole point of the binding step. NULL means the step
+    #: is prose and cannot execute.
+    capability: Mapped[Optional[str]] = mapped_column(
+        String(MAX_CAPABILITY_CHARS), nullable=True
+    )
+    #: The arguments the capability would be called with, as validated.
+    #: Bounded by the plan schema before they reach here.
+    arguments: Mapped[Dict[str, Any]] = mapped_column(
+        JSONColumn, nullable=False, default=dict
     )
 
     #: A **reference** to the authoritative execution record, never a copy of
@@ -421,6 +449,7 @@ class TaskEvent(Base):
 
 __all__ = [
     "LOCAL_OWNER_ID",
+    "MAX_CAPABILITY_CHARS",
     "MAX_CONSECUTIVE_FAILURES",
     "MAX_OBJECTIVE_CHARS",
     "MAX_RESULT_CHARS",

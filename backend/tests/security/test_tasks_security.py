@@ -83,8 +83,8 @@ def bare_calls(tree) -> set:
 def test_the_task_package_has_the_modules_this_suite_audits() -> None:
     """Guards everything below: an empty glob passes vacuously."""
     assert sorted(p.name for p in MODULES) == [
-        "__init__.py", "events.py", "models.py", "plans.py", "schemas.py",
-        "service.py", "states.py",
+        "__init__.py", "capabilities.py", "events.py", "models.py",
+        "plans.py", "schemas.py", "service.py", "states.py",
     ]
 
 
@@ -126,16 +126,36 @@ def test_the_task_layer_reaches_no_capability_or_integration() -> None:
                 assert not module.startswith(forbidden), (path.name, module)
 
 
-def test_only_the_audit_sanitiser_is_borrowed_from_execution() -> None:
-    """One redactor, not two -- and no execution machinery beyond it."""
+def test_what_is_borrowed_from_the_execution_layer_is_exactly_this() -> None:
+    """Reuse, pinned by name.
+
+    Stage 6A borrowed only the redactor. Stage 6C borrows the execution
+    *service* as well, which is the point: creating an execution record any
+    other way would be a second execution system, and a second place for the
+    authorization decision to be got wrong.
+
+    What is **not** borrowed matters more -- no dispatcher, no state machine,
+    no approvals module. The task layer proposes an execution and never runs,
+    approves or claims one.
+    """
     borrowed = set()
     for _, tree in parsed_modules():
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
                 "app.execution"
             ):
-                borrowed.add((node.module, tuple(a.name for a in node.names)))
-    assert borrowed == {("app.execution.audit", ("sanitise",))}, borrowed
+                borrowed.add((node.module, tuple(sorted(a.name for a in node.names))))
+    assert borrowed == {
+        ("app.execution.audit", ("sanitise",)),
+        ("app.execution.errors", ("ExecutionError",)),
+        ("app.execution.schemas", ("ExecutionRequest",)),
+        ("app.execution.service", ("ExecutionService",)),
+        ("app.execution.tools", ("get_executable_registry",)),
+    }, borrowed
+
+    forbidden = {"app.execution.dispatcher", "app.execution.approvals",
+                 "app.execution.states", "app.execution.workspace"}
+    assert not ({m for m, _ in borrowed} & forbidden)
 
 
 # ============================================================================
@@ -152,7 +172,14 @@ def test_there_is_exactly_one_constructor_and_it_is_named_for_the_user() -> None
             verb in name for verb in ("create", "new", "spawn", "make")
         )
     ]
-    assert creators == ["create_for_user"], creators
+    # `create_step_execution` creates an *execution record* for an already
+    # authorised step; it cannot create a task. One task constructor stands.
+    assert creators == ["create_for_user", "create_step_execution"], creators
+
+    import inspect
+
+    signature = inspect.signature(TaskService.create_step_execution)
+    assert "objective" not in signature.parameters
 
 
 def test_the_origin_vocabulary_has_one_member() -> None:

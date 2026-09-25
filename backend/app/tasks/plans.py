@@ -56,14 +56,22 @@ logger = get_logger(__name__)
 #: too -- and a schema that grows one of these fields later is refused on the
 #: day it does, rather than silently persisting it.
 FORBIDDEN_KEYS = frozenset({
-    "tool", "tool_name", "tools", "capability", "capabilities",
+    "tool", "tool_name", "tools", "capabilities",
     "execute", "execution", "execution_id", "run", "command", "shell",
-    "arguments", "args", "payload", "url", "endpoint", "method", "headers",
+    "args", "payload", "url", "endpoint", "method", "headers",
     "authorization", "approved", "approval", "credential", "credentials",
     "token", "api_key", "secret", "permissions",
 })
 
-#: Deliberately **not** forbidden: `scope`.
+#: Deliberately **not** forbidden: `scope`, `capability`, `arguments`.
+#:
+#: Stage 6C made the latter two legitimate plan vocabulary -- a step declares
+#: what it needs, and `app.tasks.capabilities` decides whether that name
+#: binds to anything. A blocklist cannot tell a declaration from a grant, so
+#: the guarantee moved to where it belongs: the name is inert until the
+#: registry resolves it, and a test pins every plan schema's field set.
+#:
+#: Originally about `scope` alone:
 #:
 #: `Goal.scope` is prose -- "what this goal covers" -- and has nothing to do
 #: with an OAuth scope. The first version of this list refused it and thereby
