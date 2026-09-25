@@ -17,6 +17,7 @@ from app.knowledge import models as knowledge_models
 from app.memory import models as memory_models
 from app.reminders import models as reminder_models
 from app.relationships import models as relationship_models
+from app.tasks import models as task_models
 
 # memory_models is re-exported rather than merely imported: the import exists
 # for its table-registration side effect, and naming it here keeps that
@@ -30,4 +31,5 @@ __all__ = [
     "execution_models",
     "history_models",
     "reminder_models",
+    "task_models",
 ]

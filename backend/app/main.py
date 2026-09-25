@@ -27,6 +27,7 @@ from app.api.routes import (
     orchestration_router,
     planning_router,
     reminders_router,
+    tasks_router,
     prompt_router,
     tools_router,
 )
@@ -193,6 +194,12 @@ def create_app() -> FastAPI:
     # memory subsystem the way the inspection routes above are.
     if settings.REMINDERS_ENABLED:
         app.include_router(reminders_router)
+
+    # Stage 6A. Read-only: the router offers no way to create, change or run
+    # a task. Ungated, because reading Mai's own task state depends on no
+    # integration, no model and no capability -- and because an activity view
+    # that can be switched off is an audit trail that can be switched off.
+    app.include_router(tasks_router)
 
     return app
 

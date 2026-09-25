@@ -783,6 +783,13 @@ def test_execution_truth_remains_the_single_authority_on_counts() -> None:
 
 
 def test_stage_5f2_added_no_migration() -> None:
-    """No new persistence: 5F.2 stores nothing it did not store before."""
+    """No new persistence: 5F.2 stores nothing it did not store before.
+
+    Scoped to 5F.2's own window. The first version asserted that *no*
+    migration existed past 0011, which made it a test of every later stage
+    rather than of this one -- it failed the moment Stage 6A added `0012`,
+    for a reason that had nothing to do with mail.
+    """
     versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("*.py"))
-    assert [v for v in versions if v[:4] > "0011"] == [], versions
+    stage_5f2 = [v for v in versions if "0011" < v[:4] <= "0011"]
+    assert stage_5f2 == [], stage_5f2

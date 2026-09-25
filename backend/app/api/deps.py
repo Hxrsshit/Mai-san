@@ -18,6 +18,7 @@ from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
 from app.orchestration.service import OrchestrationService
 from app.planning.service import PlanningService
+from app.tasks.service import TaskService
 from app.runtime.facts import build as build_runtime_facts
 from app.tools.authorization import AuthorizationService
 from app.tools.registry import ToolRegistry, get_registry
@@ -174,6 +175,16 @@ def get_reminder_service(
     return ReminderService(session=session, settings=settings)
 
 
+def get_task_service(session: DbSession, settings: AppSettings) -> TaskService:
+    """Stage 6A. Takes no provider: nothing in the task layer calls a model.
+
+    The owner is the service's own, not a request parameter -- an endpoint
+    that could name an owner would be an endpoint that could read another
+    owner's tasks the moment Mai has two.
+    """
+    return TaskService(session=session, settings=settings)
+
+
 def get_entity_service(
     session: DbSession, provider: Provider, settings: AppSettings
 ) -> EntityService:
@@ -207,3 +218,5 @@ Orchestration = Annotated[
     OrchestrationService, Depends(get_orchestration_service)
 ]
 Executions = Annotated[ExecutionService, Depends(get_execution_service)]
+
+Tasks = Annotated[TaskService, Depends(get_task_service)]

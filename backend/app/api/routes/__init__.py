@@ -19,6 +19,7 @@ from app.api.routes.relationships import router as relationships_router
 from app.api.routes.retrieval import conversation_router as context_preview_router
 from app.api.routes.retrieval import router as retrieval_router
 from app.api.routes.memories import router as memories_router
+from app.api.routes.tasks import router as tasks_router
 
 __all__ = [
     "conversations_router",
@@ -34,6 +35,7 @@ __all__ = [
     "history_router",
     "knowledge_router",
     "reminders_router",
+    "tasks_router",
     "intent_router",
     "planning_router",
     "tools_router",
