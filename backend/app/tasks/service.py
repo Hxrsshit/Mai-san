@@ -39,7 +39,9 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
+from app.planning import limits
 from app.tasks import events as journal
+from app.tasks.plans import PlanCheck, validate_for_task
 from app.tasks.models import (
     LOCAL_OWNER_ID,
     MAX_OBJECTIVE_CHARS,
@@ -72,10 +74,13 @@ _DB_ERRORS = (SQLAlchemyError, OSError)
 
 #: Most tasks returned by one listing.
 MAX_LISTED = 50
-#: Most steps one plan may be materialised into. Matches
-#: `app.planning.limits.MAX_TASKS`, which bounds the plan itself -- asserted
-#: equal by a test, so the two cannot drift.
-MAX_STEPS = 20
+#: Most steps one plan may be materialised into.
+#:
+#: An alias, not a second bound. Plan size is the planner's to own, and
+#: Stage 6B removed the duplicate check that lived here: the validator
+#: refuses an oversized plan first, with its own `too_many_tasks` reason, so
+#: a copy of the number here could only ever disagree with the real one.
+MAX_STEPS = limits.MAX_TASKS
 
 
 class TaskService:
@@ -232,17 +237,25 @@ class TaskService:
                 state=task.state, reason="cannot_plan_from_state",
             )
 
+        # Stage 6B. Validation happens here, on the way in, so it cannot be
+        # skipped by constructing a `Plan` directly instead of through
+        # `build_plan`. Stage 6A checked only that the list was non-empty and
+        # bounded: a cycle, a self-dependency and a dangling edge were all
+        # measured to be accepted and materialised into steps.
+        check = validate_for_task(plan)
+        if not check.ok:
+            logger.info(
+                "Plan refused",
+                # A reason code and a task id. `detail` can name a step id,
+                # which came from a model, so it is not logged.
+                extra={"task_id": str(task.id), "reason": check.reason},
+            )
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason=check.reason,
+            )
+
         tasks_in_plan = list(getattr(plan, "tasks", []) or [])
-        if not tasks_in_plan:
-            return TaskResult(
-                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
-                reason="empty_plan",
-            )
-        if len(tasks_in_plan) > MAX_STEPS:
-            return TaskResult(
-                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
-                reason="plan_too_large",
-            )
 
         try:
             async with self._session.begin_nested():
@@ -252,7 +265,8 @@ class TaskService:
                         TaskStep(
                             task_id=task.id,
                             step_key=str(step.id)[:MAX_STEP_KEY_CHARS],
-                            sequence=int(getattr(step, "order", 0) or position),
+                            # Validated above: present, positive, unique.
+                            sequence=int(step.order),
                             title=str(step.title)[:MAX_STEP_TITLE_CHARS],
                             state=TaskStepState.PENDING,
                             depends_on=[
@@ -304,6 +318,40 @@ class TaskService:
         return TaskResult(
             outcome=TaskOutcome.UPDATED, task_id=task.id, state=task.state
         )
+
+    async def attach_proposal(
+        self, task_id: uuid.UUID, proposal, goal
+    ) -> TaskResult:
+        """Validate a model's `PlanProposal` and attach the result.
+
+        The Stage 6B entry point for model output. `build_plan` is Stage 4B's
+        own two-layer pipeline -- schema, then graph -- and it returns a
+        `Plan` only for a proposal that passed both, so holding one is the
+        proof. Nothing here re-implements it.
+
+        `attach_plan` then validates again. That is not redundancy for its own
+        sake: a `Plan` can be constructed directly, so the check that matters
+        is the one on the way into the database, and this method exists to
+        give model output a named door rather than to be that check.
+        """
+        from app.planning.validator import PlanValidationError, build_plan
+
+        try:
+            plan = build_plan(proposal, goal)
+        except PlanValidationError as refusal:
+            reason = (
+                refusal.args[0].split(":")[0].strip()
+                if refusal.args else "invalid_plan"
+            )
+            logger.info(
+                "Proposal refused",
+                extra={"task_id": str(task_id), "reason": reason},
+            )
+            return TaskResult(outcome=TaskOutcome.REFUSED, reason=reason)
+        except Exception:  # noqa: BLE001 - malformed model output is not a 500
+            return TaskResult(outcome=TaskOutcome.REFUSED, reason="invalid_plan")
+
+        return await self.attach_plan(task_id, plan)
 
     # --- Transitions --------------------------------------------------------
 

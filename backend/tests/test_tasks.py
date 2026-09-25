@@ -276,7 +276,9 @@ async def test_a_plan_cannot_exceed_the_step_bound(service) -> None:
 
     result = await service.attach_plan(created.task_id, Oversized())
     assert result.outcome is TaskOutcome.REFUSED
-    assert result.reason == "plan_too_large"
+    # The planner's reason, not a second one. Stage 6B removed the service's
+    # duplicate size check: the validator owns plan size and refuses first.
+    assert result.reason == "too_many_tasks"
 
 
 def test_the_step_bound_matches_the_planner() -> None:

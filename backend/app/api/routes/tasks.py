@@ -21,6 +21,8 @@ from app.tasks.models import Task, TaskEvent, TaskStep
 from app.tasks.schemas import (
     ActivityAnswer,
     ActivityReport,
+    PlanPreview,
+    PlanStepPreview,
     TaskDetail,
     TaskEventRead,
     TaskList,
@@ -118,6 +120,74 @@ async def get_task(task_id: uuid.UUID, service: Tasks) -> TaskDetail:
         steps=[_step(s) for s in sorted(task.steps, key=lambda s: s.sequence)],
         events=[_event(e) for e in sorted(task.events, key=lambda e: e.sequence)],
         plan=task.plan,
+    )
+
+
+@router.get("/{task_id}/plan", response_model=PlanPreview)
+async def get_plan(task_id: uuid.UUID, service: Tasks) -> PlanPreview:
+    """Stage 6B plan preview: what Mai intends to do, before it does any of it.
+
+    Assembled from the task row, its materialised steps and the validated
+    plan as stored. Read-only, like everything else on this router -- a
+    preview a person could act on from here would be an approval endpoint,
+    and approvals are 6E.
+    """
+    task = await service.get_detail(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="task_not_found"
+        )
+    if task.plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="no_plan_attached"
+        )
+
+    plan = task.plan
+    # The plan's own step detail, keyed for lookup beside the persisted rows.
+    # The rows carry state; the plan carries the prose. Neither is a copy of
+    # the other, which is why the preview joins them here rather than either
+    # one duplicating the other in the database.
+    detail = {
+        str(step.get("id")): step
+        for step in (plan.get("tasks") or [])
+        if isinstance(step, dict)
+    }
+
+    steps = []
+    for row in sorted(task.steps, key=lambda s: s.sequence):
+        extra = detail.get(row.step_key, {})
+        steps.append(
+            PlanStepPreview(
+                step_key=row.step_key,
+                sequence=row.sequence,
+                title=row.title,
+                description=extra.get("description"),
+                depends_on=list(row.depends_on or []),
+                expected_outcome=extra.get("expected_outcome"),
+                completion_criteria=list(extra.get("completion_criteria") or []),
+                state=row.state,
+                execution_id=row.execution_id,
+            )
+        )
+
+    goal = plan.get("goal") or {}
+    return PlanPreview(
+        task_id=task.id,
+        objective=task.objective,
+        task_state=task.state,
+        plan_id=plan.get("id"),
+        goal_summary=goal.get("summary"),
+        steps=steps,
+        # From the stored plan, which already owns them. Stage 6A records
+        # them as journal events too; neither is a column.
+        assumptions=list(plan.get("assumptions") or []),
+        risks=list(plan.get("risks") or []),
+        success_criteria=list(plan.get("success_criteria") or []),
+        budget=task.budget or {},
+        spent=task.spent or {},
+        current_step=task.current_step,
+        step_count=len(steps),
+        executed_step_count=sum(1 for s in steps if s.execution_id is not None),
     )
 
 

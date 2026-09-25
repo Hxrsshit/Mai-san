@@ -138,6 +138,66 @@ class TaskDetail(TaskRead):
     plan: Optional[Dict[str, Any]] = None
 
 
+class PlanStepPreview(BaseModel):
+    """One step of a plan, as shown before anything runs."""
+
+    model_config = ConfigDict(frozen=True)
+
+    step_key: str
+    sequence: int
+    title: str
+    description: Optional[str] = None
+    depends_on: List[str] = Field(default_factory=list)
+    expected_outcome: Optional[str] = None
+    completion_criteria: List[str] = Field(default_factory=list)
+    #: Where this step is. Always `pending` while nothing executes.
+    state: TaskStepState
+    #: Present only once a step has actually run. A reference to the
+    #: authoritative execution record, never a copy of it.
+    execution_id: Optional[uuid.UUID] = None
+
+
+class PlanPreview(BaseModel):
+    """What Mai intends to do, before it does any of it.
+
+    Assembled from persisted state: the task row, its materialised steps and
+    the stored plan. No field here is written by a model at read time -- the
+    plan was validated by application code on the way in, and this renders
+    what was stored.
+
+    Deliberately absent: anything about credentials, providers, endpoints or
+    authorization. A preview is for a person deciding whether to approve, and
+    none of those help them decide.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: uuid.UUID
+    objective: str
+    task_state: TaskState
+    #: The plan's own identifier, from the validated plan. There is one plan
+    #: per task and it is immutable, so this is the version.
+    plan_id: Optional[uuid.UUID] = None
+    goal_summary: Optional[str] = None
+    steps: List[PlanStepPreview] = Field(default_factory=list)
+    assumptions: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    success_criteria: List[str] = Field(default_factory=list)
+    budget: Dict[str, Any] = Field(default_factory=dict)
+    spent: Dict[str, Any] = Field(default_factory=dict)
+
+    #: Where execution stands. All three are inert while no runner exists,
+    #: and saying so is the point: a preview that omitted them would let a
+    #: reader assume something had started.
+    current_step: Optional[str] = None
+    step_count: int = 0
+    executed_step_count: int = 0
+
+    @property
+    def has_executed(self) -> bool:
+        return self.executed_step_count > 0
+
+
 class TaskList(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -176,6 +236,8 @@ __all__ = [
     "DEFAULT_BUDGET",
     "ActivityAnswer",
     "ActivityReport",
+    "PlanPreview",
+    "PlanStepPreview",
     "TaskDetail",
     "TaskEventRead",
     "TaskList",

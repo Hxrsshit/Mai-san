@@ -83,8 +83,8 @@ def bare_calls(tree) -> set:
 def test_the_task_package_has_the_modules_this_suite_audits() -> None:
     """Guards everything below: an empty glob passes vacuously."""
     assert sorted(p.name for p in MODULES) == [
-        "__init__.py", "events.py", "models.py", "schemas.py", "service.py",
-        "states.py",
+        "__init__.py", "events.py", "models.py", "plans.py", "schemas.py",
+        "service.py", "states.py",
     ]
 
 
@@ -307,7 +307,7 @@ def test_the_task_router_declares_no_mutating_route() -> None:
                 decorator.func, ast.Attribute
             ):
                 methods.append(decorator.func.attr)
-    assert sorted(methods) == ["get"] * 5, methods
+    assert sorted(methods) == ["get"] * 6, methods
 
 
 async def test_no_write_verb_is_accepted(client) -> None:
