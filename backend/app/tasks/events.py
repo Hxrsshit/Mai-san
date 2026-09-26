@@ -49,7 +49,23 @@ EMITTABLE_EVENTS: FrozenSet[TaskEventType] = frozenset({
     TaskEventType.STEP_STARTED,
     TaskEventType.STEP_COMPLETED,
     TaskEventType.STEP_FAILED,
+    # Stage 6D. A runner exists, so what it did is now a fact.
+    TaskEventType.EXECUTION_CREATED,
+    TaskEventType.RUNNER_BLOCKED,
+    TaskEventType.RUNNER_REFUSED,
+    TaskEventType.TASK_COMPLETED,
+    TaskEventType.BUDGET_EXCEEDED,
 })
+
+#: Deliberately still unwritable: `replanned` and `observation_recorded`.
+#: Both describe observe-and-replan, which Stage 6D does not do.
+#:
+#: Deliberately *absent from the vocabulary entirely*: `runner_started`,
+#: `step_selected` and `authorization_checked`. Each would be written on
+#: every invocation and carries no fact the others do not -- an
+#: `execution_created` event proves the authorization check passed, and a
+#: `runner_blocked` proves a step was selected and refused. A journal that
+#: records deliberation rather than outcomes is one nobody reads.
 
 #: Kept so Stage 6A's own tests keep naming what they pinned.
 STAGE_6A_EVENTS = EMITTABLE_EVENTS

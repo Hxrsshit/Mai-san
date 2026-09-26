@@ -229,6 +229,15 @@ class Settings(BaseSettings):
     # read a proposal and decide, short enough that an abandoned tab does not
     # leave a live grant lying around. Never unbounded.
     EXECUTION_APPROVAL_TTL_SECONDS: int = 900
+
+    #: How long a plan's authorization stays valid, in seconds.
+    #:
+    #: Stage 6C recorded `tasks.authorized_at` and nothing expired it. A
+    #: permission with no expiry is a standing grant by omission, which is
+    #: the thing 6D was told not to build -- so the window is explicit and
+    #: matches the execution approval TTL, for the same reason: a decision a
+    #: person made an hour ago is not a decision about now.
+    TASK_AUTHORIZATION_TTL_SECONDS: int = 900
     # Bounds on what the workspace tools may read, write and return.
     MAX_WORKSPACE_FILE_SIZE_BYTES: int = 1_000_000
     MAX_WORKSPACE_LIST_RESULTS: int = 500

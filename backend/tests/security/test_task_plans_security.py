@@ -426,7 +426,11 @@ def test_nothing_in_the_task_package_spends_a_budget() -> None:
                     "spent", "current_step",
                 }:
                     offenders.append((path.name, node.lineno, target.attr))
-    assert offenders == [], offenders
+    # Stage 6D made `spent` the runner's to write -- it is the first budget
+    # enforcement point in Mai. `current_step` still has no writer: it is a
+    # cursor for a loop, and there is no loop.
+    assert [o for o in offenders if o[0] != "runner.py"] == [], offenders
+    assert not [o for o in offenders if o[2] == "current_step"], offenders
 
 
 def test_the_task_router_is_still_read_only() -> None:

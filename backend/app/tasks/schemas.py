@@ -75,6 +75,47 @@ class TaskResult(BaseModel):
         }
 
 
+class RunnerOutcome(str, enum.Enum):
+    """What one runner invocation did. A closed set, and every member is a
+    fact the database can be asked to confirm afterwards."""
+
+    #: A step ran and finished.
+    STEP_COMPLETED = "step_completed"
+    #: A step ran and did not finish.
+    STEP_FAILED = "step_failed"
+    #: The last step finished, so the task is done.
+    TASK_COMPLETED = "task_completed"
+    #: Nothing could be advanced right now -- dependencies, approval, or
+    #: another caller holding the step. Try again later.
+    BLOCKED = "blocked"
+    #: Nothing may be advanced. Terminal, unauthorised, expired, or refused.
+    REFUSED = "refused"
+    #: A bound was reached.
+    BUDGET_EXCEEDED = "budget_exceeded"
+
+
+class RunnerResult(BaseModel):
+    """What one invocation of the runner did. Deterministic."""
+
+    model_config = ConfigDict(frozen=True)
+
+    outcome: RunnerOutcome
+    task_id: Optional[uuid.UUID] = None
+    step_key: Optional[str] = None
+    #: A reference to the authoritative execution record, when one exists.
+    execution_id: Optional[uuid.UUID] = None
+    state: Optional[TaskState] = None
+    #: An application reason code. Never model text, never an exception.
+    reason: Optional[str] = Field(default=None, max_length=64)
+
+    @property
+    def advanced(self) -> bool:
+        """Whether this invocation moved the task forward."""
+        return self.outcome in {
+            RunnerOutcome.STEP_COMPLETED, RunnerOutcome.TASK_COMPLETED
+        }
+
+
 class TaskStepRead(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -246,6 +287,8 @@ __all__ = [
     "ActivityAnswer",
     "ActivityReport",
     "PlanPreview",
+    "RunnerOutcome",
+    "RunnerResult",
     "PlanStepPreview",
     "TaskDetail",
     "TaskEventRead",

@@ -29,7 +29,7 @@ tool. Stage 6C will choose capabilities from a registry, not from this text.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import func, select
@@ -63,6 +63,7 @@ from app.tasks.schemas import (
 )
 from app.tasks.states import (
     REACHABLE_STATES,
+    RUNNER_ONLY_STATES,
     WAITING_STATES,
     TaskState,
     TaskStepState,
@@ -493,6 +494,46 @@ class TaskService:
             outcome=TaskOutcome.UPDATED, task_id=task.id, state=target
         )
 
+    def authorization_valid(self, task, now: Optional[datetime] = None) -> bool:
+        """Whether this task's authorization is still in date.
+
+        A permission with no expiry is a standing grant by omission. The
+        window is the same one execution approvals use and for the same
+        reason: a decision taken an hour ago is not a decision about now.
+        """
+        if task is None or task.authorized_at is None:
+            return False
+        moment = now or datetime.now(timezone.utc)
+        granted = task.authorized_at
+        if granted.tzinfo is None:
+            # SQLite hands back naive values; reading one as machine-local
+            # would expire a fresh grant or revive a stale one.
+            granted = granted.replace(tzinfo=timezone.utc)
+        ttl = int(
+            getattr(self._settings, "TASK_AUTHORIZATION_TTL_SECONDS", 900) or 900
+        )
+        return moment <= granted + timedelta(seconds=ttl)
+
+    @staticmethod
+    def budget_exceeded(task) -> Optional[str]:
+        """Which bound this task has reached, or None.
+
+        Only the two counters the application can actually measure are
+        enforced: steps started and executions created. `max_model_calls`
+        and `max_seconds` are recorded and deliberately not enforced --
+        the runner makes no model call, and claiming to enforce a bound
+        nothing measures would be the fabrication this codebase exists to
+        avoid.
+        """
+        budget = dict(task.budget or {})
+        spent = dict(task.spent or {})
+        for key in ("max_steps", "max_tool_calls"):
+            limit = budget.get(key)
+            used = spent.get(key, 0)
+            if isinstance(limit, int) and isinstance(used, int) and used >= limit:
+                return key
+        return None
+
     # --- Stage 6C: dependency-aware readiness --------------------------------
 
     async def runnable_steps(self, task_id: uuid.UUID) -> List[TaskStep]:
@@ -747,7 +788,16 @@ class TaskService:
         refuses every state Stage 6A cannot reach -- so a caller cannot use
         this to declare a task `completed` in a stage with no runner.
         """
-        if target not in REACHABLE_STATES:
+        if target in RUNNER_ONLY_STATES:
+            # `running` and `completed` mean a step actually ran. Only
+            # `TaskRunner` may say so, and it writes them directly rather
+            # than through this method -- so every other caller, including
+            # every API path, is refused here.
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task_id,
+                reason="state_not_reachable_in_this_stage",
+            )
+        if target not in REACHABLE_STATES:  # pragma: no cover - the set is total
             return TaskResult(
                 outcome=TaskOutcome.REFUSED, task_id=task_id,
                 reason="state_not_reachable_in_this_stage",

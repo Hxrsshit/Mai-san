@@ -328,9 +328,18 @@ def test_there_is_exactly_one_execution_creator() -> None:
     assert sorted(set(creators)) == ["app/execution/service.py"], creators
 
 
-def test_the_task_layer_never_runs_approves_or_claims_an_execution() -> None:
+def test_only_the_runner_runs_or_approves_an_execution() -> None:
+    """Narrowed by Stage 6D, which introduced the one caller that may.
+
+    `TaskRunner` approves an execution only when policy already said no
+    person is needed, and runs it only through `ExecutionService`. Every
+    other module in the package still may not, which is what keeps the
+    number of places that can cause a side effect at one.
+    """
     called = set()
     for path in (BACKEND / "app" / "tasks").glob("*.py"):
+        if path.name == "runner.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call)

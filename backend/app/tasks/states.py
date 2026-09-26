@@ -160,27 +160,27 @@ WAITING_STATES: FrozenSet[TaskState] = frozenset({
 #: that change: authorising a plan moves a task towards execution, so
 #: `awaiting_approval` and `queued` join the set.
 #:
-#: `running` and `completed` deliberately do **not**. Reaching either means a
-#: step actually ran, and nothing in Mai runs one yet -- there is no runner,
-#: no scheduler and no dispatch loop. A step's own state may reach `running`
-#: through `TaskService.mark_step_started`, which an external caller drives;
-#: the *task* reaching `running` is 6D's to justify.
-REACHABLE_STATES: FrozenSet[TaskState] = frozenset({
-    TaskState.PROPOSED,
-    TaskState.PLANNED,
-    TaskState.AWAITING_APPROVAL,
-    TaskState.QUEUED,
-    TaskState.PAUSED,
-    TaskState.BLOCKED,
-    TaskState.CANCELLED,
-    TaskState.FAILED,
-})
+#: Stage 6C said `running` and `completed` were 6D's to justify. Stage 6D is
+#: that stage: a runner exists, it claims one step at a time through the
+#: existing dispatcher, and a task whose every step completed is completed.
+#:
+#: So the set is now every state. What bounds execution is no longer which
+#: states are reachable but *who may reach them*: `TaskRunner` is the only
+#: writer of `running` and `completed`, `TaskService.transition` refuses both
+#: to every other caller, and a structural test pins that there is one runner.
+REACHABLE_STATES: FrozenSet[TaskState] = frozenset(TaskState)
 
-#: The states that mean execution has actually begun. Unreachable in 6C.
-EXECUTING_STATES: FrozenSet[TaskState] = frozenset({
+#: The states only the runner may produce.
+#:
+#: `TaskService.transition` -- the path every other caller uses -- refuses
+#: these outright. Reaching one means a step actually ran.
+RUNNER_ONLY_STATES: FrozenSet[TaskState] = frozenset({
     TaskState.RUNNING,
     TaskState.COMPLETED,
 })
+
+#: Kept under its Stage 6C name for the tests that pinned it.
+EXECUTING_STATES = RUNNER_ONLY_STATES
 
 #: Kept so Stage 6A's own tests keep naming what they pinned.
 STAGE_6A_REACHABLE = REACHABLE_STATES
@@ -207,6 +207,7 @@ __all__ = [
     "ALLOWED_STEP_TRANSITIONS",
     "EXECUTING_STATES",
     "REACHABLE_STATES",
+    "RUNNER_ONLY_STATES",
     "ALLOWED_TRANSITIONS",
     "STAGE_6A_REACHABLE",
     "TERMINAL_STATES",

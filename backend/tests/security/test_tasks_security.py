@@ -84,7 +84,7 @@ def test_the_task_package_has_the_modules_this_suite_audits() -> None:
     """Guards everything below: an empty glob passes vacuously."""
     assert sorted(p.name for p in MODULES) == [
         "__init__.py", "capabilities.py", "events.py", "models.py",
-        "plans.py", "schemas.py", "service.py", "states.py",
+        "plans.py", "runner.py", "schemas.py", "service.py", "states.py",
     ]
 
 
@@ -150,11 +150,18 @@ def test_what_is_borrowed_from_the_execution_layer_is_exactly_this() -> None:
         ("app.execution.errors", ("ExecutionError",)),
         ("app.execution.schemas", ("ExecutionRequest",)),
         ("app.execution.service", ("ExecutionService",)),
+        # Stage 6D. The runner reads an execution's state to tell an
+        # approval a person gave from one policy never required.
+        ("app.execution.states", ("ExecutionState",)),
         ("app.execution.tools", ("get_executable_registry",)),
     }, borrowed
 
+    # `app.execution.states` left this list in Stage 6D: the state enum is a
+    # vocabulary, not machinery. What stays forbidden is anything that would
+    # let the task layer dispatch, approve by its own rules, or touch the
+    # filesystem sandbox directly.
     forbidden = {"app.execution.dispatcher", "app.execution.approvals",
-                 "app.execution.states", "app.execution.workspace"}
+                 "app.execution.workspace"}
     assert not ({m for m, _ in borrowed} & forbidden)
 
 
@@ -465,21 +472,22 @@ def test_the_service_has_no_execution_seam() -> None:
     assert not (set(dir(TaskService)) & forbidden), set(dir(TaskService)) & forbidden
 
 
-def test_nothing_in_the_package_writes_spent() -> None:
-    """The budget counter is a runner's, and there is no runner."""
-    offenders = []
+def test_only_the_runner_writes_the_budget_counter() -> None:
+    """Stage 6D made `spent` a runner's to write, and only a runner's.
+
+    Narrowed from "nobody writes it". The counter exists to be spent; what
+    matters is that one file does it, so there is one place to audit.
+    """
+    writers = set()
     for path, tree in parsed_modules():
         for node in ast.walk(tree):
-            # `x.spent = ...` anywhere would be an execution write.
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Attribute) and target.attr == "spent":
-                        offenders.append((path.name, node.lineno))
-            if isinstance(node, ast.AugAssign):
-                target = node.target
+            targets = node.targets if isinstance(node, ast.Assign) else (
+                [node.target] if isinstance(node, ast.AugAssign) else []
+            )
+            for target in targets:
                 if isinstance(target, ast.Attribute) and target.attr == "spent":
-                    offenders.append((path.name, node.lineno))
-    assert offenders == [], offenders
+                    writers.add(path.name)
+    assert writers == {"runner.py"}, writers
 
 
 def test_the_journal_is_append_only() -> None:

@@ -414,9 +414,15 @@ async def test_every_undeclared_pair_within_this_stage_is_refused(
     service, db_session
 ) -> None:
     """Exhaustive over the states Stage 6A can actually produce."""
+    from app.tasks.states import RUNNER_ONLY_STATES
+
     for start in (TaskState.PROPOSED, TaskState.PLANNED, TaskState.BLOCKED):
         for target in STAGE_6A_REACHABLE:
             if target is start or can_transition(start, target):
+                continue
+            if target in RUNNER_ONLY_STATES:
+                # Refused earlier, by the runner-only gate, with its own
+                # reason. Covered by its own test above.
                 continue
             created = await service.create_for_user("Probe")
             if start is not TaskState.PROPOSED:
@@ -478,7 +484,7 @@ async def test_failure_records_a_reason_and_counts(service, db_session) -> None:
 
 
 @pytest.mark.parametrize("state", [TaskState.RUNNING, TaskState.COMPLETED])
-async def test_stage_6a_cannot_reach_an_execution_state(
+async def test_the_service_cannot_reach_a_runner_only_state(
     state, service, db_session
 ) -> None:
     """The whole point of the stage, asserted per state."""
@@ -503,19 +509,23 @@ def test_the_reachable_set_is_exactly_this() -> None:
     `running` and `completed` are still absent, and that is the boundary
     that matters -- reaching either means a step actually ran.
     """
-    assert sorted(s.value for s in STAGE_6A_REACHABLE) == [
-        "awaiting_approval", "blocked", "cancelled", "failed", "paused",
-        "planned", "proposed", "queued",
-    ]
-    assert "running" not in {s.value for s in STAGE_6A_REACHABLE}
-    assert "completed" not in {s.value for s in STAGE_6A_REACHABLE}
+    # Stage 6D widened this to every state, because a runner exists. What
+    # bounds execution is no longer *which* states are reachable but *who*
+    # may reach them: `RUNNER_ONLY_STATES` is refused to every caller of
+    # `TaskService.transition`, and only `TaskRunner` writes them.
+    assert sorted(s.value for s in STAGE_6A_REACHABLE) == sorted(
+        s.value for s in TaskState
+    )
+    from app.tasks.states import RUNNER_ONLY_STATES
+
+    assert sorted(s.value for s in RUNNER_ONLY_STATES) == ["completed", "running"]
 
 
-#: Still refused after Stage 6C widened the set. Each describes a runner's
-#: work, and there is no runner.
+#: Still refused after Stage 6D. Both describe observe-and-replan, which no
+#: stage has built -- so a journal entry for either would record something
+#: that did not happen.
 @pytest.mark.parametrize("event_type", [
-    TaskEventType.TASK_COMPLETED, TaskEventType.OBSERVATION_RECORDED,
-    TaskEventType.REPLANNED, TaskEventType.BUDGET_EXCEEDED,
+    TaskEventType.OBSERVATION_RECORDED, TaskEventType.REPLANNED,
 ])
 async def test_an_execution_event_cannot_be_recorded(
     event_type, service, db_session

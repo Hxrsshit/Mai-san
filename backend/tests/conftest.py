@@ -5,7 +5,7 @@ the suite needs neither PostgreSQL nor network access or an API key.
 """
 
 import uuid
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, List, NamedTuple, Optional
 
 import pytest
 import pytest_asyncio
@@ -1168,3 +1168,125 @@ async def gmail_client(
         yield http_client
 
     app.dependency_overrides.clear()
+
+
+# --- Stage 6D: the task runner ----------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def calendar_runner(
+    db_session, calendar_settings, calendar_tokens, monkeypatch
+):
+    """A `TaskService` and `TaskRunner` that can genuinely execute a step.
+
+    Returns `(service, runner, session)`.
+
+    `calendar_list_events` is the one registered tool that is both executable
+    and marked as needing no human approval, so it is the only capability a
+    runner can carry all the way through the dispatcher without a person.
+    Everything below it is real -- the integration, the `SecureHttpClient`
+    and the `NetworkPolicy`. Only the socket is replaced.
+    """
+    from app.execution.calendar_tool import CalendarListEventsTool
+    from app.execution.dispatcher import Dispatcher
+    from app.execution.service import ExecutionService
+    from app.execution.tools import ExecutableRegistry
+    from app.execution.web_search_tool import WebSearchTool
+    from app.integrations.google_calendar import GoogleCalendarIntegration
+    from app.integrations.registry import IntegrationRegistry
+    from app.tasks.runner import TaskRunner
+    from app.tasks.service import TaskService
+    from app.tools.authorization import AuthorizationService
+    from app.tools.catalog import build_catalog
+    from app.tools.registry import ToolRegistry
+    from tests.support.stub_transport import StubTransport, calendar_payload
+
+    transport = StubTransport(payload=calendar_payload())
+
+    def resolve(host, port):
+        return [(2, 1, 6, "", ("142.250.72.1", port))]
+
+    integration = GoogleCalendarIntegration(
+        settings=calendar_settings,
+        store=calendar_tokens,
+        api_transport=transport,
+        token_transport=transport,
+        resolve=resolve,
+    )
+    integrations = IntegrationRegistry()
+    integrations.register(integration)
+    integrations.seal()
+
+    tools = build_catalog(ToolRegistry())
+    executable = ExecutableRegistry()
+    executable.register(CalendarListEventsTool())
+    # Registered so there is an executable capability that policy says needs
+    # a person. Without one, "needs approval" and "not implemented here"
+    # would be indistinguishable in these tests.
+    executable.register(WebSearchTool())
+
+    # The capability layer reads the process-wide executable registry, so the
+    # fixture's one has to be the process-wide one for the duration.
+    import app.execution.tools as execution_tools
+
+    monkeypatch.setattr(execution_tools, "_registry", executable, raising=False)
+    monkeypatch.setattr(
+        execution_tools, "get_executable_registry", lambda: executable
+    )
+
+    executions = ExecutionService(
+        session=db_session,
+        settings=calendar_settings,
+        authorization=AuthorizationService(registry=tools),
+        executable=executable,
+        dispatcher=Dispatcher(
+            db_session,
+            settings=calendar_settings,
+            authorization=AuthorizationService(registry=tools),
+            registry=executable,
+            integrations=integrations,
+        ),
+    )
+    service = TaskService(db_session, settings=calendar_settings)
+    runner = TaskRunner(service, executions=executions)
+
+    class Harness(NamedTuple):
+        service: object
+        runner: object
+        session: object
+        executions: object
+        transport: object
+        settings: object
+        build: object
+
+        def __iter__(self):
+            # Kept unpackable as `(service, runner, session)` for the tests
+            # written before the restart case needed the execution service.
+            return iter((self.service, self.runner, self.session))
+
+    def build(session):
+        """A second service+runner on another session, sharing the stubs.
+
+        Needed for genuine contention: two runners on one session serialise,
+        so a test using only `db_session` never reaches the step claim.
+        """
+        other_executions = ExecutionService(
+            session=session,
+            settings=calendar_settings,
+            authorization=AuthorizationService(registry=tools),
+            executable=executable,
+            dispatcher=Dispatcher(
+                session,
+                settings=calendar_settings,
+                authorization=AuthorizationService(registry=tools),
+                registry=executable,
+                integrations=integrations,
+            ),
+        )
+        other_service = TaskService(session, settings=calendar_settings)
+        return other_service, TaskRunner(other_service, executions=other_executions)
+
+    return Harness(
+        service, runner, db_session, executions, transport, calendar_settings,
+        build,
+    )

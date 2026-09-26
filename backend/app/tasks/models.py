@@ -107,7 +107,10 @@ class TaskEventType(str, enum.Enum):
     TASK_BLOCKED = "task_blocked"
     TASK_CANCELLED = "task_cancelled"
     TASK_FAILED = "task_failed"
-    # Declared, never emitted before a runner exists.
+    # Stage 6D. The runner's own vocabulary.
+    EXECUTION_CREATED = "execution_created"
+    RUNNER_BLOCKED = "runner_blocked"
+    RUNNER_REFUSED = "runner_refused"
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_GRANTED = "approval_granted"
     STEP_STARTED = "step_started"
