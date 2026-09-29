@@ -544,7 +544,11 @@ def test_the_settings_the_subsystem_reads_are_pinned() -> None:
                 and isinstance(node.args[1], ast.Constant)
             ):
                 read.add(node.args[1].value)
-    assert read == {"MAI_TIMEZONE", "REMINDER_POLL_SECONDS"}, sorted(read)
+    # Stage 6F moved the loop out of this package and into
+    # `app.background.runtime`, which is now the one thing that reads the
+    # poll interval. What the reminder subsystem itself reads shrank to the
+    # timezone -- the only setting its own logic depends on.
+    assert read == {"MAI_TIMEZONE"}, sorted(read)
 
 
 def test_the_capability_is_reported_from_the_setting() -> None:

@@ -375,6 +375,22 @@ class Settings(BaseSettings):
     #: a second process would want if one ever existed.
     REMINDER_SCHEDULER_ENABLED: bool = True
 
+    #: Stage 6F. Whether the one background runtime advances scheduled tasks.
+    #:
+    #: On by default and inert by default: it only ever touches a task a
+    #: person explicitly scheduled with `TaskService.schedule_background`,
+    #: which requires an authorised plan, and nothing it advances can execute
+    #: unless `EXECUTION_ENABLED` is also on -- which it is not by default.
+    #:
+    #: The poll interval is `REMINDER_POLL_SECONDS`. There is one loop, so
+    #: there is one interval; the name predates the loop serving tasks too.
+    BACKGROUND_TASKS_ENABLED: bool = True
+
+    #: Most tasks the runtime advances in one tick. Capped again in code by
+    #: `app.background.runtime.HARD_MAX_TASKS_PER_TICK`, so a configuration
+    #: value cannot raise the ceiling.
+    BACKGROUND_MAX_TASKS_PER_TICK: int = 5
+
     # --- Context retrieval (Stage 2D) ---
     # Retrieval runs on the request path before the chat call. It adds no
     # model calls -- every step is a bounded database query.

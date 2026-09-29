@@ -857,6 +857,9 @@ def render_runtime_facts(facts: RuntimeFacts) -> str:
     lines.append(f"- Planning: {_on_off(facts.planning_enabled)}")
     lines.append(f"- Reminders: {_on_off(facts.reminders_enabled)}")
     lines.append(
+        f"- Background tasks: {_on_off(facts.background_tasks_enabled)}"
+    )
+    lines.append(
         f"- Action identification: {_on_off(facts.action_orchestration_enabled)}"
     )
     lines.append(

@@ -57,6 +57,10 @@ EMITTABLE_EVENTS: FrozenSet[TaskEventType] = frozenset({
     TaskEventType.BUDGET_EXCEEDED,
     # Stage 6E. The persisted answer to "why didn't Mai ask me this time?".
     TaskEventType.STANDING_GRANT_USED,
+    # Stage 6F. What the background runtime did, and why it stopped.
+    TaskEventType.BACKGROUND_SCHEDULED,
+    TaskEventType.BACKGROUND_CLAIMED,
+    TaskEventType.BACKGROUND_UNSCHEDULED,
 })
 
 #: Deliberately still unwritable: `replanned` and `observation_recorded`.

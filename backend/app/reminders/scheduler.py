@@ -17,7 +17,6 @@ sleep. It owns no state, so there is nothing in it to get out of step with the
 database.
 """
 
-import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -66,55 +65,16 @@ async def run_due_reminders(
     return fired
 
 
-class ReminderScheduler:
-    """Owns the polling task. Started and stopped by the app lifespan."""
-
-    def __init__(self, session_factory, settings: Optional[Settings] = None) -> None:
-        self._session_factory = session_factory
-        self._settings = settings or get_settings()
-        self._task: Optional[asyncio.Task] = None
-        self._stopping = asyncio.Event()
-
-    @property
-    def running(self) -> bool:
-        return self._task is not None and not self._task.done()
-
-    def start(self) -> None:
-        """Begin polling. Idempotent."""
-        if self.running:
-            return
-        self._stopping.clear()
-        self._task = asyncio.create_task(self._loop(), name="reminder-scheduler")
-        logger.info(
-            "Reminder scheduler started",
-            extra={"interval_seconds": self._settings.REMINDER_POLL_SECONDS},
-        )
-
-    async def stop(self) -> None:
-        """Stop polling and wait for the current tick to finish."""
-        self._stopping.set()
-        task, self._task = self._task, None
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
-        logger.info("Reminder scheduler stopped")
-
-    async def _loop(self) -> None:
-        interval = max(1, int(self._settings.REMINDER_POLL_SECONDS))
-        while not self._stopping.is_set():
-            await run_due_reminders(self._session_factory, self._settings)
-            try:
-                # Waiting on the stop event rather than sleeping means
-                # shutdown is immediate instead of up to one interval late.
-                await asyncio.wait_for(self._stopping.wait(), timeout=interval)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                raise
+# Stage 6F. There is one background loop in Mai, and it is
+# `app.background.runtime.BackgroundRuntime`. It runs `run_due_reminders`
+# above on every tick, alongside due task work.
+#
+# `ReminderScheduler` is kept as a name for that same class -- not a
+# subclass, not a wrapper -- so existing callers keep working and a
+# structural test can still assert there is exactly one loop class. The
+# reminder-specific logic that made 5F.1 correct lives in the function above
+# and in `ReminderService.fire`, and is unchanged.
+from app.background.runtime import BackgroundRuntime as ReminderScheduler  # noqa: E402
 
 
 __all__ = ["ReminderScheduler", "run_due_reminders"]

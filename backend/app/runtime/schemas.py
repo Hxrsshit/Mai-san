@@ -135,6 +135,10 @@ class RuntimeFacts(BaseModel):
     #: omitted: with reminders off, Mai offering to set one would be exactly
     #: the untruth Stage 4E.1 exists to prevent.
     reminders_enabled: bool = True
+    #: Stage 6F. Whether scheduled tasks are advanced unattended. Reported
+    #: because "can you keep working on this while I'm away?" is a question
+    #: about a capability, and the honest answer depends on this.
+    background_tasks_enabled: bool = True
 
     #: Whether the operator has switched controlled execution on (Stage 4E).
     #: False by default, and False is the state Mai ships in.

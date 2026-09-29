@@ -61,11 +61,14 @@ async def authorized_task(service, *steps):
 # ============================================================================
 
 
-def test_nothing_in_the_application_calls_the_runner() -> None:
-    """The runner is driven from outside. No caller exists in `app/`.
+def test_the_background_runtime_is_the_runners_only_caller() -> None:
+    """Narrowed by Stage 6F, which is the stage this pin existed for.
 
-    This is the whole difference between a runner and an autonomous agent,
-    and it is the one property a reader cannot verify by reading the runner.
+    Stage 6D asserted that nothing in `app/` called the runner at all: the
+    difference between a runner and an autonomous agent, and the one
+    property a reader cannot check by reading the runner. Stage 6F adds
+    exactly one caller -- the background runtime -- and this test now pins
+    that it is exactly one, so a second would have to be argued for.
     """
     callers = []
     for path in (BACKEND / "app").rglob("*.py"):
@@ -80,7 +83,7 @@ def test_nothing_in_the_application_calls_the_runner() -> None:
                 module = ",".join(a.name for a in node.names)
             if "app.tasks.runner" in module or "TaskRunner" in module:
                 callers.append(str(path.relative_to(BACKEND)))
-    assert callers == [], callers
+    assert sorted(set(callers)) == ["app/background/runtime.py"], callers
 
 
 def test_the_runner_has_no_loop_and_no_scheduler() -> None:

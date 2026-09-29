@@ -773,6 +773,67 @@ class TaskService:
             outcome=TaskOutcome.UPDATED, task_id=task.id, state=task.state
         )
 
+    # --- Stage 6F: asking for unattended execution ---------------------------
+
+    #: The states a task may be scheduled from. The plan must already be
+    #: approved -- `awaiting_approval -> queued` is a person's transition,
+    #: and scheduling does not perform it.
+    SCHEDULABLE_STATES = frozenset({TaskState.QUEUED, TaskState.RUNNING})
+
+    async def schedule_background(
+        self, task_id: uuid.UUID, now: Optional[datetime] = None
+    ) -> TaskResult:
+        """Ask for this task to be advanced by the background runtime.
+
+        The only way a task becomes background work, and a user-originated
+        one: named for what the person is doing, with no `source` parameter,
+        and unreachable from every content-handling module -- a structural
+        test asserts that.
+
+        Scheduling grants nothing. The runtime will call `TaskRunner.advance`,
+        which asks the one authorization service for every step exactly as
+        an attended run would. A step that needs a person still waits for
+        one; a standing grant still has to match exactly.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return TaskResult(outcome=TaskOutcome.NOT_FOUND, reason="task_not_found")
+        if is_terminal(task.state):
+            return TaskResult(
+                outcome=TaskOutcome.TERMINAL, task_id=task.id, state=task.state,
+                reason="task_is_terminal",
+            )
+        if task.authorized_at is None:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="plan_not_authorized",
+            )
+        if task.state not in self.SCHEDULABLE_STATES:
+            return TaskResult(
+                outcome=TaskOutcome.INVALID_TRANSITION, task_id=task.id,
+                state=task.state, reason="task_not_queued",
+            )
+
+        moment = now or datetime.now(timezone.utc)
+        try:
+            async with self._session.begin_nested():
+                task.next_run_at = moment
+                task.updated_at = moment
+                await self._session.flush()
+                await journal.record(
+                    self._session, task.id, TaskEventType.BACKGROUND_SCHEDULED,
+                    actor="user", metadata={"state": task.state.value},
+                )
+        except _DB_ERRORS as exc:
+            logger.error(
+                "Failed to schedule a task",
+                extra={"task_id": str(task_id), "error": str(exc)},
+            )
+            return TaskResult(outcome=TaskOutcome.FAILED, reason="persistence_failed")
+
+        logger.info("Task scheduled for background", extra={"task_id": str(task.id)})
+        return TaskResult(outcome=TaskOutcome.UPDATED, task_id=task.id, state=task.state)
+
     # --- Transitions --------------------------------------------------------
 
     async def transition(

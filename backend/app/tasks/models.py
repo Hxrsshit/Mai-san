@@ -111,6 +111,12 @@ class TaskEventType(str, enum.Enum):
     EXECUTION_CREATED = "execution_created"
     #: Stage 6E. Why Mai did not ask this time.
     STANDING_GRANT_USED = "standing_grant_used"
+    #: Stage 6F. A person asked for this task to run unattended.
+    BACKGROUND_SCHEDULED = "background_scheduled"
+    #: Stage 6F. The background runtime took the task for one step.
+    BACKGROUND_CLAIMED = "background_claimed"
+    #: Stage 6F. The runtime stopped polling the task, and why.
+    BACKGROUND_UNSCHEDULED = "background_unscheduled"
     RUNNER_BLOCKED = "runner_blocked"
     RUNNER_REFUSED = "runner_refused"
     APPROVAL_REQUESTED = "approval_requested"
@@ -241,6 +247,26 @@ class Task(Base):
         Integer, nullable=False, default=0, server_default="0"
     )
 
+    #: Stage 6F. When the background runtime should next advance this task.
+    #:
+    #: The whole of the task's scheduling state, and the same idea as
+    #: `reminders.next_run_at`. NULL means "not scheduled": a task nobody
+    #: asked to run unattended, one that finished, and one waiting for a
+    #: person all have NULL, which is what stops the runtime polling them.
+    #:
+    #: It also serves as the claim. The runtime claims a due task by moving
+    #: this forward to a lease horizon in one conditional UPDATE, so a second
+    #: poller finds it no longer due -- and a process that dies holding the
+    #: claim leaves a value that simply becomes due again when the lease
+    #: runs out. No separate lease column, no in-memory owner.
+    #:
+    #: Written in exactly two places: `TaskService.schedule_background`, when
+    #: a person asks, and `app.background.runtime`, when it claims or
+    #: reschedules. A structural test pins both.
+    next_run_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     #: Stage 6C. When the plan was authorised for execution, and by whom.
     #:
     #: NULL until an application-side decision says so, which is the
@@ -295,6 +321,9 @@ class Task(Base):
         CheckConstraint("failure_count >= 0", name="failure_count_non_negative"),
         # Every activity question is a query over (owner, state).
         Index("ix_tasks_owner_id_state", "owner_id", "state"),
+        # Stage 6F. The runtime's discovery query is "due, and in a state
+        # that can advance", ordered by due time.
+        Index("ix_tasks_state_next_run_at", "state", "next_run_at"),
         Index("ix_tasks_conversation_id", "conversation_id"),
         Index("ix_tasks_created_at", "created_at"),
     )

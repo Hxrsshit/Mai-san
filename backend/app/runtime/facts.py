@@ -38,6 +38,7 @@ CAPABILITY_SETTINGS = {
     "action_orchestration_enabled": "ORCHESTRATION_ENABLED",
     "execution_enabled": "EXECUTION_ENABLED",
     "reminders_enabled": "REMINDERS_ENABLED",
+    "background_tasks_enabled": "BACKGROUND_TASKS_ENABLED",
 }
 
 #: Settings deliberately *not* surfaced, each with the reason.

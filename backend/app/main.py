@@ -69,24 +69,35 @@ async def lifespan(app: FastAPI):
             extra={"provider": provider.name},
         )
 
-    # Stage 5F.1. The poller lives in the app lifespan because that is where
-    # the engine it needs is already initialised and torn down. It holds no
-    # state: a reminder's next occurrence is a column, so a restart resumes
-    # from the database rather than from anything kept here.
-    scheduler = None
-    if settings.REMINDERS_ENABLED and settings.REMINDER_SCHEDULER_ENABLED:
-        from app.database.session import get_session_factory
-        from app.reminders.scheduler import ReminderScheduler
+    # Stage 6F. The one background runtime. It lives in the lifespan because
+    # that is where the engine it needs is initialised and torn down, and it
+    # holds no state: reminders and tasks both keep their `next_run_at` in
+    # the database, so a restart resumes from there rather than from here.
+    #
+    # Stored on `app.state` so a second lifespan for the same app finds the
+    # one already running instead of starting another.
+    runtime = None
+    from app.background.runtime import BackgroundRuntime
+    from app.database.session import get_session_factory
 
-        scheduler = ReminderScheduler(get_session_factory(), settings)
-        scheduler.start()
+    candidate = BackgroundRuntime(get_session_factory(), settings)
+    if candidate.has_work_sources:
+        existing = getattr(app.state, "background_runtime", None)
+        if existing is not None and existing.running:
+            runtime = existing
+        else:
+            runtime = candidate
+            runtime.start()
+            app.state.background_runtime = runtime
 
     logger.info("Mai backend ready")
     yield
 
     logger.info("Shutting down Mai backend")
-    if scheduler is not None:
-        await scheduler.stop()
+    if runtime is not None:
+        await runtime.stop()
+        if getattr(app.state, "background_runtime", None) is runtime:
+            app.state.background_runtime = None
     await dispose_provider()
     await dispose_engine()
     logger.info("Shutdown complete")
