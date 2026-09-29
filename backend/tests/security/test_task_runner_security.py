@@ -158,7 +158,12 @@ def test_the_runner_borrows_exactly_these_execution_pieces() -> None:
         ("app.execution.schemas", ("ExecutionRequest",)),
         ("app.execution.service", ("ExecutionService",)),
         ("app.execution.states", ("ExecutionState",)),
-        ("app.tools.schemas", ("AuthorizationStatus",)),
+        # Stage 6E. The runner asks the one authorization service for a
+        # grant-aware decision. It imports `GrantService` only to construct
+        # the lookup it hands over -- see the test below, which asserts it
+        # never calls a method on one.
+        ("app.tools.authorization", ("AuthorizationService",)),
+        ("app.tools.schemas", ("ActionProposal", "ActionSource")),
     }, borrowed
 
 
@@ -448,3 +453,34 @@ def test_the_migration_alters_no_table() -> None:
                 "create_table", "drop_table", "add_column", "drop_column",
                 "alter_column", "create_index", "drop_index",
             }, node.func.attr
+
+
+def test_the_runner_never_reads_a_grant_itself() -> None:
+    """Stage 6E: the runner holds the lookup only to hand it over.
+
+    `AuthorizationService` is the one decision path. The runner constructs a
+    `GrantService` so it has something to pass, and calls no method on it --
+    if it did, there would be two places an authorization answer comes from
+    and a reader would have to know which won.
+    """
+    tree = ast.parse((BACKEND / "app" / "tasks" / "runner.py").read_text())
+
+    grant_calls = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)):
+            continue
+        receiver = node.func.value
+        if isinstance(receiver, ast.Attribute) and receiver.attr == "_grants":
+            grant_calls.append((node.lineno, node.func.attr))
+    assert grant_calls == [], grant_calls
+
+    # And no grant model or table is imported at all.
+    for node in ast.walk(tree):
+        module = ""
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+        elif isinstance(node, ast.Import):
+            module = ",".join(a.name for a in node.names)
+        assert "authorization.models" not in module, module
+        assert "ApprovalGrant" not in module, module

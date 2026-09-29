@@ -611,10 +611,19 @@ def test_no_persistence_was_added_for_orchestration() -> None:
 
     tables = set(Base.metadata.tables)
     for forbidden in (
-        "actions", "action_proposals", "approvals", "approval_grants",
+        "actions", "action_proposals", "approvals",
         "tool_runs", "orchestrations",
     ):
         assert forbidden not in tables
+
+    # `approval_grants` left this list in Stage 6E, which introduced it. The
+    # claim this test makes is about *orchestration*, not about the whole
+    # schema: recognising a possible action still writes no row. The grant
+    # table is owned by `app/authorization/`, reachable only from an explicit
+    # user-originated service call, and a structural test in
+    # `test_standing_grants_security.py` asserts no content-handling module
+    # -- orchestration included -- can reach it.
+    assert "approval_grants" in tables
 
     # `executions` and `execution_events` arrived in Stage 4E and are owned
     # entirely by `app/execution/models.py`. Orchestration still persists

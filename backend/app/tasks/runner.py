@@ -67,7 +67,7 @@ from app.tasks.models import TaskEventType, TaskStep
 from app.tasks.schemas import RunnerOutcome, RunnerResult
 from app.tasks.service import TaskService
 from app.tasks.states import TaskState, TaskStepState, is_terminal
-from app.tools.schemas import AuthorizationStatus
+from app.tools.schemas import ActionProposal, ActionSource
 
 logger = get_logger(__name__)
 
@@ -81,12 +81,24 @@ class TaskRunner:
         self,
         tasks: TaskService,
         executions: Optional[ExecutionService] = None,
+        authorization=None,
+        grants=None,
     ) -> None:
         self._tasks = tasks
         self._session = tasks._session
         self._settings = tasks._settings
         self._executions = executions or ExecutionService(
             self._session, settings=self._settings
+        )
+        # Stage 6E. The one authorization service, and the grant lookup it
+        # consults. The runner holds the lookup only to hand it over: it
+        # never calls a method on it, and never reads a grant itself.
+        from app.authorization.grants import GrantService
+        from app.tools.authorization import AuthorizationService
+
+        self._authorization = authorization or AuthorizationService()
+        self._grants = grants if grants is not None else GrantService(
+            self._session, owner_id=tasks.owner_id
         )
 
     async def advance(self, task_id: uuid.UUID) -> RunnerResult:
@@ -282,14 +294,37 @@ class TaskRunner:
 
         # Who may approve this, and whether anyone has.
         #
-        # Live verification found the first version of this wrong: it
-        # refused anything policy marked `approval_required` and never
-        # looked at whether a person had since approved it, so a human
+        # Live verification in Stage 6D found the first version of this
+        # wrong: it refused anything policy marked `approval_required` and
+        # never looked at whether a person had since approved it, so a human
         # approval could never take effect and the step blocked forever.
         already_approved = execution.state is ExecutionState.APPROVED
-        policy_allows = (
-            execution.authorization_status is AuthorizationStatus.ALLOWED
+
+        # Stage 6E. Asked of the authorization service, never of the grant
+        # table: the runner has no idea what a grant is, and a structural
+        # test asserts it never imports one. What comes back is an ordinary
+        # `AuthorizationDecision` whose `requires_approval` a live grant may
+        # have satisfied.
+        decision = await self._authorization.authorize_with_grants(
+            ActionProposal(
+                tool_name=binding.capability,
+                arguments=dict(step.arguments or {}),
+                source=ActionSource.MODEL,
+            ),
+            grants=self._grants,
         )
+        policy_allows = not decision.requires_approval
+
+        if decision.standing_grant_id is not None:
+            await self._record(
+                task, TaskEventType.STANDING_GRANT_USED,
+                {
+                    "step": step.step_key,
+                    "capability": decision.tool_name,
+                    "grant_id": str(decision.standing_grant_id),
+                },
+            )
+
         if not (already_approved or policy_allows):
             # Policy says a person decides, and none has. The step goes back
             # to pending so a later invocation can pick it up once someone

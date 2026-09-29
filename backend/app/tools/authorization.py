@@ -27,6 +27,7 @@ from app.tools.schemas import (
     AuthorizationStatus,
     DenialReason,
     most_restrictive,
+    risk_rank,
 )
 
 logger = get_logger(__name__)
@@ -101,6 +102,87 @@ class AuthorizationService:
             },
         )
         return decision
+
+
+    async def authorize_with_grants(
+        self,
+        proposal: ActionProposal,
+        grants,
+        intent: Optional[IntentResult] = None,
+        now=None,
+    ) -> AuthorizationDecision:
+        """The same decision, with a standing grant allowed to supply the
+        human approval it would otherwise have needed.
+
+        Stage 6E's only addition to the authorization path, and deliberately
+        a thin one. It calls `authorize` first and unchanged, so the policy
+        answer is identical whether or not grants exist -- then, and only
+        then, asks whether a live grant covers the approval requirement.
+
+        A grant can do exactly one thing: turn `requires_approval` from True
+        to False. It cannot change the status, cannot make a forbidden action
+        permitted, cannot make an unknown capability known, and cannot
+        validate arguments that failed. `most_restrictive` is not consulted
+        because there is nothing to combine: this never loosens a *status*.
+
+        `grants` is an `app.authorization.grants.GrantService`. It is passed
+        in rather than constructed here so this module keeps no database
+        session and no import of the persistence layer -- the caller supplies
+        the lookup, this method makes the decision.
+        """
+        decision = self.authorize(proposal, intent=intent)
+
+        if decision.status is not AuthorizationStatus.APPROVAL_REQUIRED:
+            # Nothing to supply. `ALLOWED` needed no approval; every other
+            # status is a refusal, and a grant may not overturn one. This is
+            # what makes CRITICAL structurally unreachable: `policy` returns
+            # FORBIDDEN for it, so the lookup below never runs.
+            return decision
+
+        if grants is None:
+            return decision
+
+        grant = await grants.active_for(decision.tool_name, now=now)
+        if grant is None:
+            return decision
+
+        if risk_rank(decision.risk_level) > risk_rank(grant.risk_level):
+            # The capability is riskier now than when the grant was given.
+            # A grant covers the risk a person actually agreed to, so a
+            # capability whose risk was raised since stops being covered
+            # without anyone having to remember to revoke it.
+            logger.info(
+                "Standing grant does not cover the current risk",
+                extra={
+                    "tool": decision.tool_name,
+                    "granted_risk": grant.risk_level.value,
+                    "current_risk": (
+                        decision.risk_level.value if decision.risk_level else None
+                    ),
+                },
+            )
+            return decision
+
+        logger.info(
+            "Standing grant satisfied an approval requirement",
+            # Ids, a name and a risk. No arguments: they are the caller's
+            # payload and may contain anything.
+            extra={
+                "tool": decision.tool_name,
+                "grant_id": str(grant.id),
+                "risk": grant.risk_level.value,
+            },
+        )
+        return decision.model_copy(
+            update={
+                # The status is unchanged and stays truthful: policy does
+                # require an approval for this. What changed is that one
+                # already exists.
+                "requires_approval": False,
+                "standing_grant_id": grant.id,
+                "reason": DenialReason.STANDING_GRANT,
+            }
+        )
 
 
 def _is_refused(status: AuthorizationStatus) -> bool:

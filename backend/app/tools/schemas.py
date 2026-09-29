@@ -263,6 +263,11 @@ class DenialReason:
     APPROVAL_REQUIRED = "human_approval_required"
     HIGH_RISK_APPROVAL = "high_risk_requires_approval"
     ALLOWED = "not_forbidden_by_policy"
+    #: Stage 6E. Policy required an approval and a standing grant had
+    #: already supplied one. Not a denial -- the enum is named for the
+    #: common case, and this is the reason a decision carries when it was
+    #: satisfied rather than refused.
+    STANDING_GRANT = "satisfied_by_standing_grant"
 
 
 class AuthorizationDecision(BaseModel):
@@ -294,6 +299,15 @@ class AuthorizationDecision(BaseModel):
     #: A separate field from the proposal's raw bag, so nothing unvalidated
     #: can be mistaken for something checked.
     validated_arguments: Optional[Dict[str, Any]] = None
+
+    #: Stage 6E. The standing grant that supplied the human approval this
+    #: action would otherwise have needed, if one did.
+    #:
+    #: Present only when `requires_approval` is False *and* `status` is
+    #: `APPROVAL_REQUIRED` -- which is the honest pair: policy still requires
+    #: an approval, and a person gave it in advance. A decision with no grant
+    #: id and no approval requirement was permitted by policy outright.
+    standing_grant_id: Optional[uuid.UUID] = None
 
     decided_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)

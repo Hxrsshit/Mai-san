@@ -109,6 +109,8 @@ class TaskEventType(str, enum.Enum):
     TASK_FAILED = "task_failed"
     # Stage 6D. The runner's own vocabulary.
     EXECUTION_CREATED = "execution_created"
+    #: Stage 6E. Why Mai did not ask this time.
+    STANDING_GRANT_USED = "standing_grant_used"
     RUNNER_BLOCKED = "runner_blocked"
     RUNNER_REFUSED = "runner_refused"
     APPROVAL_REQUESTED = "approval_requested"

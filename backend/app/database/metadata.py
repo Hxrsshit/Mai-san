@@ -10,6 +10,7 @@ inside that package would be a circular import.
 """
 
 from app.database.models import Base
+from app.authorization import models as grant_models
 from app.entities import models as entity_models
 from app.execution import models as execution_models
 from app.history import models as history_models
@@ -32,4 +33,5 @@ __all__ = [
     "history_models",
     "reminder_models",
     "task_models",
+    "grant_models",
 ]

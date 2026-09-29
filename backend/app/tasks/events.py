@@ -55,6 +55,8 @@ EMITTABLE_EVENTS: FrozenSet[TaskEventType] = frozenset({
     TaskEventType.RUNNER_REFUSED,
     TaskEventType.TASK_COMPLETED,
     TaskEventType.BUDGET_EXCEEDED,
+    # Stage 6E. The persisted answer to "why didn't Mai ask me this time?".
+    TaskEventType.STANDING_GRANT_USED,
 })
 
 #: Deliberately still unwritable: `replanned` and `observation_recorded`.
