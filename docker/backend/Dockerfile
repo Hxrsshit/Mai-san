@@ -43,4 +43,8 @@ USER mai
 EXPOSE 8000
 
 # Migrations run first so the schema is never created implicitly by app code.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# `exec` replaces the shell with uvicorn so it runs as PID 1 and receives the
+# SIGTERM from `docker stop` directly. Without it, `sh` holds PID 1, does not
+# forward the signal, and the container is SIGKILLed after the grace period --
+# the lifespan shutdown branch never runs.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
