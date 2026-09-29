@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_MODEL: str = "openai/gpt-oss-120b"
 
+    # --- Gemini ---
+    # Google's OpenAI-compatible endpoint, reached through the same
+    # `SecureHttpClient` and single-host policy as Groq. Selected only by
+    # `LLM_PROVIDER=gemini`; Groq remains the default.
+    GEMINI_API_KEY: str = ""
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    GEMINI_MODEL: str = "gemini-3.8-flash"
+
     # --- Anthropic API (Stage 4F-F) ---
     # The Messages API, with an API key and API billing. Distinct from a
     # Claude Pro/Max subscription, which Mai does not and may not use --

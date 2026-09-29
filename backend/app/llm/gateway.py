@@ -9,6 +9,7 @@ Three modes, and exactly one is active
 --------------------------------------
 
     groq                API key      -> api.groq.com
+    gemini              API key      -> generativelanguage.googleapis.com
     anthropic_api       API key      -> api.anthropic.com
     claude_subscription subscription -> UNAVAILABLE, see below
 
@@ -42,6 +43,7 @@ class ProviderMode(str, enum.Enum):
     """The providers Mai knows about. A closed set."""
 
     GROQ = "groq"
+    GEMINI = "gemini"
     ANTHROPIC_API = "anthropic_api"
     CLAUDE_SUBSCRIPTION = "claude_subscription"
 
@@ -103,6 +105,13 @@ PROVIDERS: Dict[ProviderMode, ProviderSpec] = {
         settings_prefix="GROQ",
         auth_mode=AuthMode.API_KEY,
         host="api.groq.com",
+        available=True,
+    ),
+    ProviderMode.GEMINI: ProviderSpec(
+        mode=ProviderMode.GEMINI,
+        settings_prefix="GEMINI",
+        auth_mode=AuthMode.API_KEY,
+        host="generativelanguage.googleapis.com",
         available=True,
     ),
     ProviderMode.ANTHROPIC_API: ProviderSpec(

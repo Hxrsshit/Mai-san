@@ -37,9 +37,10 @@ def _settings(**overrides) -> Settings:
 # --- The provider table -----------------------------------------------------
 
 
-def test_exactly_three_modes_exist() -> None:
+def test_exactly_four_modes_exist() -> None:
+    """Gemini joined as a fourth mode -- a second provider alongside Groq."""
     assert {mode.value for mode in ProviderMode} == {
-        "groq", "anthropic_api", "claude_subscription",
+        "groq", "gemini", "anthropic_api", "claude_subscription",
     }
     assert set(PROVIDERS) == set(ProviderMode)
 
@@ -70,10 +71,12 @@ def test_an_unavailable_provider_always_states_a_reason() -> None:
             assert spec.unavailable_reason, spec.mode
 
 
-def test_only_two_hosts_are_permitted() -> None:
+def test_only_the_declared_hosts_are_permitted() -> None:
     """The network audit's answer, asserted rather than described."""
+    # Gemini adds exactly one host, and nothing broader: no wildcard, no
+    # other googleapis.com subdomain.
     assert PERMITTED_PROVIDER_HOSTS == frozenset(
-        {"api.groq.com", "api.anthropic.com"}
+        {"api.groq.com", "generativelanguage.googleapis.com", "api.anthropic.com"}
     )
 
 
@@ -100,8 +103,11 @@ def test_the_configured_provider_is_the_one_built(mode, expected) -> None:
     "unknown",
     # `"groq "` is absent deliberately: surrounding whitespace is normalised,
     # which cannot change which provider is meant. Case is too. Nothing else is.
-    ["", "   ", "anthropic", "claude", "openai", "gpt-4", "gemini",
-     "GROQ_API", "claude-subscription", "../groq", "groq,anthropic_api"],
+    # `"gemini"` left this list when Gemini became a provider. Near-misses of
+    # it stay, because they must still be refused rather than guessed at.
+    ["", "   ", "anthropic", "claude", "openai", "gpt-4", "google",
+     "gemini-pro", "google_gemini", "GROQ_API", "claude-subscription",
+     "../groq", "groq,anthropic_api", "groq,gemini"],
 )
 def test_an_unrecognised_provider_is_refused_and_never_defaulted(unknown) -> None:
     """No fallback to a default. An unknown name is a configuration error."""
@@ -146,7 +152,9 @@ def test_the_subscription_provider_has_no_builder() -> None:
     from app.llm.factory import _REGISTRY
 
     assert ProviderMode.CLAUDE_SUBSCRIPTION not in _REGISTRY
-    assert set(_REGISTRY) == {ProviderMode.GROQ, ProviderMode.ANTHROPIC_API}
+    assert set(_REGISTRY) == {
+        ProviderMode.GROQ, ProviderMode.GEMINI, ProviderMode.ANTHROPIC_API,
+    }
 
 
 def test_require_available_permits_the_two_real_providers() -> None:

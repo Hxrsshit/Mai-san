@@ -120,13 +120,15 @@ def test_each_provider_policy_allows_exactly_one_host_and_one_verb(
     assert policy.retries.max_attempts == 1
 
 
-def test_the_permitted_host_set_is_exactly_two() -> None:
+def test_the_permitted_host_set_is_exactly_these() -> None:
     """The network audit's answer.
 
-    Every outbound provider host Mai may reach, in one assertion.
+    Every outbound provider host Mai may reach, in one assertion. Gemini
+    added exactly one host -- not a wildcard, not another googleapis.com
+    subdomain.
     """
     assert PERMITTED_PROVIDER_HOSTS == frozenset(
-        {"api.groq.com", "api.anthropic.com"}
+        {"api.groq.com", "generativelanguage.googleapis.com", "api.anthropic.com"}
     )
 
 

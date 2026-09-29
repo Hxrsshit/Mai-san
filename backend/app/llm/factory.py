@@ -16,6 +16,7 @@ from app.llm.gateway import (
     resolve_mode,
 )
 from app.llm.providers.anthropic import AnthropicProvider
+from app.llm.providers.gemini import GeminiProvider
 from app.llm.providers.groq import GroqProvider
 
 logger = get_logger(__name__)
@@ -28,6 +29,7 @@ logger = get_logger(__name__)
 # that raised would be one refactor away from a mode that works.
 _REGISTRY: Dict[ProviderMode, Callable[[Settings], LLMProvider]] = {
     ProviderMode.GROQ: GroqProvider.from_settings,
+    ProviderMode.GEMINI: GeminiProvider.from_settings,
     ProviderMode.ANTHROPIC_API: AnthropicProvider.from_settings,
 }
 

@@ -73,13 +73,16 @@ def test_missing_provider_settings_raise_an_actionable_error() -> None:
     """An unlisted provider is refused by name, with the valid options."""
     from app.llm.factory import UnknownProviderError
 
-    settings = Settings(_env_file=None, LLM_PROVIDER="gemini")
+    # "gemini" was this test's example until Gemini became a provider.
+    # "mistral" is still unlisted, which is what the test is about.
+    settings = Settings(_env_file=None, LLM_PROVIDER="mistral")
 
     with pytest.raises(UnknownProviderError) as caught:
         _ = settings.active_api_key
 
-    assert "gemini" in str(caught.value)
+    assert "mistral" in str(caught.value)
     assert "groq" in str(caught.value)
+    assert "gemini" in str(caught.value), "the valid options omit Gemini"
 
 
 # --- Secrets ----------------------------------------------------------------

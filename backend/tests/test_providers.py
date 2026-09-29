@@ -135,11 +135,13 @@ def test_a_provider_cannot_be_added_at_runtime(
         build_provider(settings)
 
 
-def test_the_provider_set_is_exactly_the_three_declared_modes() -> None:
+def test_the_provider_set_is_exactly_the_declared_modes() -> None:
+    """Widened to four when Gemini was added. Literal, so a fifth has to be
+    argued for too."""
     from app.llm.gateway import PROVIDERS, ProviderMode
 
     assert {mode.value for mode in ProviderMode} == {
-        "groq", "anthropic_api", "claude_subscription",
+        "groq", "gemini", "anthropic_api", "claude_subscription",
     }
     assert set(PROVIDERS) == set(ProviderMode)
 

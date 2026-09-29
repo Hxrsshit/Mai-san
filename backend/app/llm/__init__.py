@@ -2,7 +2,11 @@
 
 from app.llm.base import LLMMessage, LLMProvider, LLMResponse, ProviderHealth
 from app.llm.factory import build_provider, get_llm_provider
-from app.llm.providers import GroqProvider, OpenAICompatibleProvider
+from app.llm.providers import (
+    GeminiProvider,
+    GroqProvider,
+    OpenAICompatibleProvider,
+)
 
 __all__ = [
     "LLMMessage",
@@ -11,6 +15,7 @@ __all__ = [
     "ProviderHealth",
     "build_provider",
     "get_llm_provider",
+    "GeminiProvider",
     "GroqProvider",
     "OpenAICompatibleProvider",
 ]
