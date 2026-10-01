@@ -5,7 +5,6 @@ distinctive so a leak anywhere is unmistakable.
 """
 
 import ast
-import asyncio
 import json
 import os
 import pathlib
@@ -270,7 +269,7 @@ def test_a_loopback_redirect_is_permitted(permitted) -> None:
     validate_redirect_uri(permitted)
 
 
-def test_a_tampered_redirect_is_refused_at_exchange_time() -> None:
+async def test_a_tampered_redirect_is_refused_at_exchange_time() -> None:
     """Checked when the URL is built *and* when the code is exchanged.
 
     So a redirect cannot be swapped between the two.
@@ -284,9 +283,7 @@ def test_a_tampered_redirect_is_refused_at_exchange_time() -> None:
     transport = TokenTransport()
 
     with pytest.raises(OAuthError):
-        asyncio.get_event_loop().run_until_complete(
-            exchange_code(_client(transport), "cid", CLIENT_SECRET, "code", tampered)
-        )
+        await exchange_code(_client(transport), "cid", CLIENT_SECRET, "code", tampered)
 
     assert transport.connections == []
 
