@@ -66,6 +66,13 @@ G  grant expired/revoked    the authorization service says approval is
 H  after a failed step      the step is `failed`, `next_run_at` NULL. Failed
                             steps are never retried automatically.
 
+### Notifications (Stage 6H)
+
+When `_record_failure` blocks a monitoring task, the same transaction records
+one notification through `app.tasks.notifications.record_outcome`; a met
+condition is recorded the same way by the runner. The runtime decides nothing
+about notifications beyond calling that one writer, and delivers nothing.
+
 ### Monitoring (Stage 6G)
 
 A monitoring task is the same row, claimed the same way. Only the
@@ -88,8 +95,14 @@ from sqlalchemy import select, update
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.tasks import events as journal
-from app.tasks.models import MAX_CONSECUTIVE_FAILURES, Task, TaskEventType
+from app.tasks.models import (
+    MAX_CONSECUTIVE_FAILURES,
+    Task,
+    TaskEventType,
+    TaskNotificationKind,
+)
 from app.tasks.monitoring import interval_of
+from app.tasks.notifications import record_outcome
 from app.tasks.runner import TaskRunner
 from app.tasks.schemas import RunnerOutcome
 from app.tasks.service import TaskService
@@ -366,6 +379,12 @@ async def _record_failure(
                 metadata={"reason": "failures_exhausted",
                           "failure_count": task.failure_count},
             )
+            # Stage 6H. A monitoring task that gave up is worth telling its
+            # owner about -- in this transaction, so the block and the
+            # notification commit or roll back together. `record_outcome`
+            # writes nothing for an ordinary task or a task the transition
+            # did not actually block.
+            await record_outcome(session, task, TaskNotificationKind.MONITORING_FAILED)
         else:
             delay = max(
                 FAILURE_BACKOFF_SECONDS * (2 ** (task.failure_count - 1)),

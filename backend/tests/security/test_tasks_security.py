@@ -84,8 +84,8 @@ def test_the_task_package_has_the_modules_this_suite_audits() -> None:
     """Guards everything below: an empty glob passes vacuously."""
     assert sorted(p.name for p in MODULES) == [
         "__init__.py", "capabilities.py", "events.py", "models.py",
-        "monitoring.py", "plans.py", "runner.py", "schemas.py", "service.py",
-        "states.py",
+        "monitoring.py", "notifications.py", "plans.py", "runner.py",
+        "schemas.py", "service.py", "states.py",
     ]
 
 

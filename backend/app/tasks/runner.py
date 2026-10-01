@@ -392,6 +392,16 @@ class TaskRunner:
 
         refreshed = await self._tasks.get_detail(task.id)
         completed = await self._complete(refreshed)
+        if completed.outcome is RunnerOutcome.TASK_COMPLETED:
+            # Stage 6H. In this transaction, so the task cannot be completed
+            # without its notification, nor notified without being completed.
+            from app.tasks.models import TaskNotificationKind
+            from app.tasks.notifications import record_outcome
+
+            await record_outcome(
+                self._session, refreshed, TaskNotificationKind.CONDITION_MET,
+                execution_id=execution.id,
+            )
         return RunnerResult(
             outcome=(
                 RunnerOutcome.CONDITION_MET

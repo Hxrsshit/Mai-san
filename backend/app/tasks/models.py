@@ -126,6 +126,8 @@ class TaskEventType(str, enum.Enum):
     #: Stage 6G. A check could not be performed or could not be evaluated.
     #: Never recorded as "not satisfied".
     MONITORING_CHECK_FAILED = "monitoring_check_failed"
+    #: Stage 6H. A monitoring outcome produced a notification for the owner.
+    NOTIFICATION_CREATED = "notification_created"
     RUNNER_BLOCKED = "runner_blocked"
     RUNNER_REFUSED = "runner_refused"
     APPROVAL_REQUESTED = "approval_requested"
@@ -510,6 +512,101 @@ class TaskEvent(Base):
         return f"<TaskEvent {self.event_type.value} seq={self.sequence}>"
 
 
+class TaskNotificationKind(str, enum.Enum):
+    """Stage 6H. The monitoring outcomes that are worth telling a person about.
+
+    Closed. Each one is an outcome the application already decided --
+    neither is chosen by a model, a message or a tool result.
+    """
+
+    #: The condition held; the task completed.
+    CONDITION_MET = "condition_met"
+    #: Checks kept failing and the task was blocked.
+    MONITORING_FAILED = "monitoring_failed"
+
+
+class TaskNotification(Base):
+    """Stage 6H. One monitoring outcome, waiting for its owner to see it.
+
+    The in-app inbox pattern Stage 5F.1 established for reminders -- a row
+    per fired outcome, unread until marked read by a conditional UPDATE, made
+    exactly-once by a unique index rather than by care -- applied to tasks.
+    Not the reminder table itself: that one is keyed to a reminder, copies
+    the reminder's text and has no owner, and widening it would change
+    another stage's invariants.
+
+    **No content.** There is no title, message, condition, argument or tool
+    output here, so there is nothing to leak and nothing to interpret. What
+    happened is the kind; what it was about is the task, by reference; what
+    proved it is the execution, by reference. A reader that wants words
+    reads them from the records that own them.
+    """
+
+    __tablename__ = "task_notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    #: Always the task's own owner, copied from the task row by the one
+    #: writer. Never a parameter.
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[TaskNotificationKind] = mapped_column(
+        Enum(
+            TaskNotificationKind, name="task_notification_kind",
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+    )
+    #: The task's `check_count` when the outcome happened. Part of the
+    #: outcome's identity: a blocked task can be resumed by a person and fail
+    #: again after further checks, which is a different outcome; a replay of
+    #: the same one is not.
+    check_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The check that proved a met condition. A reference, never a copy.
+    execution_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("executions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow,
+        server_default=func.now(),
+    )
+    #: NULL until the owner has seen it. Status is derived from this, never
+    #: stored beside it, so the two cannot disagree.
+    read_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        #: The exactly-once guarantee. Everything else about duplicate
+        #: notifications is defence in depth behind this.
+        Index(
+            "uq_task_notifications_outcome",
+            "task_id", "kind", "check_number",
+            unique=True,
+        ),
+        #: The owner's unread inbox, oldest first.
+        Index(
+            "ix_task_notifications_owner_id_read_at_created_at",
+            "owner_id", "read_at", "created_at",
+        ),
+        CheckConstraint("check_number >= 0", name="check_number_non_negative"),
+        CheckConstraint(
+            "read_at IS NULL OR read_at >= created_at",
+            name="read_after_created",
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<TaskNotification {self.kind.value} check={self.check_number}>"
+
+
 __all__ = [
     "LOCAL_OWNER_ID",
     "MAX_CAPABILITY_CHARS",
@@ -522,6 +619,8 @@ __all__ = [
     "Task",
     "TaskEvent",
     "TaskEventType",
+    "TaskNotification",
+    "TaskNotificationKind",
     "TaskOrigin",
     "TaskStep",
 ]

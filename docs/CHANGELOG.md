@@ -25,11 +25,11 @@ before substantial work and updates it after completing work (see
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6G: monitoring runtime**, commit `d249170` |
-| Latest commit (before this file) | `5e1fc51`: OAuth test order-dependence fix (test-only) |
+| Latest completed stage | **Stage 6H: notification infrastructure**: the commit titled `Stage 6H: notification infrastructure` (the commit that adds `backend/app/tasks/notifications.py`; find it with `git log -1 -- backend/app/tasks/notifications.py`) |
+| Previous stage | Stage 6G: monitoring runtime, `d249170` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0017_monitoring.py` (head) |
-| Next stage | **6H (notifications): not started.** Do not begin it without an explicit request. |
+| Latest migration | `0018_task_notifications.py` (head) |
+| Next stage | **6I: not started.** Do not begin it without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -76,17 +76,37 @@ not commit them as part of other work, and do not describe them as done.
    second runs were in default order. The counts are real; the
    randomization claim is not verifiable. Stage 6G was the first stage
    verified with an explicit shuffle (scratch plugin, seed reported).
-4. **Host environment:** the local Python 3.9.6 interpreter has occasionally
-   segfaulted (`SIGSEGV`, `_PyTrash_begin` / sqlite close) during full suite
-   runs. macOS crash reports date from 2026-09-29 onward, before 6G. The same
-   seed passes on re-run. Treat it as environmental, not a code defect.
+4. **Host environment:** the local Python 3.9.6 interpreter occasionally
+   segfaults during full suite runs. All 12 macOS crash reports on this
+   machine share one native signature: an `aiosqlite` worker thread plus
+   SQLite closing a "zombie" connection (`_PyTrash_begin` /
+   `sqlite3LeaveMutexAndCloseZombie`). The reports start on 2026-09-28,
+   before 6F, 6G and 6H.
+   - 6G verification: 2 of 3 shuffled runs completed.
+   - 6H verification: 4 of 6 shuffled runs completed, all green. In the same
+     session, pristine `476a2d3` completed 3 of 3. That sample cannot rule
+     out that 6H's 61 extra tests change how often it happens, but 6H adds
+     no engine, thread or connection.
+   - Likely cause: SQLite connections finalized by the garbage collector
+     across threads (in test fixtures, not the application). Not
+     investigated further. Treat a segfaulted run as incomplete, never as a
+     pass.
 5. **Local Docker builds fail:** `docker build` cannot fetch
    `python:3.12-slim` metadata (`DeadlineExceeded`). Only the cached
    `mai-backend:latest` image is available on this machine.
 
 ### Deferred / not built
 
-- **6H:** notifications when a monitoring condition triggers.
+- **Notification delivery.** 6H records notifications; nothing delivers
+  them. External channels (Telegram, email, push) are adapters to be built
+  later, reading through `NotificationService`. Telegram is a separate track
+  and is not part of 6H.
+- **No read surface for task notifications.** `NotificationService` (unread,
+  for_task, get, mark_read) exists in-process only. Unlike the reminder inbox
+  (`GET /api/reminders/notifications`), no HTTP route exposes it, by
+  decision. Adding a read-only route is a separate, approved change.
+- **Two inboxes.** Reminder notifications (5F.1) and task notifications (6H)
+  are separate tables. Unifying them behind one read contract is deferred.
 - No HTTP or UI surface exists for `TaskService.schedule_background`,
   `TaskService.configure_monitoring` or standing-grant creation. These
   features are currently reachable only programmatically, by design, until a
@@ -111,6 +131,115 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 6H: Notification infrastructure (commit titled `Stage 6H: notification infrastructure`, 2026-10-01)
+
+- **Status:** completed, verified, committed. A commit cannot contain its
+  own hash. It is the commit that introduces this entry and
+  `backend/app/tasks/notifications.py`.
+- **Purpose:** monitoring outcomes become durable, owner-scoped
+  notifications. 6H is the internal notification contract and persistence
+  layer only. It does no delivery and adds no channel, UI or HTTP endpoint.
+- **Existing abstraction reviewed first:** the 5F.1 reminder inbox
+  (`reminder_notifications`: pending/read, conditional-UPDATE mark-read,
+  unique occurrence index). Its pattern is reused. Its table is not: it
+  requires a `reminder_id`, copies reminder text and has no owner column, so
+  widening it would change 5F.1's invariants.
+- **Architecture:**
+  - New `task_notifications` table (migration `0018`, additive):
+    `owner_id`, `task_id` (FK, cascade), `kind`, `check_number`,
+    `execution_id` (nullable FK, set null), `created_at`, `read_at`.
+  - New enum `task_notification_kind` (`condition_met`,
+    `monitoring_failed`), and one task event, `notification_created`.
+  - **No free-text column**: there is nothing to leak, interpret, or use
+    to name a channel or recipient.
+  - One writer, `app/tasks/notifications.record_outcome`, called from
+    exactly two places (structurally pinned): `TaskRunner._check` when a
+    condition is met, and `runtime._record_failure` when it blocks a
+    monitoring task.
+  - The writer is gated on: the kind being the enum, the task being a
+    monitoring task, and the task already being in the outcome's state
+    (COMPLETED / BLOCKED).
+  - `NotificationService(session, owner_id)` is the read contract: `unread`,
+    `for_task`, `get`, `mark_read`. Every query is owner-filtered, and
+    `mark_read` is a conditional UPDATE.
+  - No new loop, runner, authorization or execution path. The runtime
+    gained one call into the writer and nothing else.
+- **Notification semantics:**
+  - condition not met: monitoring continues, no notification;
+  - condition met: the task completes, plus one `condition_met`
+    notification referencing the proving check's execution;
+  - checks keep failing: the task is BLOCKED by the existing 6G policy,
+    plus one `monitoring_failed` notification.
+  - Waiting for approval, budget exhaustion and refused or invalid
+    configuration stop monitoring **without** a notification (see
+    limitations).
+  - Ordinary (non-monitoring) tasks never notify.
+- **Idempotency:**
+  - The notification is written **in the same transaction as the outcome**,
+    so a crash rolls back both and the retry produces both, once.
+  - The unique index `uq_task_notifications_outcome (task_id, kind,
+    check_number)` makes "one notification per outcome" a database
+    invariant. A duplicate is absorbed in a savepoint without disturbing
+    the outcome's transaction.
+  - `check_number` is part of the identity because BLOCKED is resumable: a
+    resumed task that fails again after new checks is a new outcome.
+- **Verification:**
+  - Tests: 34 behavioural (`tests/test_notifications.py`) and 24 security
+    (`tests/security/test_notifications_security.py`). One existing pin
+    changed: the task-package module list gained `notifications.py`, which
+    brings it under that suite's structural audits.
+  - New structural test: every `task_event_type` value beyond 6A's set must
+    be added to the PostgreSQL enum by some migration. SQLite cannot catch
+    a missing value.
+  - Full suite (isolated copy): ordered 5565 passed, 2 skipped (258 s).
+    Shuffled (scratch shuffle plugin, seeds reported) 5565 passed, 2
+    skipped on each of seeds 1573485647, 1452915612, 81492239 and
+    1220690816. Two further shuffled runs segfaulted (Known defect 4).
+  - Mutation: 30/31 killed. The validated harness passed (two controls
+    survived). The one survivor is a documented equivalent: an *extra*
+    notification call before the block is refused by the state gate. The
+    genuine move of the call ahead of the block is killed. The first run
+    found no test gaps; one mutation was rewritten because it added rather
+    than moved the call.
+  - SQLite migration round trip is exact (test included).
+  - Live PostgreSQL 16 (throwaway database):
+    - schema diff showed only the new type, table, indexes and one enum
+      value, and the downgrade/upgrade cycle was exact (the type is dropped
+      on downgrade);
+    - 17/17 schema and constraint checks and 27/27 behavioural checks
+      passed: 4 racing checks gave 1 notification; 6 racing writers gave
+      1 row; racing ticks gave 1; crash, retry and resume all behaved;
+      owner isolation held;
+    - with the unique index dropped, 3 sequential replays wrote 3 rows
+      (1 with it), which proves the index is the guarantee;
+    - cleanup left zero rows.
+  - Docker (the existing `mai-backend:latest` image, throwaway database):
+    migrations ran to 0018, there was one runtime, and the met monitor,
+    failing monitor and ordinary task all produced the right notifications.
+    After a container restart there were no duplicates. Graceful stop, no
+    errors, no secrets in the logs.
+  - Structural audit: 18/18.
+- **Security findings:**
+  - No defect in 6H.
+  - Concurrent writers also collide on the journal's `(task_id, sequence)`
+    index. That is timing-dependent defence in depth, not the guarantee.
+  - Pre-existing, not changed: the 5F.1 reminder inbox has no owner column
+    and its read path is unscoped. That is harmless with today's single
+    owner, but it must be addressed before a second owner or an external
+    channel reads it.
+- **Known limitations:**
+  - No delivery and no read route (see Deferred).
+  - Monitoring that stops for approval, budget or configuration reasons
+    is not notified.
+  - A resumed task that blocks again with no newly claimed check (runner
+    errors only) shares the earlier outcome's identity and is not
+    re-notified.
+  - Notifications cascade with their task, and downgrade drops them.
+  - No retention policy.
+- **Deferred:** external delivery adapters (Telegram and others, as
+  separate tracks); a person-facing read surface; one inbox across
+  reminders and tasks.
 
 ### Fix: OAuth test independent of global event-loop state (`5e1fc51`, 2026-10-01)
 

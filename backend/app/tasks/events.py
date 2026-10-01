@@ -69,6 +69,9 @@ EMITTABLE_EVENTS: FrozenSet[TaskEventType] = frozenset({
     TaskEventType.MONITORING_CHECK_STARTED,
     TaskEventType.MONITORING_TRIGGERED,
     TaskEventType.MONITORING_CHECK_FAILED,
+    # Stage 6H. Written by the one notification writer, in the same
+    # transaction as the notification it describes.
+    TaskEventType.NOTIFICATION_CREATED,
 })
 
 #: Deliberately still unwritable: `replanned`. It describes replanning, which
