@@ -59,6 +59,11 @@ services:
       # which Mai does not and may not use.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-5}
+      # Telegram is disabled unless all four adapter values are configured.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
+      TELEGRAM_ALLOWED_CHAT_ID: ${TELEGRAM_ALLOWED_CHAT_ID:-}
+      TELEGRAM_CONVERSATION_ID: ${TELEGRAM_CONVERSATION_ID:-}
       # Stage 4F-G. A "Desktop app" OAuth client. Optional: without it the
       # calendar integration reports not_configured and reads nothing.
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}

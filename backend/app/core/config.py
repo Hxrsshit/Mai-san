@@ -265,6 +265,18 @@ class Settings(BaseSettings):
     SEARCH_PROVIDER: str = "tavily"
     SEARCH_API_KEY: str = ""
 
+    # --- Telegram adapter --------------------------------------------------
+    # All four values are required before the webhook is reachable. The chat
+    # id and existing conversation UUID bind Telegram to Mai's one local user;
+    # they are adapter configuration, not a new identity system.
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_WEBHOOK_SECRET: str = ""
+    # A string so Docker's deliberately empty optional value does not make
+    # settings construction fail; the adapter parses and validates it before
+    # accepting any webhook.
+    TELEGRAM_ALLOWED_CHAT_ID: str = ""
+    TELEGRAM_CONVERSATION_ID: str = ""
+
     # --- Google Calendar OAuth (Stage 4F-G) ---
     # A "Desktop app" OAuth client from the Google Cloud console. The secret
     # is not really secret for an installed app -- Google says so -- which is
