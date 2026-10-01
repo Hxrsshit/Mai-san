@@ -25,11 +25,11 @@ before substantial work and updates it after completing work (see
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6H: notification infrastructure**: the commit titled `Stage 6H: notification infrastructure` (the commit that adds `backend/app/tasks/notifications.py`; find it with `git log -1 -- backend/app/tasks/notifications.py`) |
-| Previous stage | Stage 6G: monitoring runtime, `d249170` |
+| Latest completed stage | **Stage 6I: notification delivery boundary**: the commit titled `Stage 6I: notification delivery boundary` (the commit that adds `backend/app/delivery/`; find it with `git log -1 -- backend/app/delivery`) |
+| Previous stage | Stage 6H: notification infrastructure, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0018_task_notifications.py` (head) |
-| Next stage | **6I: not started.** Do not begin it without an explicit request. |
+| Latest migration | `0018_task_notifications.py` (head; 6I added none) |
+| Next stage | **6J: not started.** Do not begin it without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -97,10 +97,16 @@ not commit them as part of other work, and do not describe them as done.
 
 ### Deferred / not built
 
-- **Notification delivery.** 6H records notifications; nothing delivers
-  them. External channels (Telegram, email, push) are adapters to be built
-  later, reading through `NotificationService`. Telegram is a separate track
-  and is not part of 6H.
+- **Real delivery channels.** 6I built the delivery boundary
+  (`app/delivery/`), but the only adapter is the in-memory local one, and
+  nothing in production registers an adapter or triggers delivery. External
+  channels (Telegram, email, push, UI) are adapters to be built later.
+  Telegram is a separate track.
+- **Durable delivery state.** 6I is stateless. The same notification through
+  the same adapter always carries the same `delivery_key`, and adapters must
+  deduplicate on it, but nothing records that a delivery happened. A durable
+  once-per-adapter guarantee across restarts would need persisted delivery
+  records, which is an architectural expansion needing approval.
 - **No read surface for task notifications.** `NotificationService` (unread,
   for_task, get, mark_read) exists in-process only. Unlike the reminder inbox
   (`GET /api/reminders/notifications`), no HTTP route exposes it, by
@@ -131,6 +137,91 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 6I: Notification delivery boundary (commit titled `Stage 6I: notification delivery boundary`, 2026-10-01)
+
+- **Status:** completed, verified, committed. A commit cannot contain its
+  own hash. It is the commit that adds `backend/app/delivery/`.
+- **Purpose:** a clean boundary through which future channels (Telegram,
+  web UI, desktop) can consume 6H notifications without touching the task,
+  monitoring, authorization, execution or provider architecture.
+- **Architecture:**
+  - New package `app/delivery/` (deliberately outside `app/tasks`):
+    - `contract.py`:
+      - `DeliveryPayload`: frozen, strict, `extra="forbid"`, exactly six
+        fields: notification id, task id, kind, check number, created time,
+        delivery key;
+      - `DeliveryStatus` (delivered / duplicate / failed) and
+        `DeliveryOutcome` (adds refused);
+      - `DeliveryResult`, whose reason must be a code, never a message;
+      - the `NotificationAdapter` base (`name`, `async deliver(payload)`);
+      - `delivery_key(notification_id, adapter_name)`.
+    - `registry.py`: `AdapterRegistry`, the same shape as
+      `IntegrationRegistry`. Explicit registration, canonical lowercase
+      names, a closed name pattern, no duplicates, sealable, no dynamic
+      loading.
+    - `service.py`: `NotificationDeliveryService(session, owner_id,
+      registry).deliver(notification_id, adapter_name)`. One attempt, never
+      raises, writes nothing.
+    - `local.py`: `LocalRecordingAdapter`. In-memory, no network,
+      deduplicates on `delivery_key`.
+  - **Reused, not rebuilt:** reads go only through 6H's owner-scoped
+    `NotificationService.get`. The 6H table, writer, uniqueness rule and
+    read/unread semantics are unchanged. No migration, and no change to
+    `app/tasks`, `app/background`, execution, authorization, providers,
+    Telegram, the frontend or `main.py`.
+- **Semantics:**
+  - Refusals (nothing reaches an adapter): `unknown_adapter`,
+    `notification_not_found` (which also covers another owner's
+    notification), `malformed_notification` (a non-UUID id, or row data
+    failing the strict payload).
+  - Adapter outcomes pass through: delivered, duplicate, failed.
+  - Failures are contained, with fixed codes: an exception is
+    `adapter_error`, and its text is never logged or returned; a hang is
+    `adapter_timeout` (10 s bound); a wrong return type is
+    `adapter_invalid_status`.
+  - Delivery never marks a notification read, never changes task, execution
+    or notification state, never retries, and runs no loop.
+- **Idempotency:** stateless, as the stage asked. The `delivery_key` is
+  derived only from the notification id and the adapter name, so it is
+  stable across calls, restarts and processes. Adapters deduplicate on it,
+  and the local one does. There is no durable delivered-state; see
+  Deferred.
+- **Verification:**
+  - Tests: 45 behavioural (`tests/test_delivery.py`), using real
+    notifications produced through the 6G/6H path, and 22 security
+    (`tests/security/test_delivery_security.py`). No existing test changed.
+  - Full suite (isolated copy): ordered 5632 passed, 2 skipped (272 s);
+    shuffled 5632 passed, 2 skipped with seed 20261003 (274 s) and seed
+    683706454 (259 s).
+  - Mutation: 26/26 killed. The validated harness passed (two controls
+    survived) and there were no survivors. Targets: refusals, owner scoping,
+    delivery identity, payload contract, failure containment, registry, and
+    local-adapter deduplication.
+  - Docker (the existing `mai-backend:latest` image, throwaway PostgreSQL
+    database, isolated source mounted read-only), 9/9 checks:
+    - the container's own runtime produced a notification;
+    - delivered once, then duplicate with the same key;
+    - unknown adapter, missing notification and other owner all refused;
+    - the payload carried exactly six fields;
+    - no pending writes, and no row, task or read state changed.
+
+    Graceful stop, no errors, no secrets in the logs. No live-PostgreSQL
+    schema verification was needed, because there was no schema change.
+  - Structural audit: 14/14. Still one runtime, runner, authorization
+    service, execution service, dispatcher and notification writer, and
+    nothing outside `app/delivery` imports it.
+- **Security findings:** none in 6I. The tests found two of their own
+  defects, both fixed before verification: an unknown-adapter test that
+  asserted on an unregistered spy, and an over-strict `compile` check.
+- **Known limitations:**
+  - Stateless delivery cannot guarantee once-per-adapter across adapter
+    instances or restarts; adapters own deduplication.
+  - No adapter is registered in production, and nothing triggers delivery.
+  - The payload deliberately carries no human-readable text, so a channel
+    must fetch any wording through its own authorised read.
+- **Deferred:** real channel adapters; durable delivery records; a trigger
+  for delivery (who calls `deliver`, and when).
 
 ### Stage 6H: Notification infrastructure (commit titled `Stage 6H: notification infrastructure`, 2026-10-01)
 
