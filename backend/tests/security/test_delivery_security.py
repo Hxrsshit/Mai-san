@@ -278,15 +278,27 @@ def test_logs_carry_only_ids_names_outcomes_and_reasons() -> None:
 # ============================================================================
 
 
-def test_no_module_outside_the_package_imports_it() -> None:
-    offenders = []
+def test_exactly_one_channel_adapter_imports_the_delivery_contract() -> None:
+    """Stage 6J changed this pin, deliberately.
+
+    Through 6I nothing outside `app/delivery` imported it, because no channel
+    existed. A channel adapter has to implement the contract, so the Telegram
+    adapter imports it -- and the pin became an exact allow-list instead of
+    being loosened: one named importer, importing one named module. A second
+    importer, or a channel reaching the delivery service or the registry,
+    still fails here.
+    """
+    importers = {}
     for path in APP.rglob("*.py"):
         if PACKAGE in path.parents:
             continue
-        for module in imports(parse(path)):
-            if module == "app.delivery" or module.startswith("app.delivery."):
-                offenders.append(str(path.relative_to(BACKEND)))
-    assert offenders == [], offenders
+        used = {
+            module for module in imports(parse(path))
+            if module == "app.delivery" or module.startswith("app.delivery.")
+        }
+        if used:
+            importers[str(path.relative_to(BACKEND))] = used
+    assert importers == {"app/telegram/notifier.py": {"app.delivery.contract"}}, importers
 
 
 def test_no_http_route_triggers_delivery() -> None:

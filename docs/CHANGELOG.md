@@ -25,27 +25,28 @@ before substantial work and updates it after completing work (see
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6I: notification delivery boundary**: the commit titled `Stage 6I: notification delivery boundary` (the commit that adds `backend/app/delivery/`; find it with `git log -1 -- backend/app/delivery`) |
-| Previous stage | Stage 6H: notification infrastructure, `b6d35ff` |
+| Latest completed stage | **Stage 6J: Telegram notification adapter**: the commit titled `Stage 6J: Telegram notification adapter` (the commit that adds `backend/app/telegram/notifier.py`; find it with `git log -1 -- backend/app/telegram/notifier.py`) |
+| Previous stages | 6I notification delivery boundary, `3e09853`; Telegram foundation (settings and Bot API sender), `6626912` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0018_task_notifications.py` (head; 6I added none) |
-| Next stage | **6J: not started.** Do not begin it without an explicit request. |
+| Latest migration | `0018_task_notifications.py` (head; 6I and 6J added none) |
+| Next stage | **6K: not started.** Do not begin it without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
 These are in the working tree and are **not** part of any completed stage. Do
 not commit them as part of other work, and do not describe them as done.
 
-- **Telegram adapter: uncommitted and incomplete.**
-  - Files: `backend/app/telegram/`, `backend/app/api/routes/telegram.py`,
-    `backend/tests/test_telegram_adapter.py`, plus Telegram-related edits to
-    `backend/app/api/routes/__init__.py`, `backend/app/api/routes/conversations.py`,
-    `backend/app/core/config.py`, `backend/app/main.py`, `docker-compose.yml`
-    and `.env.example`.
+- **Telegram chat/webhook interface: uncommitted and incomplete.** (The
+  Telegram *settings and Bot API sender* are committed in `6626912`, and the
+  *notification adapter* in 6J. This is only the conversational webhook.)
+  - Files: `backend/app/api/routes/telegram.py`,
+    `backend/tests/test_telegram_adapter.py`, plus webhook edits to
+    `backend/app/api/routes/__init__.py`, `backend/app/api/routes/conversations.py`
+    and `backend/app/main.py`.
   - It previously hit a Python 3.9 compatibility issue, which was corrected.
   - Focused testing then exposed a defect in the conversation route (see
-    *Known defects*). That defect is unresolved, and the adapter is not
-    verified.
+    *Known defects*). That defect is unresolved, and the webhook is not
+    verified. 6J does not depend on it and does not touch it.
 - **Frontend/branding changes: uncommitted.** Edits to
   `frontend/app/{globals.css,layout.tsx,page.tsx}` and
   `frontend/components/{MessageInput,MessageList,Sidebar}.tsx`; new
@@ -97,11 +98,12 @@ not commit them as part of other work, and do not describe them as done.
 
 ### Deferred / not built
 
-- **Real delivery channels.** 6I built the delivery boundary
-  (`app/delivery/`), but the only adapter is the in-memory local one, and
-  nothing in production registers an adapter or triggers delivery. External
-  channels (Telegram, email, push, UI) are adapters to be built later.
-  Telegram is a separate track.
+- **Wiring and triggering delivery.** 6I built the delivery boundary and 6J
+  the Telegram adapter, but nothing in production constructs an adapter,
+  registers one, or calls `NotificationDeliveryService.deliver`. Who triggers
+  delivery, and when (an explicit action, or a worker, which would be a new
+  architectural component), is undecided and needs its own approved stage.
+  Other channels (email, push, UI) would be further adapters.
 - **Durable delivery state.** 6I is stateless. The same notification through
   the same adapter always carries the same `delivery_key`, and adapters must
   deduplicate on it, but nothing records that a delivery happened. A durable
@@ -137,6 +139,139 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 6J: Telegram notification adapter (commit titled `Stage 6J: Telegram notification adapter`, 2026-10-01)
+
+- **Status:** completed, verified, committed. A commit cannot contain its own
+  hash. It is the commit that adds `backend/app/telegram/notifier.py`.
+- **Purpose:** the first real notification channel. Telegram becomes one
+  adapter behind the 6I delivery boundary:
+  `6H notification -> 6I NotificationDeliveryService -> TelegramNotificationAdapter
+  -> the existing BotApiSender -> Telegram`. Telegram is only a channel.
+- **Architecture:**
+  - One new module, `app/telegram/notifier.py`. It lives with the channel, so
+    the dependency points one way: the channel depends on the 6I contract, and
+    `app/delivery` still knows nothing of Telegram.
+  - Reuses everything committed in the Telegram foundation (`6626912`) and
+    changes none of it: the two existing settings (`TELEGRAM_BOT_TOKEN`,
+    `TELEGRAM_ALLOWED_CHAT_ID`), the existing `BotApiSender`, and the
+    existing network policy (`api.telegram.org` only, POST only, redirects
+    refused, private/loopback/link-local addresses refused). No second
+    sender, client, configuration namespace, registry, writer, worker or
+    HTTP endpoint.
+  - **Destination:** only `TELEGRAM_ALLOWED_CHAT_ID`, read once at
+    construction. A 6I payload has no chat, recipient, URL or channel field
+    (it is closed), so nothing about a notification can steer where it goes.
+  - **Fail closed:** without a well-formed chat id and a plausible token the
+    adapter is unconfigured, builds no sender and sends nothing. Verified
+    with a socket guard: not one connect attempt.
+  - **Message:** built only from the payload's typed fields. A closed
+    headline per kind, the task id, the check number and a UTC time, with no
+    objective, argument, result or owner, and no `parse_mode`. It is capped
+    at Telegram's limit by deterministic truncation. 6I's payload contract
+    was not widened.
+  - **Idempotency:** the adapter refuses a delivery key not minted for it,
+    and remembers delivered keys in memory (bounded to 4096). A repeat is
+    `DUPLICATE`, racing calls send once, and a failed send is not remembered,
+    so an explicit retry can succeed. There is no automatic retry. The memory
+    is process-local: see limitations.
+  - **Errors:** whatever the sender raises becomes `FAILED`. The exception is
+    never bound, rendered or logged.
+- **One existing pin changed, deliberately:**
+  `tests/security/test_delivery_security.py` had a 6I test saying nothing
+  outside `app/delivery` may import it, which was true only because no
+  channel existed. It is now an exact allow-list: exactly
+  `app/telegram/notifier.py`, importing only `app.delivery.contract`. A
+  second importer, or a channel reaching the delivery service or registry,
+  still fails it (verified by probe).
+- **Verification:**
+  - Tests: 118 behavioural (`tests/test_telegram_notifier.py`) and 25
+    security (`tests/security/test_telegram_notifier_security.py`), 143 new.
+    They drive the **real** foundation `NetworkPolicy` and `BotApiSender`
+    against a stub transport and resolver, so "fixed host", "redirects
+    refused", "loopback and private refused" and "GET refused" are proven
+    through the real code path.
+  - Full suite (isolated copy of HEAD plus the 6J files): ordered 5775
+    passed, 2 skipped (278 s); shuffled with seed 20261005, 5775 passed,
+    2 skipped (275 s); shuffled with seed 1609842916, 5775 passed, 2 skipped
+    (313 s). The baseline was 5632 passed, 2 skipped (+143).
+  - Mutation: 42/42 killed. The validated harness passed (two controls
+    survived). Targets: the Telegram host and policy (in the foundation, in
+    the verification copy only), chat-id enforcement, token handling,
+    delivery key and idempotency, failure handling, message construction,
+    registration and lock creation. The first run killed 38 of 40; both
+    survivors were real gaps (the HTTP status guard was masked by the
+    `ok` check, and the unknown-kind headline fallback was untested) and
+    each got a test.
+  - Docker (the existing `mai-backend:latest` image, throwaway PostgreSQL
+    database, isolated source mounted read-only, **no** Telegram settings in
+    its environment), 10/10: migrations at 0018; the container's own runtime
+    produced a notification; unconfigured, delivery failed with no socket
+    attempt; configured with a *sentinel* token over a stub transport, it
+    delivered once as `POST https://api.telegram.org/bot…/sendMessage` with a
+    body of exactly `chat_id` and `text`; a repeat was `DUPLICATE`; no row,
+    task or read state changed. The server's log at `LOG_LEVEL=DEBUG` held
+    no token, URL or endpoint. Graceful stop.
+  - Structural audit: 18/18. One of each core component, one `BotApiSender`,
+    one Telegram adapter, `api.telegram.org` in code in one module, nothing
+    imports the adapter, and nothing in tasks, background, execution, tools,
+    authorization, LLM, core, migrations, compose or `.env.example` changed.
+  - **Live Telegram was NOT tested.** No Telegram credential is configured in
+    this environment (checked as booleans in the running container; values
+    never read), and none was requested or created. Everything above uses
+    sentinel credentials and a stub network. What is therefore unproven
+    against the real API: that Telegram accepts the foundation's
+    percent-encoded token path (the sender encodes `:` as `%3A`; standard
+    servers decode it, but it was not observed), and real chat delivery.
+    A failure there would surface safely as a `FAILED` delivery.
+- **Findings:**
+  - **Defect found by shuffling, in 6J's own code (fixed):** the adapter made
+    its `asyncio.Lock` in `__init__`. On Python 3.9 that binds to the current
+    event loop, so building the adapter from synchronous code raised
+    `RuntimeError: There is no current event loop` after any earlier
+    `asyncio.run()`. It appeared only under some test orders. The lock is now
+    created on first use, and a regression test reproduces the 3.9 state
+    (and fails on the old code).
+  - **Token in URL:** unlike every earlier integration, Telegram's secret is
+    in the request URL, and `httpx` itself logs that URL at INFO. Production
+    is protected only because `configure_logging` pins the `httpx` and
+    `httpcore` loggers to WARNING. The redactor has **no** pattern for a
+    Telegram token, and the sender's percent-encoded form (`%3A`) would
+    evade a naive one. 6J did not change shared logging. Instead it adds a
+    test under the real `configure_logging` at DEBUG (JSON and console) and a
+    control proving the pin is what protects the token. See follow-ups.
+  - An earlier draft's leak assertions looked for the raw token and missed
+    the encoded form that is actually logged. They now check the part that
+    survives encoding.
+- **Known limitations:**
+  - Not restart-safe. After a restart the adapter forgets what it delivered
+    and could send a notification again if something delivers it again. A
+    durable guarantee needs persisted delivery records, which needs approval.
+  - Nothing in production constructs the adapter, registers it, or triggers
+    delivery (see Deferred).
+  - The adapter is bound to one event loop once used, which matches Mai's
+    single loop but would matter if it were shared across loops.
+  - The message is deliberately terse: a task id, not a description.
+- **Follow-ups (not done, separate decisions):**
+  - Add a Telegram bot-token pattern (raw and percent-encoded) to
+    `app/core/logging.py`'s redactor, as defence in depth behind the logger
+    pin.
+  - Observe one real delivery to confirm the `%3A` path, once a credential is
+    configured by the owner.
+  - Decide how delivery is triggered, and whether it needs persisted state.
+
+### Telegram foundation: settings and Bot API sender (`6626912`, 2026-10-01)
+
+- **Status:** committed by the owner as a separate commit before 6J; recorded
+  here because 6J builds on it.
+- Adds `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_ID` (and the webhook-only
+  `TELEGRAM_WEBHOOK_SECRET`, `TELEGRAM_CONVERSATION_ID`) to settings, compose
+  and `.env.example`, and `app/telegram/client.py`: `BotApiSender`, which
+  POSTs through Mai's `SecureHttpClient` under a policy for `api.telegram.org`
+  only (POST only, redirects refused).
+- Verified when committed: HEAD plus these files in an isolated copy, 5632
+  passed, 2 skipped. It had no dedicated tests of its own until 6J's, which
+  exercise it through the real network policy.
 
 ### Stage 6I: Notification delivery boundary (commit titled `Stage 6I: notification delivery boundary`, 2026-10-01)
 
