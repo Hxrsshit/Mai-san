@@ -135,6 +135,16 @@ class TaskRunner:
         if refusal is not None:
             return refusal
 
+        if task.monitor is not None:
+            # Stage 6G. A monitoring task's one step is the template for a
+            # repeated check, not a step to run once -- running it here would
+            # perform the check and complete the task without ever asking
+            # whether the condition held.
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                state=task.state, reason="monitoring_task_use_check",
+            )
+
         ready = await self._tasks.runnable_steps(task_id)
         if not ready:
             return await self._nothing_ready(task)
@@ -167,6 +177,272 @@ class TaskRunner:
             )
 
         return await self._run_claimed_step(task, step, binding)
+
+    # --- Stage 6G: one monitoring check -----------------------------------------
+
+    async def check(self, task_id: uuid.UUID) -> RunnerResult:
+        """Perform one monitoring check. Safe to call repeatedly. Never raises.
+
+        Every gate `advance` uses, in the same order: owner-filtered load,
+        terminal / authorisation / expiry / state / budget refusal,
+        capability re-binding, the one authorization service, the one
+        execution constructor, and the same approval rule. What differs is
+        what happens to the result: it is evaluated against the task's
+        condition rather than marked done.
+        """
+        try:
+            return await self._check(task_id)
+        except Exception as exc:  # noqa: BLE001 - see `advance`
+            logger.error(
+                "Monitoring check failed",
+                extra={"task_id": str(task_id), "error": type(exc).__name__},
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task_id,
+                reason="runner_error",
+            )
+
+    async def _check(self, task_id: uuid.UUID) -> RunnerResult:
+        from app.tasks.monitoring import (
+            MONITORABLE_CAPABILITIES,
+            CheckResult,
+            SpecRefused,
+            evaluate,
+            parse_spec,
+        )
+
+        task = await self._tasks.get_detail(task_id)
+        if task is None:
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task_id,
+                reason="task_not_found",
+            )
+        refusal = await self._refuse_task(task)
+        if refusal is not None:
+            return refusal
+        if task.monitor is None:
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                state=task.state, reason="not_a_monitoring_task",
+            )
+
+        # The stored spec, re-validated. It was validated on the way in; a
+        # row edited since is refused rather than trusted.
+        try:
+            spec = parse_spec(task.monitor)
+        except SpecRefused as refused:
+            await self._record(
+                task, TaskEventType.RUNNER_REFUSED,
+                {"reason": "invalid_monitoring_config", "detail": refused.reason},
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                state=task.state, reason="invalid_monitoring_config",
+            )
+
+        if len(task.steps) != 1:
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                state=task.state, reason="invalid_monitoring_config",
+            )
+        step = task.steps[0]
+
+        binding = bind_step(step.step_key, step.capability, step.arguments)
+        if not binding.bindable:
+            await self._record(
+                task, TaskEventType.RUNNER_REFUSED,
+                {"step": step.step_key, "reason": binding.reason},
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                step_key=step.step_key, reason=binding.reason,
+            )
+        if binding.capability not in MONITORABLE_CAPABILITIES:
+            # Checked again here, not only at configuration: a step's bound
+            # capability is a column, and a repeated side effect must be
+            # impossible however the row came to name one.
+            await self._record(
+                task, TaskEventType.RUNNER_REFUSED,
+                {"step": step.step_key, "reason": "capability_not_monitorable"},
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                step_key=step.step_key, reason="capability_not_monitorable",
+            )
+
+        sequence = int(task.check_count or 0) + 1
+        if not await self._claim_check(task, sequence):
+            return RunnerResult(
+                outcome=RunnerOutcome.BLOCKED, task_id=task.id,
+                state=task.state, reason="check_already_claimed",
+            )
+        await self._record(
+            task, TaskEventType.MONITORING_CHECK_STARTED, {"check": sequence},
+        )
+
+        try:
+            execution = await self._executions.create(
+                ExecutionRequest(
+                    tool_name=binding.capability,
+                    arguments=dict(step.arguments or {}),
+                    # One identity per check: the check at 09:00 and the
+                    # check at 10:00 are different actions.
+                    idempotency_key=f"task:{task.id}:check:{sequence}"[:128],
+                ),
+                conversation_id=task.conversation_id,
+            )
+        except ExecutionError as refusal:
+            return await self._check_failed(task, sequence, refusal.reason, None)
+
+        await self._record(
+            task, TaskEventType.EXECUTION_CREATED,
+            {"check": sequence, "execution_id": str(execution.id)},
+        )
+
+        already_approved = execution.state is ExecutionState.APPROVED
+        decision = await self._authorization.authorize_with_grants(
+            ActionProposal(
+                tool_name=binding.capability,
+                arguments=dict(step.arguments or {}),
+                source=ActionSource.MODEL,
+            ),
+            grants=self._grants,
+        )
+        if decision.standing_grant_id is not None:
+            await self._record(
+                task, TaskEventType.STANDING_GRANT_USED,
+                {
+                    "check": sequence,
+                    "capability": decision.tool_name,
+                    "grant_id": str(decision.standing_grant_id),
+                },
+            )
+        if not (already_approved or not decision.requires_approval):
+            # A person decides this one and none has. The check number goes
+            # back, so the next attempt reuses this execution identity and
+            # finds the approval once someone gives it -- the same reason
+            # `advance` releases a step.
+            await self._release_check(task, sequence)
+            await self._record(
+                task, TaskEventType.RUNNER_BLOCKED,
+                {"check": sequence, "reason": "awaiting_human_approval"},
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.BLOCKED, task_id=task.id,
+                execution_id=execution.id, state=task.state,
+                reason="awaiting_human_approval",
+            )
+
+        # A check is a tool call. `max_steps` is not spent: it is one step,
+        # repeated, and counting it per check would end monitoring early for
+        # no reason the budget describes.
+        await self._spend(task, "max_tool_calls")
+
+        try:
+            if not already_approved:
+                await self._executions.approve(execution.id)
+            _, outcome = await self._executions.run_returning_outcome(execution.id)
+        except ExecutionError as refusal:
+            return await self._check_failed(task, sequence, refusal.reason, execution.id)
+
+        data = getattr(outcome, "data", None) if outcome is not None else None
+        evaluation = evaluate(spec.condition, data)
+        await self._record(
+            task, TaskEventType.OBSERVATION_RECORDED,
+            {
+                "check": sequence,
+                "result": evaluation.result.value,
+                "kind": spec.condition.kind.value,
+                "operator": spec.condition.operator.value,
+                # A number, or a length. Never observed text: it came from
+                # outside Mai and belongs in neither the journal nor a log.
+                "observed": evaluation.observed_number,
+                "observed_chars": evaluation.observed_chars,
+                "execution_id": str(execution.id),
+            },
+        )
+
+        if evaluation.result is CheckResult.UNABLE:
+            return await self._check_failed(
+                task, sequence, evaluation.reason or "unable_to_evaluate", execution.id
+            )
+
+        if evaluation.result is CheckResult.NOT_SATISFIED:
+            return RunnerResult(
+                outcome=RunnerOutcome.CONDITION_NOT_MET, task_id=task.id,
+                execution_id=execution.id, state=task.state,
+            )
+
+        # Satisfied. The step completes through its legal edges -- pending
+        # to running to completed -- carrying the check that proved it, and
+        # the task completes through the one path that may complete a task.
+        now = datetime.now(timezone.utc)
+        step.state = TaskStepState.RUNNING
+        step.started_at = now
+        await self._session.flush()
+        step.state = TaskStepState.COMPLETED
+        step.completed_at = now
+        step.execution_id = execution.id
+        step.updated_at = now
+        await self._session.flush()
+        await self._record(
+            task, TaskEventType.MONITORING_TRIGGERED,
+            {"check": sequence, "execution_id": str(execution.id)},
+        )
+
+        refreshed = await self._tasks.get_detail(task.id)
+        completed = await self._complete(refreshed)
+        return RunnerResult(
+            outcome=(
+                RunnerOutcome.CONDITION_MET
+                if completed.outcome is RunnerOutcome.TASK_COMPLETED
+                else completed.outcome
+            ),
+            task_id=task.id, step_key=step.step_key, execution_id=execution.id,
+            state=completed.state, reason=completed.reason,
+        )
+
+    async def _claim_check(self, task, sequence: int) -> bool:
+        """Claim check number `sequence`. Exactly one caller wins.
+
+        Conditional on the previous number, so two callers that both read
+        `check_count == n` both try to write `n + 1` and one matches nothing.
+        """
+        from app.tasks.models import Task
+
+        result = await self._session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.owner_id == self._tasks.owner_id,
+                Task.check_count == sequence - 1,
+            )
+            .values(check_count=sequence, updated_at=datetime.now(timezone.utc))
+            .execution_options(synchronize_session="fetch")
+        )
+        return result.rowcount == 1
+
+    async def _release_check(self, task, sequence: int) -> None:
+        """Hand a claimed check number back. Conditional, like the claim."""
+        from app.tasks.models import Task
+
+        await self._session.execute(
+            update(Task)
+            .where(Task.id == task.id, Task.check_count == sequence)
+            .values(check_count=sequence - 1)
+            .execution_options(synchronize_session="fetch")
+        )
+
+    async def _check_failed(self, task, sequence, reason, execution_id) -> RunnerResult:
+        """A check that told us nothing. Recorded as a failure, never as false."""
+        await self._record(
+            task, TaskEventType.MONITORING_CHECK_FAILED,
+            {"check": sequence, "reason": reason},
+        )
+        return RunnerResult(
+            outcome=RunnerOutcome.CHECK_FAILED, task_id=task.id,
+            execution_id=execution_id, state=task.state, reason=reason,
+        )
 
     # --- Gates ---------------------------------------------------------------
 

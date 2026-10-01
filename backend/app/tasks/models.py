@@ -117,6 +117,15 @@ class TaskEventType(str, enum.Enum):
     BACKGROUND_CLAIMED = "background_claimed"
     #: Stage 6F. The runtime stopped polling the task, and why.
     BACKGROUND_UNSCHEDULED = "background_unscheduled"
+    #: Stage 6G. A person configured what the task monitors.
+    MONITORING_CONFIGURED = "monitoring_configured"
+    #: Stage 6G. One check was claimed and began.
+    MONITORING_CHECK_STARTED = "monitoring_check_started"
+    #: Stage 6G. The condition held; monitoring stops.
+    MONITORING_TRIGGERED = "monitoring_triggered"
+    #: Stage 6G. A check could not be performed or could not be evaluated.
+    #: Never recorded as "not satisfied".
+    MONITORING_CHECK_FAILED = "monitoring_check_failed"
     RUNNER_BLOCKED = "runner_blocked"
     RUNNER_REFUSED = "runner_refused"
     APPROVAL_REQUESTED = "approval_requested"
@@ -267,6 +276,25 @@ class Task(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    #: Stage 6G. What a monitoring task checks for, and how often -- a
+    #: validated `app.tasks.monitoring.MonitorSpec`, stored as inert data.
+    #:
+    #: NULL for every ordinary task; non-NULL is what makes a task a
+    #: monitoring task. Written once, by `TaskService.configure_monitoring`,
+    #: before the plan is authorised -- so the person who approves the plan
+    #: approves the condition and interval with it, and nothing a check
+    #: observes can change either afterwards.
+    monitor: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONColumn, nullable=True
+    )
+    #: Stage 6G. How many checks have been claimed. Each check claims the
+    #: next number with a conditional UPDATE, so two callers racing for the
+    #: same check produce exactly one winner -- the reminder-occurrence
+    #: pattern, and the source of each check's execution identity.
+    check_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     #: Stage 6C. When the plan was authorised for execution, and by whom.
     #:
     #: NULL until an application-side decision says so, which is the
@@ -319,6 +347,7 @@ class Task(Base):
             name="completed_requires_timestamp",
         ),
         CheckConstraint("failure_count >= 0", name="failure_count_non_negative"),
+        CheckConstraint("check_count >= 0", name="check_count_non_negative"),
         # Every activity question is a query over (owner, state).
         Index("ix_tasks_owner_id_state", "owner_id", "state"),
         # Stage 6F. The runtime's discovery query is "due, and in a state

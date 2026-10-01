@@ -435,8 +435,9 @@ async def test_the_runner_never_reports_a_completion_it_did_not_observe(
 
 def test_the_runner_outcome_vocabulary_is_closed() -> None:
     assert sorted(o.value for o in RunnerOutcome) == [
-        "blocked", "budget_exceeded", "refused", "step_completed",
-        "step_failed", "task_completed",
+        "blocked", "budget_exceeded", "check_failed", "condition_met",
+        "condition_not_met", "refused", "step_completed", "step_failed",
+        "task_completed",
     ]
 
 

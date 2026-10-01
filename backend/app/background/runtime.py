@@ -36,8 +36,8 @@ Generalised, because it is correct for any durable work:
 
 ### What the runtime may do
 
-It discovers due tasks, claims one, and calls `TaskRunner.advance`. That is
-all. It resolves no capability, asks no authorization question, reads no
+It discovers due tasks, claims one, and calls `TaskRunner.advance` -- or,
+for a monitoring task (Stage 6G), `TaskRunner.check`. That is all. It resolves no capability, asks no authorization question, reads no
 standing grant, constructs no execution request, and calls neither the
 dispatcher nor the execution service -- structural tests assert each. The
 dependency direction is `runtime -> TaskRunner -> everything else`, never
@@ -65,6 +65,17 @@ G  grant expired/revoked    the authorization service says approval is
                             required, which is F.
 H  after a failed step      the step is `failed`, `next_run_at` NULL. Failed
                             steps are never retried automatically.
+
+### Monitoring (Stage 6G)
+
+A monitoring task is the same row, claimed the same way. Only the
+scheduling consequence differs: a check whose condition did not hold makes
+the task due again one persisted interval later; a check that held completes
+the task and stops polling; a check that could not be evaluated counts as a
+failure through the same bounded `_record_failure`, never as "not yet".
+Crash windows are the ones above, with one addition: the check number is
+claimed in the work transaction, so a crash rolls it back with everything
+else and the retried check reuses the same execution identity.
 """
 
 import asyncio
@@ -78,6 +89,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.tasks import events as journal
 from app.tasks.models import MAX_CONSECUTIVE_FAILURES, Task, TaskEventType
+from app.tasks.monitoring import interval_of
 from app.tasks.runner import TaskRunner
 from app.tasks.schemas import RunnerOutcome
 from app.tasks.service import TaskService
@@ -205,6 +217,19 @@ async def claim_task(
 #: retried until someone decides otherwise.
 _CONTINUE = frozenset({RunnerOutcome.STEP_COMPLETED})
 
+#: Stage 6G. A check ran and the condition did not hold: due again after the
+#: task's own persisted interval.
+_CHECK_AGAIN = frozenset({RunnerOutcome.CONDITION_NOT_MET})
+
+#: Outcomes that did work, for the tick's count.
+_ADVANCED = frozenset({
+    RunnerOutcome.STEP_COMPLETED, RunnerOutcome.TASK_COMPLETED,
+    RunnerOutcome.CONDITION_MET, RunnerOutcome.CONDITION_NOT_MET,
+})
+
+#: Another worker holds the work. Contention, not failure.
+_CONTENDED = frozenset({"step_already_claimed", "check_already_claimed"})
+
 #: Blocked for a reason waiting will not fix: a person must act.
 _WAIT_FOR_PERSON = frozenset({
     "awaiting_human_approval", "task_not_queued", "no_runnable_step",
@@ -233,13 +258,29 @@ async def advance_claimed_task(
             # place in the codebase.
             await runner.mark_task_running(task_id)
 
-        result = await runner.advance(task_id)
+        monitoring = task is not None and task.monitor is not None
+        if monitoring:
+            result = await runner.check(task_id)
+        else:
+            result = await runner.advance(task_id)
 
         if result.outcome is RunnerOutcome.REFUSED and result.reason == "runner_error":
             # The runner caught something unexpected. Its session may be
             # unusable, and nothing it did should be kept.
             await session.rollback()
             await _record_failure(session_factory, settings, task_id, owner_id, now)
+            return result.outcome
+
+        if result.outcome is RunnerOutcome.CHECK_FAILED:
+            # The check ran and told us nothing. What it did -- the execution,
+            # the observation, the failure event, the spent check number -- is
+            # kept; then the failure is counted like any other, bounded, and
+            # never retried sooner than the monitor's own interval.
+            await session.commit()
+            await _record_failure(
+                session_factory, settings, task_id, owner_id, now,
+                min_delay_seconds=interval_of(task.monitor) or 0,
+            )
             return result.outcome
 
         await _reschedule(session, task_id, result, now)
@@ -262,10 +303,16 @@ async def _reschedule(session, task_id: uuid.UUID, result, now: datetime) -> Non
         await session.flush()
         return
 
-    if (
-        result.outcome is RunnerOutcome.BLOCKED
-        and result.reason == "step_already_claimed"
-    ):
+    if result.outcome in _CHECK_AGAIN:
+        interval = interval_of(task.monitor)
+        if interval is not None:
+            task.next_run_at = now + timedelta(seconds=interval)
+            task.failure_count = 0
+            await session.flush()
+            return
+        # No interval to wait: fall through and stop, rather than guess one.
+
+    if result.outcome is RunnerOutcome.BLOCKED and result.reason in _CONTENDED:
         # Another worker holds the step. Contention, not failure.
         task.next_run_at = now + timedelta(seconds=CONTENTION_BACKOFF_SECONDS)
         await session.flush()
@@ -286,7 +333,8 @@ async def _reschedule(session, task_id: uuid.UUID, result, now: datetime) -> Non
 
 
 async def _record_failure(
-    session_factory, settings, task_id, owner_id, now: datetime
+    session_factory, settings, task_id, owner_id, now: datetime,
+    min_delay_seconds: int = 0,
 ) -> None:
     """Count an unexpected runner error, and give up after enough of them.
 
@@ -319,7 +367,10 @@ async def _record_failure(
                           "failure_count": task.failure_count},
             )
         else:
-            delay = FAILURE_BACKOFF_SECONDS * (2 ** (task.failure_count - 1))
+            delay = max(
+                FAILURE_BACKOFF_SECONDS * (2 ** (task.failure_count - 1)),
+                min_delay_seconds,
+            )
             task.next_run_at = now + timedelta(seconds=delay)
             await session.flush()
         await session.commit()
@@ -352,7 +403,7 @@ async def run_due_tasks(
             outcome = await advance_claimed_task(
                 session_factory, settings, task_id, owner_id, moment
             )
-            if outcome in {RunnerOutcome.STEP_COMPLETED, RunnerOutcome.TASK_COMPLETED}:
+            if outcome in _ADVANCED:
                 advanced += 1
         except Exception as exc:  # noqa: BLE001 - one task must not stop the rest
             logger.error(

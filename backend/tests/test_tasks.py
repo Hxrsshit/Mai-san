@@ -525,7 +525,9 @@ def test_the_reachable_set_is_exactly_this() -> None:
 #: stage has built -- so a journal entry for either would record something
 #: that did not happen.
 @pytest.mark.parametrize("event_type", [
-    TaskEventType.OBSERVATION_RECORDED, TaskEventType.REPLANNED,
+    # `observation_recorded` became writable in Stage 6G, when the runner
+    # began recording what a monitoring check observed.
+    TaskEventType.REPLANNED,
 ])
 async def test_an_execution_event_cannot_be_recorded(
     event_type, service, db_session

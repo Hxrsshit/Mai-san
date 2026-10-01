@@ -773,6 +773,107 @@ class TaskService:
             outcome=TaskOutcome.UPDATED, task_id=task.id, state=task.state
         )
 
+    # --- Stage 6G: monitoring -------------------------------------------------
+
+    async def configure_monitoring(self, task_id: uuid.UUID, spec) -> TaskResult:
+        """Make a planned task a monitoring task. Once, and before approval.
+
+        The one writer of `tasks.monitor`. User-originated: it takes no
+        `source`, and no content-handling module can reach it.
+
+        Refused unless the task has a plan of exactly one step, that step
+        names a capability in `MONITORABLE_CAPABILITIES`, the plan is not yet
+        authorised, and no monitoring spec is already set. Each rule exists
+        for a reason:
+
+        * One step, because a monitoring check repeats one read. A plan of
+          several steps would repeat a sequence, which is a workflow.
+        * A monitorable capability, because a repeated side effect is not
+          monitoring.
+        * Before authorisation, so the person who approves the plan approves
+          the condition and the interval with it. After that the spec is
+          fixed: nothing a check observes, and no later call, can widen it.
+        """
+        from app.tasks.monitoring import (
+            MONITORABLE_CAPABILITIES,
+            SpecRefused,
+            parse_spec,
+        )
+        from app.tools.registry import get_registry
+
+        task = await self.get_detail(task_id)
+        if task is None:
+            return TaskResult(outcome=TaskOutcome.NOT_FOUND, reason="task_not_found")
+        if is_terminal(task.state):
+            return TaskResult(
+                outcome=TaskOutcome.TERMINAL, task_id=task.id, state=task.state,
+                reason="task_is_terminal",
+            )
+        if task.monitor is not None:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="monitoring_already_configured",
+            )
+        if task.authorized_at is not None or task.state is not TaskState.PLANNED:
+            return TaskResult(
+                outcome=TaskOutcome.INVALID_TRANSITION, task_id=task.id,
+                state=task.state, reason="monitoring_must_precede_authorization",
+            )
+
+        proposed = [
+            entry for entry in ((task.plan or {}).get("tasks") or [])
+            if isinstance(entry, dict)
+        ]
+        if len(proposed) != 1 or len(task.steps) != 1:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="monitoring_needs_exactly_one_step",
+            )
+        capability = get_registry().canonical(str(proposed[0].get("capability") or ""))
+        if capability not in MONITORABLE_CAPABILITIES:
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason="capability_not_monitorable",
+            )
+
+        try:
+            validated = parse_spec(spec)
+        except SpecRefused as refusal:
+            logger.info(
+                "Monitoring spec refused",
+                extra={"task_id": str(task.id), "reason": refusal.reason},
+            )
+            return TaskResult(
+                outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                reason=refusal.reason,
+            )
+
+        try:
+            async with self._session.begin_nested():
+                task.monitor = validated.model_dump(mode="json")
+                task.updated_at = datetime.now(timezone.utc)
+                await self._session.flush()
+                await journal.record(
+                    self._session, task.id, TaskEventType.MONITORING_CONFIGURED,
+                    actor="user",
+                    # The shape of the condition, never its expected value:
+                    # that is the user's own text and may be anything.
+                    metadata={
+                        "kind": validated.condition.kind.value,
+                        "operator": validated.condition.operator.value,
+                        "interval_seconds": validated.interval_seconds,
+                    },
+                )
+        except _DB_ERRORS as exc:
+            logger.error(
+                "Failed to configure monitoring",
+                extra={"task_id": str(task_id), "error": str(exc)},
+            )
+            return TaskResult(outcome=TaskOutcome.FAILED, reason="persistence_failed")
+
+        logger.info("Monitoring configured", extra={"task_id": str(task.id)})
+        return TaskResult(outcome=TaskOutcome.UPDATED, task_id=task.id, state=task.state)
+
     # --- Stage 6F: asking for unattended execution ---------------------------
 
     #: The states a task may be scheduled from. The plan must already be

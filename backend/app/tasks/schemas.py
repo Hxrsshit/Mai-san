@@ -92,6 +92,15 @@ class RunnerOutcome(str, enum.Enum):
     REFUSED = "refused"
     #: A bound was reached.
     BUDGET_EXCEEDED = "budget_exceeded"
+    #: Stage 6G. A monitoring check found its condition held. The task is
+    #: complete and monitoring stops.
+    CONDITION_MET = "condition_met"
+    #: Stage 6G. A monitoring check ran and the condition did not hold. Check
+    #: again after the interval.
+    CONDITION_NOT_MET = "condition_not_met"
+    #: Stage 6G. A monitoring check could not be performed, or ran but could
+    #: not be evaluated. Never reported as "not met": nothing was learned.
+    CHECK_FAILED = "check_failed"
 
 
 class RunnerResult(BaseModel):
@@ -112,7 +121,8 @@ class RunnerResult(BaseModel):
     def advanced(self) -> bool:
         """Whether this invocation moved the task forward."""
         return self.outcome in {
-            RunnerOutcome.STEP_COMPLETED, RunnerOutcome.TASK_COMPLETED
+            RunnerOutcome.STEP_COMPLETED, RunnerOutcome.TASK_COMPLETED,
+            RunnerOutcome.CONDITION_MET, RunnerOutcome.CONDITION_NOT_MET,
         }
 
 

@@ -61,10 +61,19 @@ EMITTABLE_EVENTS: FrozenSet[TaskEventType] = frozenset({
     TaskEventType.BACKGROUND_SCHEDULED,
     TaskEventType.BACKGROUND_CLAIMED,
     TaskEventType.BACKGROUND_UNSCHEDULED,
+    # Stage 6G. `observation_recorded` has been declared since 6A and refused
+    # until something genuinely observed. A monitoring check does: it is the
+    # persisted record of what each check found.
+    TaskEventType.OBSERVATION_RECORDED,
+    TaskEventType.MONITORING_CONFIGURED,
+    TaskEventType.MONITORING_CHECK_STARTED,
+    TaskEventType.MONITORING_TRIGGERED,
+    TaskEventType.MONITORING_CHECK_FAILED,
 })
 
-#: Deliberately still unwritable: `replanned` and `observation_recorded`.
-#: Both describe observe-and-replan, which Stage 6D does not do.
+#: Deliberately still unwritable: `replanned`. It describes replanning, which
+#: no stage has built. (`observation_recorded` was here until Stage 6G gave
+#: it something true to record.)
 #:
 #: Deliberately *absent from the vocabulary entirely*: `runner_started`,
 #: `step_selected` and `authorization_checked`. Each would be written on
