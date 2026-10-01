@@ -21,15 +21,15 @@ before substantial work and updates it after completing work (see
 
 ---
 
-## Current state (as of 2026-10-01)
+## Current state (as of 2026-10-02)
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6J: Telegram notification adapter**: the commit titled `Stage 6J: Telegram notification adapter` (the commit that adds `backend/app/telegram/notifier.py`; find it with `git log -1 -- backend/app/telegram/notifier.py`) |
-| Previous stages | 6I notification delivery boundary, `3e09853`; Telegram foundation (settings and Bot API sender), `6626912` |
+| Latest completed stage | **Stage 6J: Telegram notification adapter**, commit `e6effdb` |
+| Previous stages | Telegram foundation (settings and Bot API sender), `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
 | Latest migration | `0018_task_notifications.py` (head; 6I and 6J added none) |
-| Next stage | **6K: not started.** Do not begin it without an explicit request. |
+| Next stage | **None started.** A "6K delivery orchestration" was proposed and deliberately **not built**: 6I already provides it (see *Decision: Stage 6K* under Deferred). The real next decisions are composition and an invocation surface. Do not begin either without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -98,6 +98,39 @@ not commit them as part of other work, and do not describe them as done.
 
 ### Deferred / not built
 
+- **Decision: Stage 6K (delivery orchestration) was not built (2026-10-02).**
+  - It was specified as a thin layer that takes a notification id, an owner and
+    an adapter name, reads the notification through 6H's owner-scoped
+    `NotificationService`, calls 6I's `NotificationDeliveryService`, and
+    returns its result, with no read-marking, retry, scheduling or channel
+    selection.
+  - **6I already is that operation.** `NotificationDeliveryService(session,
+    owner_id, registry).deliver(notification_id, adapter_name)` takes an
+    explicit adapter name; reads through `NotificationService.get` (so another
+    owner's notification is indistinguishable from a missing one); refuses
+    unknown adapters, missing notifications and malformed data; returns the 6I
+    `DeliveryResult`; and never marks a notification read, changes task state,
+    creates a notification, retries, schedules or runs a worker. A class in
+    front of it would only forward to it, and doing the owner-scoped lookup
+    first would duplicate the owner check and read the notification twice.
+    The stage's own rule applied: use 6I rather than widen or replace it.
+  - The owner chose to record this and add no code.
+  - **What is actually missing is not orchestration:**
+    1. **Composition.** Nothing in production builds a registry or constructs
+       the Telegram adapter. It must be one process-lifetime instance, because
+       the adapter's duplicate memory is per instance: building a new adapter
+       per call would silently defeat duplicate protection. Writing that wiring
+       imports `app.telegram.notifier`, so it crosses the "orchestration must
+       not import Telegram" rule and requires deliberately changing three
+       existing pins (6I's "no production code registers an adapter" and
+       "exactly one channel adapter imports the delivery contract", and 6J's
+       "nothing in production constructs the adapter").
+    2. **An invocation surface.** Nothing can ask for a delivery: there is no
+       route, command or caller. Adding one is an API and security decision.
+  - The smallest sensible future stage is a composition root (one sealed,
+    process-lifetime registry with the Telegram adapter built from settings
+    when configured), with no endpoint and no worker. It needs explicit
+    approval.
 - **Wiring and triggering delivery.** 6I built the delivery boundary and 6J
   the Telegram adapter, but nothing in production constructs an adapter,
   registers one, or calls `NotificationDeliveryService.deliver`. Who triggers
@@ -140,10 +173,10 @@ not commit them as part of other work, and do not describe them as done.
 
 ## Completed (newest first)
 
-### Stage 6J: Telegram notification adapter (commit titled `Stage 6J: Telegram notification adapter`, 2026-10-01)
+### Stage 6J: Telegram notification adapter (`e6effdb`, 2026-10-01)
 
-- **Status:** completed, verified, committed. A commit cannot contain its own
-  hash. It is the commit that adds `backend/app/telegram/notifier.py`.
+- **Status:** completed, verified, committed as `e6effdb` (it adds
+  `backend/app/telegram/notifier.py`).
 - **Purpose:** the first real notification channel. Telegram becomes one
   adapter behind the 6I delivery boundary:
   `6H notification -> 6I NotificationDeliveryService -> TelegramNotificationAdapter
@@ -273,10 +306,10 @@ not commit them as part of other work, and do not describe them as done.
   passed, 2 skipped. It had no dedicated tests of its own until 6J's, which
   exercise it through the real network policy.
 
-### Stage 6I: Notification delivery boundary (commit titled `Stage 6I: notification delivery boundary`, 2026-10-01)
+### Stage 6I: Notification delivery boundary (`3e09853`, 2026-10-01)
 
-- **Status:** completed, verified, committed. A commit cannot contain its
-  own hash. It is the commit that adds `backend/app/delivery/`.
+- **Status:** completed, verified, committed as `3e09853` (it adds
+  `backend/app/delivery/`).
 - **Purpose:** a clean boundary through which future channels (Telegram,
   web UI, desktop) can consume 6H notifications without touching the task,
   monitoring, authorization, execution or provider architecture.
@@ -358,11 +391,10 @@ not commit them as part of other work, and do not describe them as done.
 - **Deferred:** real channel adapters; durable delivery records; a trigger
   for delivery (who calls `deliver`, and when).
 
-### Stage 6H: Notification infrastructure (commit titled `Stage 6H: notification infrastructure`, 2026-10-01)
+### Stage 6H: Notification infrastructure (`b6d35ff`, 2026-10-01)
 
-- **Status:** completed, verified, committed. A commit cannot contain its
-  own hash. It is the commit that introduces this entry and
-  `backend/app/tasks/notifications.py`.
+- **Status:** completed, verified, committed as `b6d35ff` (it introduces
+  this entry and `backend/app/tasks/notifications.py`).
 - **Purpose:** monitoring outcomes become durable, owner-scoped
   notifications. 6H is the internal notification contract and persistence
   layer only. It does no delivery and adds no channel, UI or HTTP endpoint.
