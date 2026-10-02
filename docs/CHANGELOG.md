@@ -26,6 +26,7 @@ before substantial work and updates it after completing work (see
 | | |
 | --- | --- |
 | Latest completed stage | **Stage 6M.1: durable notification delivery records**: the commit titled `Stage 6M.1: durable notification delivery records` (the commit that adds `backend/app/delivery/records.py`; find it with `git log -1 -- backend/app/delivery/records.py`) |
+| Since 6M.1 | Fix (not a stage): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved) |
 | Previous stages | 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
 | Latest migration | `0019_notification_deliveries.py` (head, 6M.1). The real `mai` database observed at `0016`; it was not migrated by any verification. |
@@ -123,13 +124,15 @@ not commit them as part of other work, and do not describe them as done.
 5. **Local Docker builds fail:** `docker build` cannot fetch
    `python:3.12-slim` metadata (`DeadlineExceeded`). Only the cached
    `mai-backend:latest` image is available on this machine.
-6. **`app/database/metadata.py` does not register the workflows models**
-   (found in 6M.1, not fixed). `executions.workflow_id` references
-   `workflows`, so a standalone process that imports the metadata registry
-   but not `app.main` fails to flush executions (`NoReferencedTableError`).
-   The server is unaffected: `app.main` imports the workflows models through
-   its routes. Live scripts must import `app.main` first. Fixing it is a
-   one-line change to the registry, offered as a separate task.
+6. ~~**`app/database/metadata.py` does not register the workflows
+   models.**~~ **Resolved in `107d879`.** Found in 6M.1:
+   `executions.workflow_id` references `workflows`, so a standalone process
+   that imported the metadata registry but not `app.main` failed to flush
+   executions (`NoReferencedTableError`). The server was unaffected because
+   `app.main` imports the workflows models through its routes. The registry
+   now imports them, and `tests/test_metadata_registry.py` checks the
+   registry alone in a subprocess. Live scripts no longer need to import
+   `app.main` first.
 
 ### Deferred / not built
 
@@ -229,6 +232,46 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Fix: metadata registry registers the workflows models (`107d879`, 2026-10-02)
+
+- **Status:** completed. Resolves Known defect 6. No migration and no schema
+  change: the `workflows` table already exists (migration chain unchanged,
+  head `0019`).
+- `backend/app/database/metadata.py` imports `app.workflows.models` and lists
+  it in `__all__`.
+- `backend/app/workflows/models.py` now takes `Base` from
+  `app.database.models.base`, like every other model module. It previously
+  imported `Base` from the registry itself, so registering it would have made
+  the two modules import each other. Behaviour is unchanged: it is the same
+  `Base` object.
+- New `backend/tests/test_metadata_registry.py`. In a fresh subprocess it
+  imports only `app.database.metadata`, asserts `app.main` was not loaded
+  (so the check cannot pass vacuously), calls `fk.column` for every foreign
+  key in `Base.metadata.sorted_tables`, then imports `app.main` and asserts
+  the server registers no table that the registry missed. A subprocess is
+  needed because `conftest.py` imports `app.main`, which is why the suite
+  never caught the defect.
+- **Verification** (isolated worktree of `87365aa` plus these three files;
+  copied files confirmed byte-identical before commit):
+  - Mutants: removing the workflows registration, making the registry import
+    `app.main`, dropping the history models and dropping the reminder models
+    each fail the new test. The fix passes it.
+  - Import order: the registry resolves when imported first, or after
+    `app.workflows.models`, `app.execution.models` or `app.main`.
+  - Live PostgreSQL: throwaway database `mai_verify_metadata` in `mai-db`,
+    `alembic upgrade head` to `0019`. A standalone process that imports only
+    the registry and flushes an `executions` row failed on HEAD with the
+    original `NoReferencedTableError` and succeeded with the fix. It was
+    rolled back (0 rows), the database was dropped (no `mai_verify%`
+    databases remain), and the scratch credential file was deleted. The real
+    `mai` database and the running containers were not touched.
+  - Full suite: ordered 5921 passed, 2 skipped; shuffled (scratch shuffle
+    plugin, seed 157093811) 5921 passed, 2 skipped. Skips are the expected
+    two (`test_secrets.py`, no `backend/.env`; PostgreSQL migration-chain
+    test, `TEST_POSTGRES_URL` unset). No segfault in either run.
+- The uncommitted Telegram webhook and frontend/branding work in the tree was
+  not touched, staged or verified.
 
 ### Stage 6M.1: Durable notification delivery records (commit titled `Stage 6M.1: durable notification delivery records`, 2026-10-02)
 
