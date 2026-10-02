@@ -332,11 +332,14 @@ async def test_separate_requests_share_one_duplicate_memory(
     assert len(transport.connections) == 1
 
 
-async def test_a_registry_rebuilt_per_call_would_have_delivered_again(
+async def test_a_registry_rebuilt_per_call_still_sends_once(
     composed, session_factory, workspace
 ) -> None:
-    """The counterfactual: building per call loses the memory and re-sends.
-    This is exactly what the process-lifetime composition prevents."""
+    """Changed deliberately in 6M.1. In 6K this was the counterfactual: a
+    registry rebuilt per call lost 6J's memory and re-sent. Since 6M.1 the
+    delivery record is durable, so even a rebuilt registry -- which is what a
+    restart is -- sends once. The process-lifetime adapter is now defence in
+    depth behind the database."""
     note = await met_notification(session_factory, composed, workspace)
     sent = 0
     for _ in range(2):
@@ -348,7 +351,7 @@ async def test_a_registry_rebuilt_per_call_would_have_delivered_again(
             )
             await session.rollback()
         sent += len(transport.connections)
-    assert sent == 2
+    assert sent == 1
 
 
 async def test_racing_deliveries_through_the_composed_adapter_send_once(

@@ -4,17 +4,37 @@
       -> adapter registered?            else REFUSED unknown_adapter
       -> notification exists for owner? else REFUSED notification_not_found
       -> payload validates?             else REFUSED malformed_notification
+      -> durable claim (Stage 6M.1)     already delivered -> DUPLICATE, unsent
+                                        another attempt live -> REFUSED
+                                                         delivery_in_progress
       -> adapter.deliver(payload), bounded by a timeout
+      -> durable outcome recorded
       -> DELIVERED | DUPLICATE | FAILED
+
+### Durable delivery (Stage 6M.1)
+
+Whether a notification was delivered through an adapter is recorded in
+`notification_deliveries`, through `app.delivery.records` -- the one writer of
+that table. The claim is committed before the adapter is called, and the
+outcome after, so a restart, a second process or a concurrent request sees it:
+a delivered notification is answered `DUPLICATE` without reaching the adapter
+again, and two attempts can never both send. A failed attempt is recorded as
+`failed` and stays retryable. Both steps commit the session this service was
+given (see `records`), so a caller hands it a session with no other pending
+work.
+
+A crash after the adapter accepted but before the outcome commits leaves a
+`sending` row; once its lease passes, the next attempt may send again. That
+window is at-least-once, chosen deliberately: Telegram has no idempotency key.
 
 ### What this does not do
 
 It creates no notification and decides nothing about whether one should
 exist -- `app.tasks.notifications.record_outcome` is the one writer. It never
-writes: not the notification (delivery is not reading; `read_at` belongs to
-the owner), not the task, not anything. It retries nothing and runs no loop:
-one call, one attempt. It asks no authorization question, runs no tool and
-calls no model.
+writes the notification (delivery is not reading; `read_at` belongs to the
+owner) or the task; its only writes are delivery records, through `records`.
+It retries nothing and runs no loop: one call, at most one attempt. It asks no
+authorization question, runs no tool and calls no model.
 
 ### Owner isolation
 
@@ -47,6 +67,7 @@ from app.delivery.contract import (
     DeliveryStatus,
     delivery_key,
 )
+from app.delivery import records
 from app.delivery.registry import AdapterRegistry
 from app.tasks.notifications import NotificationService
 
@@ -67,12 +88,14 @@ class NotificationDeliveryService:
         registry: AdapterRegistry,
         timeout_seconds: float = ADAPTER_TIMEOUT_SECONDS,
     ) -> None:
+        self._session = session
         self._notifications = NotificationService(session, owner_id)
         self._registry = registry
         self._timeout = timeout_seconds
 
     async def deliver(self, notification_id, adapter_name) -> DeliveryResult:
-        """One attempt. Never raises; the answer is in the result."""
+        """At most one attempt. An adapter's failure is a result, never an
+        exception; a database failure propagates, as it always has."""
         adapter = self._registry.get(adapter_name)
         if adapter is None:
             return self._refused("unknown_adapter")
@@ -100,15 +123,44 @@ class NotificationDeliveryService:
                 "malformed_notification", adapter=name, notification_id=notification_id
             )
 
+        held = await records.claim(
+            self._session, notification_id=notification.id,
+            owner_id=notification.owner_id, adapter=name,
+        )
+        if held == records.ALREADY_DELIVERED:
+            # Durably delivered before -- by this process or any other, before
+            # or after a restart. The adapter is not asked again.
+            logger.info(
+                "Notification already delivered",
+                extra={"notification_id": str(payload.notification_id), "adapter": name},
+            )
+            return DeliveryResult(
+                outcome=DeliveryOutcome.DUPLICATE, adapter=name,
+                notification_id=payload.notification_id, delivery_key=key,
+            )
+        if held == records.IN_PROGRESS:
+            return self._refused(
+                "delivery_in_progress", adapter=name, notification_id=payload.notification_id
+            )
+
         try:
             status = await asyncio.wait_for(adapter.deliver(payload), self._timeout)
         except asyncio.TimeoutError:
+            await records.finish(self._session, held, delivered=False)
             return self._failed("adapter_timeout", name, payload)
         except Exception:  # noqa: BLE001 - an adapter failure is a result
+            await records.finish(self._session, held, delivered=False)
             return self._failed("adapter_error", name, payload)
 
         if not isinstance(status, DeliveryStatus):
+            await records.finish(self._session, held, delivered=False)
             return self._failed("adapter_invalid_status", name, payload)
+
+        # DUPLICATE from the adapter means it had already sent this key: that
+        # is a delivery, so it is recorded as one.
+        await records.finish(
+            self._session, held, delivered=status is not DeliveryStatus.FAILED
+        )
 
         logger.info(
             "Notification delivery attempted",

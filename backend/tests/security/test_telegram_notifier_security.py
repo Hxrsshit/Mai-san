@@ -378,10 +378,16 @@ def test_the_reason_codes_are_literals() -> None:
 
 def test_6j_adds_no_migration_table_or_persisted_delivery_state() -> None:
     versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
-    assert versions[-1] == "0018_task_notifications.py"
+    # Changed deliberately in 6M.1: the next migration after 6H's 0018 is
+    # 6M.1's delivery-records table, and nothing else.
+    assert [v for v in versions if v[:4] > "0018"] == ["0019_notification_deliveries.py"]
     from app.database.metadata import Base
 
-    assert not [t for t in Base.metadata.tables if "deliver" in t or "telegram" in t]
+    # The only delivery table is 6M.1's, written only by `app.delivery.records`
+    # (pinned there); the adapter itself still persists nothing.
+    assert [t for t in Base.metadata.tables if "deliver" in t or "telegram" in t] == [
+        "notification_deliveries"
+    ]
 
 
 def test_the_adapter_stays_python_39_compatible() -> None:

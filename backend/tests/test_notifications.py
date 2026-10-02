@@ -684,7 +684,8 @@ def test_the_migration_round_trips_and_touches_only_its_own_table(tmp_path) -> N
 
     run("upgrade", "0017")
     before = snapshot()
-    run("upgrade", "head")
+    # 6H's own revision, not head: later stages add their own tables (6M.1).
+    run("upgrade", "0018")
     after = snapshot()
     added = set(after) - set(before)
     assert added == {
@@ -705,5 +706,5 @@ def test_the_migration_round_trips_and_touches_only_its_own_table(tmp_path) -> N
 
     run("downgrade", "0017")
     assert snapshot() == before
-    run("upgrade", "head")
+    run("upgrade", "0018")
     assert snapshot() == after

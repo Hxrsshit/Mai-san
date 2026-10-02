@@ -21,8 +21,9 @@ route does HTTP only: it hands the id and the adapter name to the 6I
 
 ### What this does not do
 
-It creates no notification, marks nothing read, changes no task, records no
-delivery, retries nothing and schedules nothing. One request, one 6I attempt.
+It creates no notification, marks nothing read, changes no task, retries
+nothing and schedules nothing. (Since Stage 6M.1, 6I records the delivery
+durably; the route itself writes nothing.) One request, one 6I attempt.
 Nothing calls this route but a person's client: no model output, chat turn,
 runner or background loop constructs a request to it.
 
@@ -52,6 +53,8 @@ _REFUSED_STATUS = {
     "notification_not_found": status.HTTP_404_NOT_FOUND,
     "unknown_adapter": status.HTTP_404_NOT_FOUND,
     "malformed_notification": status.HTTP_422_UNPROCESSABLE_CONTENT,
+    # Stage 6M.1: another attempt holds a live durable claim right now.
+    "delivery_in_progress": status.HTTP_409_CONFLICT,
 }
 
 #: The code returned when 6I gives no reason of its own: an adapter that

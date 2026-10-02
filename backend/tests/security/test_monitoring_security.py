@@ -278,14 +278,24 @@ def test_monitoring_adds_no_loop_lease_or_scheduler() -> None:
         assert not {"create_task", "ensure_future", "sleep", "gather", "Thread"} & called(tree)
         for node in ast.walk(tree):
             assert not isinstance(node, ast.While), (path.name, node.lineno)
-    # The runtime remains the only module that knows what a lease is.
+    # The runtime remains the only module with a *scheduling* lease. Changed
+    # deliberately in 6M.1: a delivery claim also carries a lease (the
+    # approved at-least-once crash recovery), in `app/delivery/records.py`
+    # only. It schedules nothing: it never touches a task or `next_run_at`,
+    # and has no loop or sleep.
+    records = APP / "delivery" / "records.py"
     for path in APP.rglob("*.py"):
-        if path == RUNTIME:
+        if path in (RUNTIME, records):
             continue
         tree = parse(path)
         assert "CLAIM_LEASE_SECONDS" not in {
             n.id for n in ast.walk(tree) if isinstance(n, ast.Name)
         }, path
+    records_tree = parse(records)
+    named = {n.id for n in ast.walk(records_tree) if isinstance(n, ast.Name)}
+    named |= {n.attr for n in ast.walk(records_tree) if isinstance(n, ast.Attribute)}
+    assert not {"Task", "next_run_at", "TaskRunner", "sleep", "create_task"} & named
+    assert not [n for n in ast.walk(records_tree) if isinstance(n, (ast.While, ast.For))]
 
 
 def test_the_monitor_column_has_one_writer() -> None:

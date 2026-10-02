@@ -236,4 +236,6 @@ def test_the_task_api_is_still_read_only() -> None:
 
 def test_6l_adds_no_migration_or_table() -> None:
     versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
-    assert versions[-1] == "0018_task_notifications.py"
+    # Changed deliberately in 6M.1: the next migration after 6H's 0018 is
+    # 6M.1's delivery-records table, and nothing else.
+    assert [v for v in versions if v[:4] > "0018"] == ["0019_notification_deliveries.py"]

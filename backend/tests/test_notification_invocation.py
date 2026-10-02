@@ -528,7 +528,9 @@ async def test_concurrent_requests_send_exactly_once(
 ) -> None:
     """Five requests at once, each on its own database connection (a
     file-backed SQLite with a real pool, never the shared in-memory
-    connection): one is delivered, four are duplicates, one request leaves."""
+    connection): exactly one is delivered and one request leaves. Since 6M.1
+    the others are answered from the durable record: `duplicate` once it says
+    delivered, or 409 `delivery_in_progress` while the winner still holds it."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'deliveries.db'}")
     configure_sqlite(engine)
     try:
@@ -542,6 +544,10 @@ async def test_concurrent_requests_send_exactly_once(
     finally:
         await engine.dispose()
 
-    assert [r.status_code for r in responses] == [200] * 5
-    assert sorted(r.json()["outcome"] for r in responses) == ["delivered"] + ["duplicate"] * 4
+    answers = [
+        r.json()["outcome"] if r.status_code == 200 else f"{r.status_code}:{r.json()['error']['message']}"
+        for r in responses
+    ]
+    assert answers.count("delivered") == 1
+    assert set(answers) - {"delivered"} <= {"duplicate", "409:delivery_in_progress"}
     assert len(transport.connections) == 1

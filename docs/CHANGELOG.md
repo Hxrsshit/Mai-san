@@ -25,11 +25,11 @@ before substantial work and updates it after completing work (see
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6L: notification invocation boundary**: the commit titled `Stage 6L: notification invocation boundary` (the commit that adds `backend/app/api/routes/notification_delivery.py`; find it with `git log -1 -- backend/app/api/routes/notification_delivery.py`) |
-| Previous stages | 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Latest completed stage | **Stage 6M.1: durable notification delivery records**: the commit titled `Stage 6M.1: durable notification delivery records` (the commit that adds `backend/app/delivery/records.py`; find it with `git log -1 -- backend/app/delivery/records.py`) |
+| Previous stages | 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0018_task_notifications.py` (head; 6I, 6J, 6K and 6L added none) |
-| Next stage | **6M: not started.** Open decisions (see Deferred): automatic delivery for some notification events, a read surface for task notifications, durable delivery records, and real authentication. Do not begin any of them without an explicit request. |
+| Latest migration | `0019_notification_deliveries.py` (head, 6M.1). The real `mai` database observed at `0016`; it was not migrated by any verification. |
+| Next stage | **6M.2: notification read API, not started.** 6M is split into four commits with an owner checkpoint between each: 6M.1 durable delivery records (done), 6M.2 read API, 6M.3 automatic delivery, 6M.4 authentication. Do not begin the next one without an explicit go-ahead. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -123,6 +123,13 @@ not commit them as part of other work, and do not describe them as done.
 5. **Local Docker builds fail:** `docker build` cannot fetch
    `python:3.12-slim` metadata (`DeadlineExceeded`). Only the cached
    `mai-backend:latest` image is available on this machine.
+6. **`app/database/metadata.py` does not register the workflows models**
+   (found in 6M.1, not fixed). `executions.workflow_id` references
+   `workflows`, so a standalone process that imports the metadata registry
+   but not `app.main` fails to flush executions (`NoReferencedTableError`).
+   The server is unaffected: `app.main` imports the workflows models through
+   its routes. Live scripts must import `app.main` first. Fixing it is a
+   one-line change to the registry, offered as a separate task.
 
 ### Deferred / not built
 
@@ -176,11 +183,22 @@ not commit them as part of other work, and do not describe them as done.
   `BotApiSender` per request in `get_telegram_sender`, a second Telegram
   send path beside the 6K composition. When that work is finished it should
   be reconciled with the composition rather than committed as is.
-- **Durable delivery state.** 6I is stateless. The same notification through
-  the same adapter always carries the same `delivery_key`, and adapters must
-  deduplicate on it, but nothing records that a delivery happened. A durable
-  once-per-adapter guarantee across restarts would need persisted delivery
-  records, which is an architectural expansion needing approval.
+- **Stage 6M plan (owner decisions, 2026-10-02).** Four commits, in
+  dependency order, each verified and committed alone, with an owner
+  checkpoint before the next:
+  1. 6M.1 durable delivery records: done (see Completed);
+  2. 6M.2 task-notification read API: thin routes over `NotificationService`,
+     plus one keyset-cursor list method;
+  3. 6M.3 automatic delivery: a third bounded work source in the existing
+     runtime tick. It is opt-in (`NOTIFICATION_AUTO_DELIVER_ADAPTERS`,
+     default empty), delivers only notifications created after enablement,
+     and never retries a failed attempt (a person retries through 6L);
+  4. 6M.4 authentication: hashed owner API tokens (an `api_tokens` table)
+     and one `current_owner` dependency. `/health` and the OAuth callbacks
+     are exempt. A browser token-entry screen waits for the other agent's
+     frontend work.
+
+  Each needs its own approval of details before implementation.
 - **No read surface for task notifications.** `NotificationService` (unread,
   for_task, get, mark_read) exists in-process only. Unlike the reminder inbox
   (`GET /api/reminders/notifications`), no HTTP route exposes it, by
@@ -212,11 +230,188 @@ not commit them as part of other work, and do not describe them as done.
 
 ## Completed (newest first)
 
-### Stage 6L: Notification invocation boundary (commit titled `Stage 6L: notification invocation boundary`, 2026-10-02)
+### Stage 6M.1: Durable notification delivery records (commit titled `Stage 6M.1: durable notification delivery records`, 2026-10-02)
 
-- **Status:** completed, verified, committed. Parent `bb0ea41` (6K). A commit
-  cannot contain its own hash; it is the commit that adds
-  `backend/app/api/routes/notification_delivery.py`.
+- **Status:** completed, verified, committed. Parent `a0e16ae` (6L). It is the
+  commit that adds `backend/app/delivery/records.py` (a commit cannot contain
+  its own hash).
+- **Purpose:** make "delivered once" durable. Until now, duplicate protection
+  was 6J's in-process memory: a restart, or a second process, could deliver
+  the same notification again. The database is now the source of truth.
+- **Owner decisions:**
+  - 6M is split into four commits, with a checkpoint between each;
+  - at-least-once in the crash window (Telegram has no idempotency key);
+  - and, for later sub-stages, the auto-delivery policy and the
+    authentication model (see Deferred).
+- **Schema** (migration `0019`; `task_notifications` is not altered):
+  - `notification_deliveries` holds one row per (notification, adapter),
+    made unique by `uq_notification_deliveries_notification_adapter`;
+  - columns: id, notification_id (foreign key, cascade), owner_id (copied
+    from the notification), adapter, status (`sending` / `delivered` /
+    `failed`, enum `notification_delivery_status`), attempts,
+    lease_expires_at, created_at, updated_at and delivered_at;
+  - check constraints: `delivered` if and only if `delivered_at` is set;
+    `sending` requires a lease; `attempts >= 1`;
+  - no content, recipient, credential or error text.
+- **Protocol** (`app/delivery/records.py`, the one writer; called only by
+  6I):
+  - **Claim:** after the owner-scoped read and the payload check, and before
+    the adapter, 6I claims the row.
+    - No row: insert `sending` under a 60 s lease (the adapter timeout is
+      10 s).
+    - `delivered`: answer `DUPLICATE` without calling the adapter.
+    - `failed`, or `sending` past its lease: re-claim by conditional UPDATE,
+      fenced on the attempt count.
+    - Otherwise: answer `REFUSED delivery_in_progress` (409 on the 6L
+      route).
+    - The claim is committed before the adapter is called.
+  - **Finish:** the outcome is committed after the call.
+    - Delivered, or the adapter's own `DUPLICATE`, becomes `delivered`.
+    - A failure, timeout, exception or invalid status becomes `failed`,
+      which stays retryable.
+    - Fenced on the row still being `sending` and still at this claim's
+      attempt.
+  - The unique index decides two first claims; `rowcount == 1` decides
+    re-claims.
+- **6I contract changes (deliberate):**
+  - 6I now writes delivery records (only those, only through `records`) and
+    commits the session it is given. The precedent is `ExecutionService`.
+    Callers pass a session with no other pending work; the 6L request
+    session qualifies.
+  - A new refusal reason, `delivery_in_progress`.
+  - Concurrent requests during a live claim now get 409 instead of waiting
+    on 6J's lock for `duplicate`.
+  - 6I still never writes `task_notifications`, marks nothing read, retries
+    nothing and runs no loop. The 6K composition, 6J, `deps.py` and
+    `main.py` are unchanged.
+- **Existing tests and pins changed (deliberately; none loosened):**
+  - 6I package pins: the module list adds `models.py` and `records.py`; the
+    imports allow the model and SQLAlchemy core; "never writes" became
+    "only `records.py` writes, only `NotificationDelivery`, and the service
+    makes no write of its own"; the delivery importers list adds
+    `app/database/metadata.py`.
+  - The "no migration after 0018" pins in 6J, 6K and 6L now allow exactly
+    `0019_notification_deliveries.py`. 6J's "no delivery table" now allows
+    exactly `notification_deliveries`.
+  - The 6G pin "only the runtime knows a lease" now also allows
+    `records.py`, with added assertions that the lease schedules nothing (no
+    task, `next_run_at`, loop or sleep).
+  - 6H's migration round-trip test is pinned to its own revision (0018)
+    instead of `head`.
+  - 6K's counterfactual ("a registry rebuilt per call re-sends") now proves
+    the opposite: a rebuilt registry, which is what a restart is, sends
+    once.
+  - 6L's concurrency test accepts `duplicate` or 409 for the losers; still
+    exactly one delivered and one Telegram request.
+  - AGENTS.md §4.7 records the durable-records invariant; the 6L docstring
+    no longer says delivery "records nothing".
+- **Verification** (isolated worktree: `a0e16ae` plus the 6M.1 files):
+  - Tests: 28 behavioural (`tests/test_delivery_records.py`) and 12
+    security (`tests/security/test_delivery_records_security.py`).
+    Covered:
+    - success recorded once; success then retry is DUPLICATE and unsent;
+    - restart replay (a fresh adapter answers DUPLICATE and is never
+      called); the adapter's own DUPLICATE is recorded as delivered;
+    - per-adapter records; each failure kind recorded `failed`; failure
+      then retry delivers once;
+    - a live claim refuses; an abandoned claim is taken over after its
+      lease;
+    - fencing (a superseded attempt cannot overwrite; a reclaim from a
+      stale view cannot reuse an attempt number; a finished claim cannot
+      finish again);
+    - losing the insert race defers to the winner's row; the lease
+      outlasts the timeout;
+    - six concurrent attempts on separate connections send once (stable
+      10/10);
+    - refusals record nothing; other-owner isolation; no notification, task
+      or read-state change; cascade;
+    - database refusals (duplicate pair, four inconsistent rows); exact
+      columns.
+  - Focused: 6M.1 28/28 and 12/12. All of `tests/security`: 2260 passed, 1
+    skipped. The 6I/6J/6K/6L/6H delivery groups pass.
+  - Full suite: ordered 5920 passed, 2 skipped (304 s). Shuffled with the
+    scratch shuffle plugin (real reordering, seed reported; 5921 or more of
+    5922 items moved): seeds 20261004, 1069922067 and 1171424740, each 5920
+    passed, 2 skipped (292 to 298 s). No segfault in any run. (An earlier
+    ordered run, before the three gap-closing tests, gave 5917 passed; it was
+    superseded.)
+  - Mutation: 19/20 killed. The validated harness passed (anchors unique,
+    green baseline, two controls survived: an unasserted comment and an
+    unasserted docstring; neither module logs, so there was no log string to
+    use as a control).
+    - The first run killed 16/20. Three survivors were real gaps, each
+      closed by one deterministic interleaving test:
+      - C6, losing the insert race treated as winning: the SQLite
+        concurrency tests never reached that branch;
+      - C5, the re-claim not fenced on attempts (an ABA reuse of an attempt
+        number);
+      - F2, a finished claim finished again.
+    - The remaining survivor, **C2** (the early "already delivered" check
+      removed), is **equivalent**: the conditional UPDATE excludes
+      delivered rows, and the fallback re-read answers ALREADY_DELIVERED.
+      The check is only a fast path.
+    - Other targets, all killed: no commit before sending, lease ignored,
+      failed not re-claimable, live claim read as delivered, zero lease,
+      finish unfenced, no `delivered_at`, finish not committed, adapter
+      called on DUPLICATE or in-progress, failure recorded as delivered,
+      timeout left open, wrong owner, adapter DUPLICATE recorded as failed,
+      non-unique index, and in-progress not 409.
+  - **PostgreSQL** (throwaway database, existing image, isolated source
+    mounted read-only):
+    - `upgrade 0018 -> head -> downgrade 0018 -> upgrade head`: the
+      downgrade restores the 0018 schema byte-for-byte; the re-upgrade
+      reproduces head exactly; the enum type is dropped on downgrade; the
+      diff is additions only; constraint names are single-prefixed.
+    - 14/14 live checks: the constraints (valid row accepted; duplicate
+      pair, delivered without time, failed with time, sending without
+      lease, zero attempts and orphan notification all refused); cascade;
+    - 20 concurrent deliveries on 20 PostgreSQL connections: 1 delivered,
+      adapter called once, one row at attempt 1;
+    - 20 simultaneous first claims released by a barrier (the insert race):
+      exactly one won;
+    - failure then retry then duplicate (attempts 2);
+    - a live claim refused, then taken over after its lease (attempt 2);
+    - the 6L route delivered through the composed Telegram adapter (stubbed
+      transport).
+    - **Replay after a real `docker restart`** (2/2): the same POST from a
+      new process answered 200 `duplicate` with no Telegram request, and the
+      record survived (delivered, attempt 1).
+    - Two harmless script artifacts on the way: "Event loop is closed" noise
+      from disposing the engine in a second event loop (fixed), and a first
+      constraint attempt via hand-written SQL that never inserted its setup
+      row (discarded and redone in Python on a real notification).
+  - Docker (the real server on this code): migrated to `0019`, health 200,
+    an unconfigured POST gave 404 `unknown_adapter`, and the log held no
+    sentinel, URL, password or traceback. No rows were left, the stop was
+    graceful, the throwaway database was dropped, and the real database was
+    untouched (`0016`).
+  - Structural audit 13/13 on the exact tree committed:
+    - one each of: `AuthorizationService`, `ExecutionService`,
+      `TaskRunner`, `BackgroundRuntime` (constructed only in `main.py`),
+      notification writer (`record_outcome`), delivery-record writer
+      (`records.py`), composition root, and Telegram sender (`BotApiSender`
+      built only in 6J);
+    - no new setting; protected packages, `deps.py` and `main.py`
+      unchanged;
+    - only 6I imports the writer, and the 6I service makes no direct
+      database call;
+    - 0019 is head and follows 0018.
+  - **Live Telegram not tested:** no credentials are configured, and none
+    were requested.
+- **Known limitations:**
+  - **At-least-once crash window:** a crash after Telegram accepts but
+    before the outcome commits can send twice, once the 60 s lease passes.
+  - **A stalled attempt can be superseded:** an attempt that outlives its
+    lease (60 s, against a 10 s timeout) can be taken over. Its late finish
+    is then discarded by the fence.
+  - **No automatic retry:** a failed row is retried only when someone asks
+    again (6L). Automatic delivery is 6M.3.
+  - **No surface for records:** nothing reads them over HTTP yet.
+
+### Stage 6L: Notification invocation boundary (`a0e16ae`, 2026-10-02)
+
+- **Status:** completed, verified, committed as `a0e16ae`. Parent `bb0ea41`
+  (6K). It adds `backend/app/api/routes/notification_delivery.py`.
 - **Purpose:** the first production caller of delivery. Until 6L, nothing
   asked 6I to deliver anything. A person can now ask for one existing task
   notification to be delivered through one registered channel:

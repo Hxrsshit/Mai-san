@@ -272,10 +272,20 @@ a change pass. If a test blocks a change, the test is usually right.
   composition root (through `deps.get_notification_delivery_service`) and
   maps the result to a status. The body accepts no other field: the owner is
   the server's, and the message, chat and host are the channel's. It marks
-  nothing read and records nothing. It is ungated, and inert while no
+  nothing read. It is ungated, and inert while no
   channel is configured. Nothing but a person's client calls it: no model
   output, chat turn, runner or background loop. Automatic delivery would be
   a separate architectural decision (§6).
+- **Durable delivery records (Stage 6M.1):** whether a notification was
+  delivered through an adapter is recorded in `notification_deliveries`,
+  unique per (notification, adapter). `app/delivery/records.py` is the one
+  writer. 6I claims the row (committed) after the owner-scoped read and
+  before calling the adapter, and records the outcome after. A delivered row
+  answers `DUPLICATE` forever, across restarts and processes. A failed row
+  stays retryable. A `sending` row whose lease has passed may be claimed
+  again: a deliberate at-least-once window, because Telegram has no
+  idempotency key. 6I commits the session it is given, so callers pass a
+  session with no other pending work. `task_notifications` is not altered.
 
 ---
 

@@ -58,7 +58,8 @@ def package_tree():
 def test_the_delivery_package_has_exactly_these_modules() -> None:
     """Guards everything below: an empty glob passes vacuously."""
     assert [p.name for p in MODULES] == [
-        "__init__.py", "contract.py", "local.py", "registry.py", "service.py",
+        "__init__.py", "contract.py", "local.py", "models.py", "records.py",
+        "registry.py", "service.py",
     ]
 
 
@@ -68,6 +69,9 @@ def test_the_package_imports_only_the_notification_abstraction() -> None:
         "pydantic", "sqlalchemy.ext.asyncio",
         "app.core.logging", "app.tasks.models", "app.tasks.notifications",
         "app.delivery.contract", "app.delivery.registry",
+        # Stage 6M.1: the delivery-record model and its one writer.
+        "sqlalchemy", "sqlalchemy.exc", "sqlalchemy.orm", "app.database.models.base",
+        "app.delivery", "app.delivery.models",
     }
     for path, tree in package_tree():
         assert imports(tree) <= allowed, (path.name, imports(tree) - allowed)
@@ -139,13 +143,25 @@ def test_the_package_has_no_loop_and_no_retry() -> None:
 # ============================================================================
 
 
-def test_the_package_never_writes_to_the_database() -> None:
+def test_only_the_records_module_writes_and_only_delivery_records() -> None:
+    """Changed deliberately in 6M.1. Through 6L the package never wrote.
+    Durable delivery needs one writer: `records.py`, which may add, update and
+    commit `NotificationDelivery` rows and nothing else. Every other module --
+    the service included -- still makes no database write of its own."""
+    writes = ("add", "add_all", "flush", "commit", "delete", "merge", "execute",
+              "update", "insert", "begin", "begin_nested", "refresh", "rollback")
     for path, tree in package_tree():
         names = called(tree)
-        for forbidden in (
-            "add", "add_all", "flush", "commit", "delete", "merge", "execute",
-            "update", "insert", "begin", "begin_nested", "refresh",
-        ):
+        if path.name == "records.py":
+            assert {n for n in names if n in writes} == {"add", "commit", "execute", "rollback", "update"}
+            targets = {ast.unparse(n.args[0]) for n in ast.walk(tree) if isinstance(n, ast.Call)
+                       and getattr(n.func, "id", None) in ("update", "select", "insert", "delete")}
+            assert targets == {"NotificationDelivery"}, targets
+            built = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call)
+                     and isinstance(n.func, ast.Name) and n.func.id[:1].isupper()}
+            assert built <= {"NotificationDelivery", "Claim"}, built
+            continue
+        for forbidden in writes:
             assert forbidden not in names, (path.name, forbidden)
 
 
@@ -308,6 +324,8 @@ def test_only_the_channel_and_the_composition_root_import_delivery() -> None:
         },
         "app/api/deps.py": {"app.delivery.service"},
         "app/api/routes/notification_delivery.py": {"app.delivery.contract"},
+        # Stage 6M.1: the metadata registry imports the delivery-record model.
+        "app/database/metadata.py": {"app.delivery"},
     }, importers
 
 
