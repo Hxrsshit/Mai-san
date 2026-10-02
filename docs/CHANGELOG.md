@@ -25,11 +25,11 @@ before substantial work and updates it after completing work (see
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6J: Telegram notification adapter**, commit `e6effdb` |
-| Previous stages | Telegram foundation (settings and Bot API sender), `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Latest completed stage | **Stage 6K: notification delivery composition**: the commit titled `Stage 6K: notification delivery composition` (the commit that adds `backend/app/composition/`; find it with `git log -1 -- backend/app/composition`) |
+| Previous stages | 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0018_task_notifications.py` (head; 6I and 6J added none) |
-| Next stage | **None started.** A "6K delivery orchestration" was proposed and deliberately **not built**: 6I already provides it (see *Decision: Stage 6K* under Deferred). The real next decisions are composition and an invocation surface. Do not begin either without an explicit request. |
+| Latest migration | `0018_task_notifications.py` (head; 6I, 6J and 6K added none) |
+| Next stage | **6L: not started.** The open decision is the delivery *trigger* (an invocation surface or a worker); see Deferred. Do not begin it without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -89,9 +89,34 @@ not commit them as part of other work, and do not describe them as done.
      out that 6H's 61 extra tests change how often it happens, but 6H adds
      no engine, thread or connection.
    - Likely cause: SQLite connections finalized by the garbage collector
-     across threads (in test fixtures, not the application). Not
-     investigated further. Treat a segfaulted run as incomplete, never as a
-     pass.
+     across threads (in test fixtures, not the application). Treat a
+     segfaulted run as incomplete, never as a pass.
+   - **6K confirmed the mechanism by bisection.** A 6K test that raced a
+     lazy build across 16 Python threads *inside* the test process made
+     `test_standing_grants.py::test_concurrent_authorizations_agree` (a 6E
+     test, which runs concurrent sessions on the shared SQLite connection)
+     segfault 3/3. Each file was clean alone, and without that test.
+     Running the thread race in a subprocess removed it (0/3). **Rule: never
+     spawn Python threads inside the shared test process; use a
+     subprocess.** A 6K draft that raced five SQLite *sessions* with
+     `gather` also corrupted the shared connection (the 6F limitation);
+     such races belong on live PostgreSQL.
+   - **Root cause found and fixed (`20468d3`).** With the thread race moved,
+     the ordered full suite *still* segfaulted deterministically with the
+     6K files present (3/3, at test #5289 or #5300), while HEAD passed 3/3.
+     Bisection: HEAD plus 45 no-op tests did not crash; HEAD plus one file
+     that only parses source with `ast` crashed 2/2; the 6K copy without
+     `test_concurrent_authorizations_agree` did not crash. So no 6K behaviour
+     is involved: shifting collection and GC timing is enough to expose that
+     6E test, which raced four sessions on the `StaticPool` connection (one
+     connection for every session). `20468d3` gives it a per-test
+     file-backed SQLite database with a real pool, so each reader has its
+     own connection. Assertions unchanged. Fault injection (the lookup never
+     finds the grant; each reader sees a different grant) still fails it.
+     After the fix, the ordered suite completed 5/5 with no segfault (HEAD
+     plus the fix 2/2, 5775 passed; HEAD plus the fix plus 6K 3/3, 5820
+     passed). Other StaticPool fixtures remain; the rule stands: never race
+     sessions on the shared SQLite connection.
 5. **Local Docker builds fail:** `docker build` cannot fetch
    `python:3.12-slim` metadata (`DeadlineExceeded`). Only the cached
    `mai-backend:latest` image is available on this machine.
@@ -130,13 +155,19 @@ not commit them as part of other work, and do not describe them as done.
   - The smallest sensible future stage is a composition root (one sealed,
     process-lifetime registry with the Telegram adapter built from settings
     when configured), with no endpoint and no worker. It needs explicit
-    approval.
-- **Wiring and triggering delivery.** 6I built the delivery boundary and 6J
-  the Telegram adapter, but nothing in production constructs an adapter,
-  registers one, or calls `NotificationDeliveryService.deliver`. Who triggers
-  delivery, and when (an explicit action, or a worker, which would be a new
-  architectural component), is undecided and needs its own approved stage.
-  Other channels (email, push, UI) would be further adapters.
+    approval. **That composition root was then approved and built as Stage 6K
+    (see Completed).** Gap 2, the invocation surface, remains open.
+- **Triggering delivery.** 6K composed the delivery graph (one registry, one
+  Telegram adapter), so `notification_delivery_service(session)` is ready to
+  use, but **nothing calls it**: no route, command, worker or startup hook.
+  Who triggers delivery, and when (an explicit action, or a worker, which
+  would be a new architectural component), is undecided and needs its own
+  approved stage. Other channels (email, push, UI) would be further adapters.
+- **The uncommitted webhook builds its own Telegram sender.** The webhook
+  work (`backend/app/api/routes/telegram.py`, uncommitted) constructs a
+  `BotApiSender` per request in `get_telegram_sender`, a second Telegram
+  send path beside the 6K composition. When that work is finished it should
+  be reconciled with the composition rather than committed as is.
 - **Durable delivery state.** 6I is stateless. The same notification through
   the same adapter always carries the same `delivery_key`, and adapters must
   deduplicate on it, but nothing records that a delivery happened. A durable
@@ -172,6 +203,137 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 6K: Notification delivery composition (commit titled `Stage 6K: notification delivery composition`, 2026-10-02)
+
+- **Status:** completed, verified, committed. A commit cannot contain its own
+  hash. It is the commit that adds `backend/app/composition/`.
+- **Purpose:** the production composition root for notification delivery. It
+  builds, once per process, the graph 6I and 6J defined but nothing
+  assembled:
+  `NotificationDeliveryService -> sealed AdapterRegistry -> TelegramNotificationAdapter
+  -> BotApiSender -> Telegram`. It is needed because 6J's duplicate
+  protection lives in the adapter instance: an adapter rebuilt per call
+  starts with an empty memory and re-sends (proven by a counterfactual
+  test).
+- **Architecture:** one new module, `app/composition/notification_delivery.py`
+  (plus the package's `__init__.py`):
+  - `build_delivery_registry(settings)`: a new `AdapterRegistry`; the 6J
+    adapter built from settings and registered **only if it reports itself
+    configured**; then sealed. It opens no connection (the sender's HTTP
+    client is created on its first request).
+  - `get_delivery_registry()`: the process's one registry, built on first
+    access under a lock with a double check, then reused.
+  - `notification_delivery_service(session, owner_id=LOCAL_OWNER_ID)`: a 6I
+    service bound to that registry. It is per call because 6I gives the
+    service a DB session and an owner; the registry, adapter, sender and
+    duplicate memory are shared.
+  - **Follows the existing pattern:** `app.integrations.registry` (a
+    process-lifetime, sealed registry read through an accessor, whose HTTP
+    clients are not closed in the lifespan). One difference: integrations
+    read settings lazily but the 6J adapter reads its two at construction,
+    so the graph is built on first access rather than at import.
+  - **Not in `main.py`:** the lifespan was not used. Nothing needs it (no
+    startup work, and no shutdown disposal by precedent), and `main.py`
+    carries the other agent's uncommitted webhook edits.
+  - The in-memory `LocalRecordingAdapter` is deliberately not registered in
+    production. Without Telegram configuration the registry is sealed empty
+    and 6I refuses `"telegram"` as `unknown_adapter`.
+  - Unchanged: 6H, 6I, 6J, the Telegram foundation, settings, compose,
+    `.env.example`, tasks, runtime, monitoring, execution, authorization,
+    providers, migrations and `main.py`. No route, worker, scheduler, retry,
+    persistence or second sender, registry, service or configuration path.
+  - **Nothing calls it yet.** Deciding the trigger is the next stage.
+- **Five existing pins changed, deliberately, each to an exact allow-list
+  (none loosened):**
+  - 6I "nothing outside delivery imports it": now exactly the 6J adapter
+    (`contract`) and the composition root (`registry`, `service`).
+  - 6I "no production code registers an adapter": now exactly the
+    composition root names `AdapterRegistry`, and its only `register` call
+    is the Telegram adapter.
+  - 6J "nothing reaches the adapter": now exactly the composition root
+    imports it.
+  - 6J "nothing constructs the adapter": now exactly one construction, in
+    the composition root.
+  - **Stage 4C `test_only_two_files_register_anything`** (no `.register(`
+    outside the tool catalog and registries): the composition root calls
+    `registry.register(telegram)` on the *delivery* registry, which holds
+    channels, never tools. It is now allowed by exact path, and the test
+    additionally asserts the root reaches no tool registry, catalog or
+    executor, so "nothing outside the catalog registers a tool" still holds.
+    Probes confirmed that a new tool-registration site elsewhere, and the
+    root importing a tool registry, both still fail. This pin's failure was
+    hidden at first: early full runs crashed (Known defect 4) before
+    reaching it, and the focused runs didn't include that file. Found by
+    excluding the crash site.
+- **Verification:**
+  - Tests: 29 behavioural (`tests/test_notification_composition.py`) and 16
+    security (`tests/security/test_notification_composition_security.py`).
+    Covered: one registry and one adapter for the process (including a
+    16-thread race, run in a subprocess); registration only when
+    configured; fail-closed cases; no connection; sealed; the 6I service
+    type; shared duplicate memory across separate requests; the per-call
+    counterfactual; no read-marking or state change; no token in logs.
+  - Full suite (isolated copy of `20468d3` plus the 6K files): ordered 5820
+    passed, 2 skipped (291 s), plus 3/3 earlier ordered runs with the same
+    content (5820 passed each). Shuffled with the scratch shuffle plugin
+    (real reordering; seed reported; 5821 or more of 5822 items moved):
+    seed 20261002, 298350825 and 673989253, each 5820 passed, 2 skipped
+    (272 to 279 s). No segfault in any of the 7 runs. Focused: 6K 29/29, 6K
+    security 16/16, 6H/6I/6J delivery and notification tests 197 passed,
+    the changed pins' files 139 passed, all of `tests/security` 2234
+    passed, 1 skipped.
+  - Mutation: 15/15 killed on the first run, and again on the final code
+    on top of `20468d3`.
+    The validated harness passed (two controls survived). Targets: rebuild
+    per access, dropped double check, no caching, fresh registry per
+    service, lock removed, registration guard inverted or removed, unsealed,
+    local adapter registered, wrong settings, wrong or ignored owner, empty
+    registry, and logging of settings or wrong names.
+  - Docker (the existing `mai-backend:latest` image, throwaway PostgreSQL,
+    isolated source mounted read-only), 12/12:
+    - startup built no composition and attempted no delivery;
+    - the unconfigured container composed a sealed, empty registry with no
+      socket attempt, and refused `"telegram"`;
+    - configured with a sentinel token over a stub transport, the same
+      registry was returned on every access;
+    - **five concurrent explicit deliveries, each on its own real
+      PostgreSQL connection and session, gave 1 delivered and 4 duplicate,
+      with exactly one Telegram request**, and a later separate request was
+      still `DUPLICATE`;
+    - no row, task or read state changed, and no token, URL or endpoint
+      appeared in any log record.
+
+    Graceful stop; the real database was untouched. Re-run on the final
+    code on top of `20468d3` (mounted root's hash checked): 12/12 again.
+    The server's DEBUG log held no sentinel, no `sendMessage` or `/bot`,
+    no database password and no error.
+  - Structural audit: 13/13 on the exact tree committed. One of each class, one
+    production construction of the registry, the Telegram adapter and the
+    6I service (all in the root); `BotApiSender` built only inside the 6J
+    adapter; no new Telegram path, configuration namespace or endpoint; no
+    protected file changed. (In the *working tree* the uncommitted webhook
+    builds a second `BotApiSender`; see Deferred.)
+  - **Live Telegram not tested:** no credentials are configured, and none
+    were requested.
+- **Findings:**
+  - **Two of 6K's own tests destabilised the shared test process** (see Known
+    defect 4): five SQLite sessions raced with `gather`, and 16 Python
+    threads raced in-process. Both were moved: the session race to live
+    PostgreSQL (Docker), and the thread race to a subprocess. The thread
+    race was bisected to a deterministic 3/3 crash before the fix and 0/3
+    after, and the subprocess version still catches an unlocked lazy build.
+  - **A pre-existing 6E test was the real crash site.** Even after both
+    moves, the ordered suite still crashed whenever the 6K files were
+    present. It was bisected to `test_concurrent_authorizations_agree` (see
+    Known defect 4) and fixed in its own commit, `20468d3`, before 6K.
+- **Known limitations:**
+  - **Not restart-safe:** duplicate memory resets with the process (6J's
+    limitation, unchanged).
+  - **Telegram client not closed at shutdown:** its `httpx` client is not
+    closed in the lifespan, the same as every integration's (precedent).
+  - **Tied to one event loop:** the adapter's lazy lock binds to the event
+    loop of its first use, which matches Mai's one loop.
 
 ### Stage 6J: Telegram notification adapter (`e6effdb`, 2026-10-01)
 

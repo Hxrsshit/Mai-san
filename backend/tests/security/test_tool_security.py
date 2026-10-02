@@ -521,6 +521,18 @@ def test_only_two_files_register_anything() -> None:
             callers.append(str(path.relative_to(APP)))
         elif ".register(" in source and path.name == "tools.py":
             assert path.parent.name == "execution", path
+    # Stage 6K, deliberately: the notification-delivery composition root
+    # registers the Telegram adapter into the *delivery* `AdapterRegistry`,
+    # a third registry that holds channels, never tools. It is allowed by
+    # exact path, and it may not reach either tool registry -- so the wall
+    # this test guards (nothing outside the catalog registers a tool) holds.
+    delivery_root = "composition/notification_delivery.py"
+    if delivery_root in callers:
+        callers.remove(delivery_root)
+        root_source = (APP / delivery_root).read_text()
+        for reach in ("app.tools", "app.execution", "ToolRegistry", "get_registry",
+                      "build_catalog", "executable_registry"):
+            assert reach not in root_source, reach
     assert callers == [], f"unexpected registration site: {callers}"
 
 

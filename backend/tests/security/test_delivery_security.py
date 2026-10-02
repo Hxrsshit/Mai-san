@@ -278,15 +278,15 @@ def test_logs_carry_only_ids_names_outcomes_and_reasons() -> None:
 # ============================================================================
 
 
-def test_exactly_one_channel_adapter_imports_the_delivery_contract() -> None:
-    """Stage 6J changed this pin, deliberately.
+def test_only_the_channel_and_the_composition_root_import_delivery() -> None:
+    """Changed deliberately twice, and an exact allow-list both times.
 
     Through 6I nothing outside `app/delivery` imported it, because no channel
-    existed. A channel adapter has to implement the contract, so the Telegram
-    adapter imports it -- and the pin became an exact allow-list instead of
-    being loosened: one named importer, importing one named module. A second
-    importer, or a channel reaching the delivery service or the registry,
-    still fails here.
+    existed. 6J's Telegram adapter had to implement the contract, so it was
+    allowed exactly `app.delivery.contract`. 6K's composition root has to
+    build the registry and the service, so it is allowed exactly those two.
+    A third importer, a channel reaching the service or registry, or the
+    composition root reaching anything else in the package, still fails.
     """
     importers = {}
     for path in APP.rglob("*.py"):
@@ -298,7 +298,12 @@ def test_exactly_one_channel_adapter_imports_the_delivery_contract() -> None:
         }
         if used:
             importers[str(path.relative_to(BACKEND))] = used
-    assert importers == {"app/telegram/notifier.py": {"app.delivery.contract"}}, importers
+    assert importers == {
+        "app/telegram/notifier.py": {"app.delivery.contract"},
+        "app/composition/notification_delivery.py": {
+            "app.delivery.registry", "app.delivery.service",
+        },
+    }, importers
 
 
 def test_no_http_route_triggers_delivery() -> None:
@@ -308,12 +313,31 @@ def test_no_http_route_triggers_delivery() -> None:
             assert name not in source, (path.name, name)
 
 
-def test_no_adapter_is_registered_by_production_code() -> None:
-    """Registration is explicit and, in 6I, test-only: no channel exists."""
+def test_only_the_composition_root_builds_or_fills_a_registry() -> None:
+    """Changed deliberately in 6K, and an exact allow-list.
+
+    In 6I no production code registered an adapter. 6K's composition root
+    builds the one process registry, so it is the one module outside the
+    package that may name `AdapterRegistry`, and the only `register` call it
+    makes is the Telegram adapter's, once. A second composer, a second
+    registry, or a registration anywhere else still fails here.
+    """
+    namers, registrations = set(), []
     for path in APP.rglob("*.py"):
         if PACKAGE in path.parents:
             continue
-        assert "AdapterRegistry" not in path.read_text(encoding="utf-8"), path
+        tree = parse(path)
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        names |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        if "AdapterRegistry" in names:
+            namers.add(str(path.relative_to(BACKEND)))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "register"
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "registry"):
+                registrations.append((str(path.relative_to(BACKEND)), ast.unparse(node.args[0])))
+    assert namers == {"app/composition/notification_delivery.py"}, namers
+    assert registrations == [("app/composition/notification_delivery.py", "telegram")], registrations
 
 
 def test_the_registry_resolves_names_only_never_code() -> None:

@@ -150,6 +150,9 @@ def test_the_adapter_never_touches_the_database() -> None:
 
 
 def test_the_adapter_is_not_reachable_from_a_route_the_runtime_or_content() -> None:
+    """Changed deliberately in 6K: the composition root is the one importer.
+    Routes, the runtime, the runner and every content-handling module still
+    cannot reach the adapter."""
     importers = []
     for path in APP.rglob("*.py"):
         if path == NOTIFIER:
@@ -157,16 +160,26 @@ def test_the_adapter_is_not_reachable_from_a_route_the_runtime_or_content() -> N
         if any(m == "app.telegram.notifier" or m.startswith("app.telegram.notifier.")
                for m in imports(parse(path))):
             importers.append(str(path.relative_to(BACKEND)))
-    assert importers == []
+    assert importers == ["app/composition/notification_delivery.py"]
 
 
-def test_nothing_in_production_constructs_or_registers_the_adapter() -> None:
-    """6J builds the channel. Wiring it into a running Mai, and deciding what
-    triggers delivery, is a later, separate decision."""
+def test_only_the_composition_root_constructs_the_adapter_and_only_once() -> None:
+    """Changed deliberately in 6K. 6J built the channel; 6K's composition root
+    constructs it, in exactly one place, so the process holds one instance and
+    its duplicate memory. Deciding what triggers delivery is still a later,
+    separate decision, and nothing else constructs the adapter."""
+    constructions = []
     for path in APP.rglob("*.py"):
         if path == NOTIFIER:
             continue
-        assert "TelegramNotificationAdapter" not in mentioned(parse(path)), path
+        tree = parse(path)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "TelegramNotificationAdapter"):
+                constructions.append(str(path.relative_to(BACKEND)))
+        if "TelegramNotificationAdapter" in mentioned(tree):
+            assert path.relative_to(BACKEND).as_posix() == "app/composition/notification_delivery.py", path
+    assert constructions == ["app/composition/notification_delivery.py"]
 
 
 def test_the_delivery_package_still_knows_nothing_of_telegram() -> None:
