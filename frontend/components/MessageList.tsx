@@ -19,16 +19,19 @@ export function MessageList({ messages, isLoading }: Props) {
   if (messages.length === 0 && !isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center p-8">
-        <p className="text-[var(--color-muted)]">
-          Start the conversation by sending a message.
-        </p>
+        <div className="max-w-md text-center">
+          <img src="/branding/mai-mark.svg" alt="" className="mai-logo-pulse mai-mark mx-auto mb-6 h-24 w-28" />
+          <p className="mai-wordmark mb-3">MAI</p>
+          <h2 className="mb-2 text-xl font-medium">Your personal AI, present.</h2>
+          <p className="text-sm leading-6 text-[var(--color-muted)]">Start a conversation and Mai will help you think, remember, and move forward.</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 p-6">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-5 py-8 sm:px-8">
         {messages.map((message) => (
           <MessageBubble key={message.id} message={message} />
         ))}
@@ -46,11 +49,11 @@ function MessageBubble({ message }: { message: Message }) {
     <div className={isUser ? "flex justify-end" : "flex justify-start"}>
       <div
         className={[
-          "max-w-[80%] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
+          "max-w-[82%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed shadow-sm",
           "whitespace-pre-wrap break-words",
           isUser
-            ? "bg-[var(--color-accent)] text-white"
-            : "bg-[var(--color-surface)] text-[var(--color-ink)]",
+            ? "bg-[var(--color-accent)] text-white shadow-[0_8px_22px_rgba(100,88,255,.22)]"
+            : "mai-surface border border-[var(--color-border)] text-[var(--color-ink)]",
         ].join(" ")}
       >
         {message.content}
@@ -62,11 +65,11 @@ function MessageBubble({ message }: { message: Message }) {
 function TypingIndicator() {
   return (
     <div className="flex justify-start" aria-live="polite" aria-label="Mai is typing">
-      <div className="flex gap-1.5 rounded-2xl bg-[var(--color-surface)] px-4 py-3.5">
+      <div className="mai-surface flex gap-1.5 rounded-2xl border border-[var(--color-border)] px-4 py-3.5">
         {[0, 150, 300].map((delay) => (
           <span
             key={delay}
-            className="h-2 w-2 animate-bounce rounded-full bg-[var(--color-muted)]"
+            className="mai-dot h-1.5 w-1.5 rounded-full bg-[#9e93ff]"
             style={{ animationDelay: `${delay}ms` }}
           />
         ))}

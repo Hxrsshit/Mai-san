@@ -73,3 +73,4 @@ backend/mai_workspace/
 credentials/
 imports/*
 !imports/.gitkeep
+mai_backup_before_cloud.dump

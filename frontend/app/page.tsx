@@ -151,7 +151,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden">
       <Sidebar
         conversations={conversations}
         activeId={activeId}
@@ -162,17 +162,21 @@ export default function ChatPage() {
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-[var(--color-border)] px-6 py-3">
-          <h1 className="text-sm font-semibold">
-            {conversations.find((item) => item.id === activeId)?.title ?? "Mai"}
-          </h1>
+        <header className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-canvas)]/65 px-5 py-4 backdrop-blur-xl sm:px-7">
+          <div className="min-w-0">
+            <p className="mb-1 text-[10px] font-medium tracking-[0.2em] text-[var(--color-muted)]">CONVERSATION</p>
+            <h1 className="truncate text-sm font-medium">
+              {conversations.find((item) => item.id === activeId)?.title ?? "A space to think"}
+            </h1>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-[var(--color-muted)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--color-success)] shadow-[0_0_8px_var(--color-success)]" />Present</div>
         </header>
 
         {error && (
           <div
             role="alert"
             className="flex items-start justify-between gap-4 border-b
-                       border-red-500/30 bg-red-500/10 px-6 py-3 text-sm text-red-500"
+                       border-[color:rgba(255,107,124,.35)] bg-[color:rgba(255,107,124,.1)] px-6 py-3 text-sm text-[var(--color-error)]"
           >
             <span>{error}</span>
             <button

@@ -194,6 +194,36 @@ async def send_message(
     session_factory: SessionFactory,
     session: DbSession,
 ) -> ChatResponse:
+    return await send_conversation_turn(
+        conversation_id=conversation_id,
+        content=payload.content,
+        chat=chat,
+        background_tasks=background_tasks,
+        settings=settings,
+        provider=provider,
+        session_factory=session_factory,
+        session=session,
+    )
+
+
+async def send_conversation_turn(
+    *,
+    conversation_id: uuid.UUID,
+    content: str,
+    chat: Chat,
+    background_tasks: BackgroundTasks,
+    settings: AppSettings,
+    provider: Provider,
+    session_factory: SessionFactory,
+    session: DbSession,
+) -> ChatResponse:
+    """Run the established conversation turn for an approved interface.
+
+    This is the application boundary behind the HTTP route.  External
+    adapters may call it only after authenticating their own transport and
+    resolving an existing Mai conversation; it deliberately owns the exact
+    same commit and post-turn extraction behaviour as the browser API.
+    """
     (
         user_message,
         assistant_message,
@@ -205,7 +235,7 @@ async def send_message(
         calendar,
         mail,
     ) = await chat.send_message(
-        conversation_id=conversation_id, content=payload.content
+        conversation_id=conversation_id, content=content
     )
 
     # Commit the turn before queueing extraction. FastAPI closes dependency

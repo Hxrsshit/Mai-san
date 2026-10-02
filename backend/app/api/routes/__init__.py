@@ -21,6 +21,7 @@ from app.api.routes.retrieval import conversation_router as context_preview_rout
 from app.api.routes.retrieval import router as retrieval_router
 from app.api.routes.memories import router as memories_router
 from app.api.routes.tasks import router as tasks_router
+from app.api.routes.telegram import router as telegram_router
 
 __all__ = [
     "conversations_router",
@@ -44,4 +45,5 @@ __all__ = [
     "orchestration_router",
     "execution_router",
     "integrations_router",
+    "telegram_router",
 ]

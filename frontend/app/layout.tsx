@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Mai",
+  title: "MAI — Your Personal AI Assistant",
   description: "A persistent personal AI environment.",
+  icons: { icon: "/favicon.svg", apple: "/branding/mai-icon.svg" },
 };
 
 export default function RootLayout({

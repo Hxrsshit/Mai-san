@@ -1,30 +1,22 @@
 @import "tailwindcss";
 
-/*
- * Theme colours are plain CSS custom properties rather than Tailwind's
- * `@theme`: `@theme` is only valid at the top level, so the dark-mode override
- * could not live inside a media query. Components consume these directly as
- * arbitrary values (e.g. `bg-[var(--color-surface)]`), so no Tailwind utility
- * generation is needed.
- */
 :root {
-  --color-canvas: #ffffff;
-  --color-surface: #f7f7f8;
-  --color-border: #e5e5e7;
-  --color-ink: #1a1a1c;
-  --color-muted: #6b6b70;
-  --color-accent: #2f6fed;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-canvas: #131316;
-    --color-surface: #1b1b1f;
-    --color-border: #2c2c31;
-    --color-ink: #ececee;
-    --color-muted: #9a9aa1;
-    --color-accent: #6c9bff;
-  }
+  color-scheme: dark;
+  --color-canvas: #0b0b10;
+  --color-surface: #14141d;
+  --color-elevated: #1a1a24;
+  --color-hover: #21202d;
+  --color-border: rgba(234, 224, 255, 0.11);
+  --color-border-strong: rgba(134, 117, 255, 0.42);
+  --color-ink: #f5f3ff;
+  --color-muted: #a4a1b2;
+  --color-accent: #7b6cff;
+  --color-secondary: #4f8bff;
+  --color-error: #ff6b7c;
+  --color-success: #72d6a1;
+  --gradient-mai: linear-gradient(135deg, #eae0ff 0%, #7b6cff 35%, #4f8bff 67%, #e4c9ff 100%);
+  --shadow-surface: 0 16px 40px rgba(0, 0, 0, 0.22);
+  --glow-mai: 0 0 28px rgba(106, 98, 255, 0.24);
 }
 
 html,
@@ -35,4 +27,27 @@ body {
 body {
   background: var(--color-canvas);
   color: var(--color-ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: -0.01em;
+  background-image: radial-gradient(circle at 74% -16%, rgba(91, 83, 214, 0.15), transparent 32rem);
+}
+
+button, a, textarea { transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease, opacity 180ms ease, transform 180ms ease; }
+button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px solid #8b78ff; outline-offset: 2px; }
+::selection { background: rgba(123, 108, 255, 0.42); color: #fff; }
+
+.mai-wordmark { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.38em; }
+.mai-mark { filter: drop-shadow(0 0 10px rgba(110, 102, 255, 0.32)); }
+.mai-logo-pulse { animation: mai-glow 4s ease-in-out infinite; }
+.mai-surface { background: linear-gradient(135deg, rgba(255,255,255,.035), rgba(255,255,255,.012)); box-shadow: var(--shadow-surface); }
+.mai-gradient-text { background: var(--gradient-mai); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.mai-dot { animation: mai-breathe 1.45s ease-in-out infinite; }
+
+@keyframes mai-glow { 50% { filter: drop-shadow(0 0 18px rgba(103, 94, 255, .55)); } }
+@keyframes mai-breathe { 50% { transform: translateY(-3px); opacity: .45; } }
+
+@media (max-width: 640px) {
+  .mai-sidebar { width: 9rem; }
+  .mai-sidebar-copy, .mai-sidebar-panels { display: none; }
+  .mai-new-label { display: none; }
 }

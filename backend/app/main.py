@@ -31,6 +31,7 @@ from app.api.routes import (
     tasks_router,
     prompt_router,
     tools_router,
+    telegram_router,
 )
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
@@ -165,6 +166,9 @@ def create_app() -> FastAPI:
     # configured still needs somewhere to report that, and `/connect` refuses
     # with a specific code rather than a 404.
     app.include_router(integrations_router)
+    # An externally authenticated adapter. It is inert unless all Telegram
+    # settings are present and it never starts a polling/background worker.
+    app.include_router(telegram_router)
     # Stage 4D orchestration. Propose, authorize, return -- never execute.
     app.include_router(orchestration_router)
 

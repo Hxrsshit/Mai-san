@@ -173,6 +173,7 @@ def frontend_sources():
         if path.suffix in {".ts", ".tsx", ".js", ".jsx", ".mjs"}
         and "node_modules" not in path.parts
         and ".next" not in path.parts
+        and path.name != "next-env.d.ts"
     ]
 
 

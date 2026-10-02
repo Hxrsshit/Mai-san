@@ -1,0 +1,13 @@
+<svg width="392" height="194" viewBox="0 0 392 194" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="mai-gradient" x1="92" y1="20" x2="302" y2="151" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EAE0FF"/><stop offset=".34" stop-color="#8B78FF"/><stop offset=".67" stop-color="#4F8BFF"/><stop offset="1" stop-color="#E4C9FF"/>
+    </linearGradient>
+    <filter id="glow" x="-15%" y="-15%" width="130%" height="130%"><feGaussianBlur stdDeviation="4" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <g transform="translate(116 0)" filter="url(#glow)">
+    <path d="M77.7 73.7C69.4 45.5 50.6 26.3 27.8 17c-2.2 23 5.8 44.6 28.1 62.1-13.2 15.8-20.5 32.2-23.6 50.2 20.5-8.5 37.3-23.4 45.4-55.6Z" fill="url(#mai-gradient)"/>
+    <path d="M82.3 73.7c8.3-28.2 27.1-47.4 49.9-56.7 2.2 23-5.8 44.6-28.1 62.1 13.2 15.8 20.5 32.2 23.6 50.2-20.5-8.5-37.3-23.4-45.4-55.6Z" fill="url(#mai-gradient)"/>
+  </g>
+  <text x="196" y="174" text-anchor="middle" fill="#F8F7FF" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="500" letter-spacing="13">MAI</text>
+</svg>
