@@ -664,18 +664,44 @@ async def test_a_revoked_grant_cannot_be_used_from_another_session(
     assert decision.requires_approval is True
 
 
-async def test_concurrent_authorizations_agree(db_session, session_factory) -> None:
-    grants = GrantService(db_session, owner_id=OWNER)
-    await grants.create(GATED, GATED_RISK, now=NOW)
-    await db_session.commit()
+async def test_concurrent_authorizations_agree(tmp_path) -> None:
+    """Four authorizations racing, each on its *own* connection.
 
-    async def decide():
-        async with session_factory() as session:
-            return await AuthorizationService().authorize_with_grants(
-                proposal(), grants=GrantService(session, owner_id=OWNER), now=NOW
-            )
+    Not the shared `session_factory`: that is in-memory SQLite on a
+    `StaticPool`, i.e. ONE connection for every session, so racing sessions on
+    it interleaved transactions on a single connection and left it corrupt.
+    On this host's Python 3.9 that connection then segfaulted the process when
+    it was finalized -- deterministically once other tests shifted garbage-
+    collection timing (found in Stage 6K; see CHANGELOG, Known defect 4). A
+    file-backed database with a real pool gives each session its own
+    connection, which is what "concurrent" was meant to mean here. The
+    assertions are unchanged.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-    decisions = await asyncio.gather(*(decide() for _ in range(4)))
+    from app.database.metadata import Base
+    from app.database.session import configure_sqlite
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'grants.db'}")
+    configure_sqlite(engine)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with factory() as seed:
+            await GrantService(seed, owner_id=OWNER).create(GATED, GATED_RISK, now=NOW)
+            await seed.commit()
+
+        async def decide():
+            async with factory() as session:
+                return await AuthorizationService().authorize_with_grants(
+                    proposal(), grants=GrantService(session, owner_id=OWNER), now=NOW
+                )
+
+        decisions = await asyncio.gather(*(decide() for _ in range(4)))
+    finally:
+        await engine.dispose()
 
     # The property is that concurrency never produces a *wrongly permissive*
     # decision, and that every decision which found a grant found the same
