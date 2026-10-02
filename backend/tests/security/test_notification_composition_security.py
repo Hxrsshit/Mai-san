@@ -177,9 +177,12 @@ def test_the_root_has_no_dynamic_or_dangerous_call() -> None:
                         "getattr", "setattr", "system", "popen", "Popen", "run"}
 
 
-def test_nothing_in_the_application_calls_the_composition_yet() -> None:
-    """6K makes delivery constructible. What triggers it -- a route, a command,
-    a worker -- is the next decision, so today nothing imports this."""
+def test_only_the_api_dependency_calls_the_composition() -> None:
+    """Changed deliberately in 6L. 6K made delivery constructible and nothing
+    imported it. 6L's person-driven route is the trigger, and it reaches the
+    composition only through one FastAPI dependency in `deps.py`. A worker,
+    the runtime, the runner, a startup hook or a second route importing it
+    still fails here."""
     importers = []
     for path in APP.rglob("*.py"):
         if PACKAGE in path.parents:
@@ -187,16 +190,28 @@ def test_nothing_in_the_application_calls_the_composition_yet() -> None:
         if any(m == "app.composition" or m.startswith("app.composition.")
                for m in imports(parse(path))):
             importers.append(str(path.relative_to(BACKEND)))
-    assert importers == []
+    assert importers == ["app/api/deps.py"]
 
 
-def test_no_route_or_lifespan_reaches_delivery() -> None:
+def test_only_the_6l_route_reaches_delivery_and_never_the_lifespan() -> None:
+    """Changed deliberately in 6L. `deps.py` may call the composition's
+    service factory (never the registry), and the 6L route may use only that
+    dependency. `main.py` and every other route reach none of it."""
+    allowed = {
+        "deps.py": ({"app.composition.notification_delivery", "app.delivery.service"},
+                    {"notification_delivery_service", "NotificationDeliveryService"}),
+        "routes/notification_delivery.py": ({"app.delivery.contract"}, set()),
+    }
     for path in list((APP / "api").rglob("*.py")) + [APP / "main.py"]:
         tree = parse(path)
-        assert not [m for m in imports(tree)
-                    if m.startswith(("app.composition", "app.delivery", "app.telegram.notifier"))], path
-        assert not {"notification_delivery_service", "get_delivery_registry",
-                    "NotificationDeliveryService"} & mentioned(tree), path
+        relative = path.relative_to(APP / "api").as_posix() if APP / "api" in path.parents else "main.py"
+        reached = {m for m in imports(tree)
+                   if m.startswith(("app.composition", "app.delivery", "app.telegram.notifier"))}
+        named = {"notification_delivery_service", "get_delivery_registry",
+                 "build_delivery_registry", "NotificationDeliveryService"} & mentioned(tree)
+        modules, names = allowed.get(relative, (set(), set()))
+        assert reached == modules, (relative, reached)
+        assert named == names, (relative, named)
 
 
 # ============================================================================

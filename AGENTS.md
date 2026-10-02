@@ -265,6 +265,17 @@ a change pass. If a test blocks a change, the test is usually right.
 - The task API is read-only (GETs). There is no HTTP surface for scheduling
   background work, configuring monitoring, creating standing grants, or
   running the runner. Adding one is an architectural change (§6).
+- **Notification delivery (Stage 6L, approved by the owner):**
+  `POST /api/task-notifications/{notification_id}/deliveries` with the body
+  `{"adapter": "<name>"}` is the one route that triggers delivery. It hands
+  the id and name to the 6I `NotificationDeliveryService` from the 6K
+  composition root (through `deps.get_notification_delivery_service`) and
+  maps the result to a status. The body accepts no other field: the owner is
+  the server's, and the message, chat and host are the channel's. It marks
+  nothing read and records nothing. It is ungated, and inert while no
+  channel is configured. Nothing but a person's client calls it: no model
+  output, chat turn, runner or background loop. Automatic delivery would be
+  a separate architectural decision (§6).
 
 ---
 

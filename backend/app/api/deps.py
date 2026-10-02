@@ -5,9 +5,11 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.composition.notification_delivery import notification_delivery_service
 from app.context.service import ContextService
 from app.core.config import Settings, get_settings
 from app.database.session import get_db_session, get_session_factory
+from app.delivery.service import NotificationDeliveryService
 from app.llm.base import LLMProvider
 from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
@@ -185,6 +187,17 @@ def get_task_service(session: DbSession, settings: AppSettings) -> TaskService:
     return TaskService(session=session, settings=settings)
 
 
+def get_notification_delivery_service(session: DbSession) -> NotificationDeliveryService:
+    """Stage 6L. The 6I delivery service, from the 6K composition root.
+
+    Takes no owner and no adapter: the owner is the composition's own
+    default, never a request parameter, and the adapters are whatever the
+    one process registry holds. Built per request because it holds this
+    request's session; the registry and adapters behind it are shared.
+    """
+    return notification_delivery_service(session)
+
+
 def get_entity_service(
     session: DbSession, provider: Provider, settings: AppSettings
 ) -> EntityService:
@@ -220,3 +233,6 @@ Orchestration = Annotated[
 Executions = Annotated[ExecutionService, Depends(get_execution_service)]
 
 Tasks = Annotated[TaskService, Depends(get_task_service)]
+NotificationDeliveries = Annotated[
+    NotificationDeliveryService, Depends(get_notification_delivery_service)
+]

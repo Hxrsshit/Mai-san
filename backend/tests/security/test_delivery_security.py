@@ -279,14 +279,17 @@ def test_logs_carry_only_ids_names_outcomes_and_reasons() -> None:
 
 
 def test_only_the_channel_and_the_composition_root_import_delivery() -> None:
-    """Changed deliberately twice, and an exact allow-list both times.
+    """Changed deliberately three times, and an exact allow-list each time.
 
     Through 6I nothing outside `app/delivery` imported it, because no channel
     existed. 6J's Telegram adapter had to implement the contract, so it was
     allowed exactly `app.delivery.contract`. 6K's composition root has to
     build the registry and the service, so it is allowed exactly those two.
-    A third importer, a channel reaching the service or registry, or the
-    composition root reaching anything else in the package, still fails.
+    6L's invocation route reaches delivery through `deps.py`, which names the
+    service type for its dependency, and the route reads the result contract.
+    Neither may reach the registry. Any other importer, a channel reaching the
+    service or registry, or one of these reaching anything else in the
+    package, still fails.
     """
     importers = {}
     for path in APP.rglob("*.py"):
@@ -303,13 +306,27 @@ def test_only_the_channel_and_the_composition_root_import_delivery() -> None:
         "app/composition/notification_delivery.py": {
             "app.delivery.registry", "app.delivery.service",
         },
+        "app/api/deps.py": {"app.delivery.service"},
+        "app/api/routes/notification_delivery.py": {"app.delivery.contract"},
     }, importers
 
 
-def test_no_http_route_triggers_delivery() -> None:
+def test_only_the_6l_route_triggers_delivery() -> None:
+    """Changed deliberately in 6L: one route may trigger delivery, and only
+    through the dependency. No HTTP module constructs the service or names
+    the registry, and every other route still cannot reach delivery at all."""
     for path in (APP / "api").rglob("*.py"):
+        tree = parse(path)
         source = path.read_text(encoding="utf-8")
-        for name in ("NotificationDeliveryService", "AdapterRegistry", "app.delivery"):
+        assert "AdapterRegistry" not in source, path.name
+        assert not [n for n in ast.walk(tree)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id == "NotificationDeliveryService"], path.name
+        relative = path.relative_to(APP / "api").as_posix()
+        if relative in ("deps.py", "routes/notification_delivery.py"):
+            continue
+        for name in ("NotificationDeliveryService", "NotificationDeliveries",
+                     "app.delivery", "deliver("):
             assert name not in source, (path.name, name)
 
 

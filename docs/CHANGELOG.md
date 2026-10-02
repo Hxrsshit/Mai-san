@@ -25,11 +25,11 @@ before substantial work and updates it after completing work (see
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6K: notification delivery composition**: the commit titled `Stage 6K: notification delivery composition` (the commit that adds `backend/app/composition/`; find it with `git log -1 -- backend/app/composition`) |
-| Previous stages | 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Latest completed stage | **Stage 6L: notification invocation boundary**: the commit titled `Stage 6L: notification invocation boundary` (the commit that adds `backend/app/api/routes/notification_delivery.py`; find it with `git log -1 -- backend/app/api/routes/notification_delivery.py`) |
+| Previous stages | 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0018_task_notifications.py` (head; 6I, 6J and 6K added none) |
-| Next stage | **6L: not started.** The open decision is the delivery *trigger* (an invocation surface or a worker); see Deferred. Do not begin it without an explicit request. |
+| Latest migration | `0018_task_notifications.py` (head; 6I, 6J, 6K and 6L added none) |
+| Next stage | **6M: not started.** Open decisions (see Deferred): automatic delivery for some notification events, a read surface for task notifications, durable delivery records, and real authentication. Do not begin any of them without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -43,6 +43,9 @@ not commit them as part of other work, and do not describe them as done.
     `backend/tests/test_telegram_adapter.py`, plus webhook edits to
     `backend/app/api/routes/__init__.py`, `backend/app/api/routes/conversations.py`
     and `backend/app/main.py`.
+  - Its `main.py` and `routes/__init__.py` lines sit beside 6L's router
+    registration in the same files. 6L committed only its own lines (staged
+    from HEAD plus the 6L edits); the webhook lines remain unstaged.
   - It previously hit a Python 3.9 compatibility issue, which was corrected.
   - Focused testing then exposed a defect in the conversation route (see
     *Known defects*). That defect is unresolved, and the webhook is not
@@ -157,12 +160,17 @@ not commit them as part of other work, and do not describe them as done.
     when configured), with no endpoint and no worker. It needs explicit
     approval. **That composition root was then approved and built as Stage 6K
     (see Completed).** Gap 2, the invocation surface, remains open.
-- **Triggering delivery.** 6K composed the delivery graph (one registry, one
-  Telegram adapter), so `notification_delivery_service(session)` is ready to
-  use, but **nothing calls it**: no route, command, worker or startup hook.
-  Who triggers delivery, and when (an explicit action, or a worker, which
-  would be a new architectural component), is undecided and needs its own
-  approved stage. Other channels (email, push, UI) would be further adapters.
+- **Automatic delivery.** 6L added the explicit trigger: a person's client asks
+  for one notification to be delivered through one channel. Nothing delivers
+  automatically: 6H's `record_outcome` still only records, and no runtime,
+  runner or startup hook calls delivery. Which events (if any) should deliver
+  without being asked, and through what (the runtime would be the only loop),
+  is a separate architectural decision.
+- **No authentication.** Mai has no authentication layer (AGENTS.md §2). The
+  6L route follows every other route: the owner is the server's
+  `LOCAL_OWNER_ID`, never a request value, and the backend is bound to
+  127.0.0.1. A JSON-only body blocks cross-site form posts (CORS preflight).
+  A real authentication layer would be its own stage.
 - **The uncommitted webhook builds its own Telegram sender.** The webhook
   work (`backend/app/api/routes/telegram.py`, uncommitted) constructs a
   `BotApiSender` per request in `get_telegram_sender`, a second Telegram
@@ -204,10 +212,164 @@ not commit them as part of other work, and do not describe them as done.
 
 ## Completed (newest first)
 
-### Stage 6K: Notification delivery composition (commit titled `Stage 6K: notification delivery composition`, 2026-10-02)
+### Stage 6L: Notification invocation boundary (commit titled `Stage 6L: notification invocation boundary`, 2026-10-02)
 
-- **Status:** completed, verified, committed. A commit cannot contain its own
-  hash. It is the commit that adds `backend/app/composition/`.
+- **Status:** completed, verified, committed. Parent `bb0ea41` (6K). A commit
+  cannot contain its own hash; it is the commit that adds
+  `backend/app/api/routes/notification_delivery.py`.
+- **Purpose:** the first production caller of delivery. Until 6L, nothing
+  asked 6I to deliver anything. A person can now ask for one existing task
+  notification to be delivered through one registered channel:
+  `POST /api/task-notifications/{notification_id}/deliveries` with
+  `{"adapter": "telegram"}`.
+- **Decisions, made by the owner before any code (AGENTS.md §6):**
+  - an HTTP route is the invocation surface (a new route with an outbound
+    effect crosses §6, so it needed explicit approval);
+  - the existing single-owner model: no authentication layer exists, and none
+    was added; the owner comes only from the server;
+  - the route is ungated (not behind `EXECUTION_ENABLED`): delivery is not
+    tool execution, and with no channel configured it refuses everything;
+  - registration lines in `main.py` and `routes/__init__.py`, which also hold
+    the other agent's uncommitted webhook lines, were committed by staging
+    HEAD plus the 6L edits only.
+- **Architecture:** three small pieces, no new layer.
+  - `api/routes/notification_delivery.py`: one POST endpoint. Body
+    `DeliveryRequest` is exactly one strict string field, `adapter` (1 to 32
+    characters, `extra="forbid"`). The endpoint makes one call,
+    `service.deliver(notification_id, request.adapter)`, and maps the 6I
+    result: `delivered`/`duplicate` give 200 with the 6I `DeliveryResult`;
+    `notification_not_found` and `unknown_adapter` give 404;
+    `malformed_notification` gives 422; an unmapped refusal gives 409; a
+    channel failure gives 502. Errors carry only 6I's reason code, or the fixed
+    `delivery_failed`/`delivery_refused` when 6I gives none. It does no
+    logging (6I logs), no writing, no retry and no scheduling.
+  - `api/deps.py`: `get_notification_delivery_service(session)` returns
+    `notification_delivery_service(session)` from the 6K root, so the owner is
+    the composition's `LOCAL_OWNER_ID` default and the registry is the one
+    process registry.
+  - `main.py` and `routes/__init__.py`: the router is included once,
+    unconditionally.
+  - Reused unchanged: 6H (ownership, notification rows, read state), 6I
+    (validation, refusals, timeout, failure containment), 6J (message, chat,
+    duplicate memory), 6K (one registry and adapter), and the foundation
+    (host, method, redirects). No new service, registry, sender, setting,
+    table, migration, worker, scheduler or retry.
+  - **The caller controls only the notification id and the channel name.**
+    Owner, token, chat id, URL, host, recipient and text cannot be supplied:
+    a body field is a 422, and query parameters and headers are ignored.
+    Unknown and unconfigured channels are the same 404. Another owner's
+    notification is the same 404 as a missing one.
+  - AGENTS.md §4.7 now records the route.
+- **Four existing pins changed, each to an exact allow-list (none loosened):**
+  - 6I importers of `app.delivery`: adds `deps.py` (`service`, for the
+    dependency's type) and the route (`contract`, for the result).
+  - 6I "no HTTP route triggers delivery" became "only the 6L route triggers
+    delivery". No HTTP module names the registry or constructs the service,
+    and every other route still cannot reach delivery.
+  - 6K "nothing calls the composition yet" became "only `deps.py` calls it".
+  - 6K "no route or lifespan reaches delivery" now allows exactly `deps.py`
+    (the service factory) and the route (the contract). `main.py` reaches
+    none of it.
+- **Verification** (isolated worktree: `bb0ea41` plus the 6L files, with
+  `main.py` and `routes/__init__.py` as HEAD plus the 6L lines only):
+  - Tests: 46 behavioural (`tests/test_notification_invocation.py`) and 14
+    security (`tests/security/test_notification_invocation_security.py`).
+    They go through the real app, the 6K composition, 6I and 6J, with
+    notifications made by the real 6G/6H runtime path; only the Telegram
+    transport is stubbed. Covered:
+    - delivery, duplicates, no state change and no read-marking;
+    - one 6I call per request, on the process registry with the server's
+      owner, and no adapter or sender built per request;
+    - missing, other-owner (identical), unknown and unconfigured (identical)
+      refusals;
+    - malformed requests (12 shapes); 13 forbidden body fields; query and
+      header injection; 13 adapter-name injections, with no import of any
+      of them;
+    - 6I's strip-and-lowercase normalisation;
+    - CSRF (form, text and multipart content types refused) and the CORS
+      preflight;
+    - 502 on channel failure, and a failure is not remembered as delivered;
+    - redaction (token, URL, database URL and path in adapter and transport
+      exceptions reach no response and no log record); the app's generic
+      500;
+    - five concurrent requests on separate connections (a file-backed
+      SQLite with a real pool): 1 delivered, 4 duplicate, one request.
+  - Focused: 6L 46/46, 6L security 14/14. With 6K, 6I, 6J and 6H: 272
+    passed. All of `tests/security`: 2248 passed, 1 skipped.
+  - Full suite: ordered 5880 passed, 2 skipped (318 s). Shuffled with the
+    scratch shuffle plugin (real reordering, seed reported; 5880 or more of
+    5882 items moved): seeds 20261003, 2088385192 and 227968032, each 5880
+    passed, 2 skipped (280 to 288 s). No segfault in any run.
+  - Mutation: 19/19 killed. The validated harness passed (anchors unique,
+    green baseline, two controls survived: an unasserted comment and an
+    unasserted docstring; the route has no log string to use as the second
+    control). Targets: body (extras ignored, not strict, unbounded, empty
+    allowed), the 6I call (hard-coded channel, faked success, read-marking),
+    status mapping (403 for missing, 400 for unknown adapter, refusal or
+    failure as 200, whole result as detail, no fixed code, moved under the
+    task API), dependency (another owner, a registry per request, an empty
+    registry), and registration (missing, gated on execution). With the
+    behavioural tests alone, 18/19: B2 (`strict` removed) survives and is
+    **equivalent** on the JSON surface (no JSON value validates differently;
+    checked). It stays pinned structurally.
+  - Docker (the existing `mai-backend:latest`, throwaway PostgreSQL, the
+    isolated source mounted read-only; the mounted route's hash was checked):
+    - over real HTTP to the unconfigured server: POST gave 404
+      `unknown_adapter`; a form post, an extra `chat_id` and a non-UUID id
+      gave 422; GET gave 405; a cross-origin preflight got no allow-origin;
+      OpenAPI lists exactly one POST path; no delivery was attempted, and
+      the composition was built on first use, not at startup;
+    - in the container, the real app over ASGI with real PostgreSQL
+      sessions and a sentinel-configured composition (transport stubbed),
+      12/12:
+      - delivered then duplicate;
+      - another owner's notification is the same 404 as a missing one;
+      - injection attempts refused with nothing sent;
+      - five concurrent POSTs gave 1 delivered and 4 duplicate, with exactly
+        one Telegram request per notification;
+      - no row, task or read state changed; the same registry throughout;
+      - no token, URL or endpoint in any log record.
+    - The DEBUG server log held no sentinel, `sendMessage`, `/bot`, database
+      password, traceback or ERROR line. Graceful stop; the throwaway
+      database was dropped and the real database was untouched (0016).
+    - One in-container check ("no connection other than PostgreSQL" while
+      unconfigured) may pass vacuously, because the pool can reuse a
+      connection, so it is not counted as evidence. The inert claim rests on
+      the empty registry and the 404.
+  - Structural audit 14/14 on the exact tree committed:
+    - one class each, constructed only in the 6K root, and `BotApiSender`
+      only in 6J;
+    - one service-factory call site (`deps.py`) and one production
+      `deliver` caller (the route);
+    - no new sender, client, registry, service, worker, setting or migration;
+    - no protected package changed (tasks, runtime, execution, authorization,
+      tools, llm, delivery, telegram, composition, integrations, core);
+    - only 6L paths changed, and the `main.py`/`__init__` diff is exactly
+      the 9 lines of the 6L router;
+    - the task API is still GET-only, and no new `mark_read` caller exists.
+    - The first run reported 13/14 because the audit script's own expected
+      line count was wrong (8 instead of 9); the diff was inspected and holds.
+  - **Live Telegram not tested:** no credentials are configured, and none
+    were requested.
+- **Known limitations:**
+  - **No authentication:** the route is as protected as every other Mai
+    route (127.0.0.1 bind, CORS, JSON-only body), no more. There is no
+    "authentication failure" to test because no authentication exists.
+  - **Not restart-safe:** duplicate memory is 6J's in-process memory, so
+    after a restart the same notification can be delivered again. Durable
+    delivery records remain deferred.
+  - **The person can deliver one notification more than once across
+    restarts**, and can deliver any of their own notifications, read or
+    unread. No policy limits which notifications may be delivered beyond 6I's
+    checks.
+  - **No list surface:** a client must already know a notification id. Task
+    notifications still have no HTTP read route (deferred).
+
+### Stage 6K: Notification delivery composition (`bb0ea41`, 2026-10-02)
+
+- **Status:** completed, verified, committed as `bb0ea41` (it adds
+  `backend/app/composition/`; recorded by 6L, since a commit cannot contain
+  its own hash).
 - **Purpose:** the production composition root for notification delivery. It
   builds, once per process, the graph 6I and 6J defined but nothing
   assembled:

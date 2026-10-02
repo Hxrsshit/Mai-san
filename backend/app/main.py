@@ -24,6 +24,7 @@ from app.api.routes import (
     integrations_router,
     intent_router,
     knowledge_router,
+    notification_delivery_router,
     orchestration_router,
     planning_router,
     reminders_router,
@@ -211,6 +212,12 @@ def create_app() -> FastAPI:
     # integration, no model and no capability -- and because an activity view
     # that can be switched off is an audit trail that can be switched off.
     app.include_router(tasks_router)
+
+    # Stage 6L. A person asks for one existing task notification to be
+    # delivered through one registered channel. Ungated: with no channel
+    # configured the 6K registry is empty and every request is refused, so
+    # the route is inert, like the integrations router above.
+    app.include_router(notification_delivery_router)
 
     return app
 
