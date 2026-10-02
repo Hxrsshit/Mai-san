@@ -28,7 +28,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
-from app.database.metadata import Base
+from app.database.models.base import Base
 from app.workflows.states import WorkflowState
 
 #: `jsonb` on PostgreSQL, `json` on SQLite. The same choice Stage 4E made.
