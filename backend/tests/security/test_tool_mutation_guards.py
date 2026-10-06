@@ -13,6 +13,9 @@ The same eight mutations were also applied to the source files directly during
 development; the counts are recorded in the acceptance report.
 """
 
+import gc
+import weakref
+
 import pytest
 
 from app.tools import policy
@@ -231,9 +234,19 @@ def test_the_no_execution_guard_is_load_bearing() -> None:
         def execute(self, arguments):  # pragma: no cover
             return arguments
 
-    assert defined_dangerous(_Executable) == {"execute"}, (
-        "the check cannot see an added execute method, so it proves nothing"
-    )
+    # A class stays in Tool.__subclasses__() until it is garbage collected, and
+    # test_orchestration_security walks that list. Remove the throwaway
+    # subclass here so it cannot leak into that check.
+    leaked = weakref.ref(_Executable)
+    try:
+        assert defined_dangerous(_Executable) == {"execute"}, (
+            "the check cannot see an added execute method, so it proves nothing"
+        )
+    finally:
+        del _Executable
+        gc.collect()
+    assert leaked() is None
+    assert all(sub.__module__ != __name__ for sub in Tool.__subclasses__())
 
 
 # --- 8. Authorization must stay monotonic -----------------------------------
