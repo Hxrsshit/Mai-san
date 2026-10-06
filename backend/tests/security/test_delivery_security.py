@@ -59,7 +59,7 @@ def test_the_delivery_package_has_exactly_these_modules() -> None:
     """Guards everything below: an empty glob passes vacuously."""
     assert [p.name for p in MODULES] == [
         "__init__.py", "contract.py", "local.py", "models.py", "records.py",
-        "registry.py", "service.py",
+        "registry.py", "service.py", "status.py",
     ]
 
 
@@ -128,8 +128,22 @@ def test_the_package_has_no_dynamic_or_dangerous_call() -> None:
 
 
 def test_the_package_has_no_loop_and_no_retry() -> None:
+    """Changed deliberately in 6M.2: `status.py` may iterate the rows of its
+    one read query to build its answer -- one `for`, with no await, call to
+    an adapter or claim in it. Every other module still has no loop at all,
+    and no module has a `while`."""
     for path, tree in package_tree():
-        assert not [n for n in ast.walk(tree) if isinstance(n, (ast.While, ast.For))], path.name
+        assert not [n for n in ast.walk(tree) if isinstance(n, ast.While)], path.name
+        loops = [n for n in ast.walk(tree) if isinstance(n, (ast.For, ast.AsyncFor))]
+        if path.name == "status.py":
+            assert len(loops) == 1 and isinstance(loops[0], ast.For), path.name
+            body = [n for stmt in loops[0].body for n in ast.walk(stmt)]
+            assert not [n for n in body if isinstance(n, ast.Await)]
+            assert not {"deliver", "claim", "finish"} & {
+                getattr(n.func, "attr", getattr(n.func, "id", None))
+                for n in body if isinstance(n, ast.Call)}
+            continue
+        assert not loops, path.name
     service = parse(PACKAGE / "service.py")
     deliver_calls = [
         n for n in ast.walk(service)
@@ -322,8 +336,10 @@ def test_only_the_channel_and_the_composition_root_import_delivery() -> None:
         "app/composition/notification_delivery.py": {
             "app.delivery.registry", "app.delivery.service",
         },
-        "app/api/deps.py": {"app.delivery.service"},
-        "app/api/routes/notification_delivery.py": {"app.delivery.contract"},
+        # Stage 6M.2: the read API adds the read-only delivery-state module,
+        # and only that -- never `records` (the writer) or the registry.
+        "app/api/deps.py": {"app.delivery.service", "app.delivery.status"},
+        "app/api/routes/notification_delivery.py": {"app.delivery.contract", "app.delivery.status"},
         # Stage 6M.1: the metadata registry imports the delivery-record model.
         "app/database/metadata.py": {"app.delivery"},
     }, importers

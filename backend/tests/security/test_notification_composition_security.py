@@ -198,9 +198,11 @@ def test_only_the_6l_route_reaches_delivery_and_never_the_lifespan() -> None:
     service factory (never the registry), and the 6L route may use only that
     dependency. `main.py` and every other route reach none of it."""
     allowed = {
-        "deps.py": ({"app.composition.notification_delivery", "app.delivery.service"},
+        # Stage 6M.2 adds the read-only delivery-state module to both.
+        "deps.py": ({"app.composition.notification_delivery", "app.delivery.service",
+                     "app.delivery.status"},
                     {"notification_delivery_service", "NotificationDeliveryService"}),
-        "routes/notification_delivery.py": ({"app.delivery.contract"}, set()),
+        "routes/notification_delivery.py": ({"app.delivery.contract", "app.delivery.status"}, set()),
     }
     for path in list((APP / "api").rglob("*.py")) + [APP / "main.py"]:
         tree = parse(path)

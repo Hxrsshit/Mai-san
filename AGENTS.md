@@ -276,6 +276,18 @@ a change pass. If a test blocks a change, the test is usually right.
   channel is configured. Nothing but a person's client calls it: no model
   output, chat turn, runner or background loop. Automatic delivery would be
   a separate architectural decision (§6).
+- **Notification read API (Stage 6M.2, approved by the owner):** on the same
+  router, `GET /api/task-notifications` (newest first, at most 50 per page,
+  keyset-paged by `before=<id>`, optional `unread_only`),
+  `GET /api/task-notifications/{id}` and `POST /api/task-notifications/{id}/read`
+  (empty JSON body, idempotent, 204). The routes delegate to 6H's
+  `NotificationService` and to the read-only `app/delivery/status.py`, both
+  bound in `deps.py` to the request's owner, which is resolved only by
+  `deps.get_owner_id` (today always `LOCAL_OWNER_ID`; 6M.4 replaces it). No
+  route takes an owner. Another owner's notification is the same 404 as a
+  missing one. Responses carry references, times and codes only: no owner, no
+  record id, lease or delivery key, and no text. Mark-read writes only 6H's
+  `read_at`, never a delivery record.
 - **Durable delivery records (Stage 6M.1):** whether a notification was
   delivered through an adapter is recorded in `notification_deliveries`,
   unique per (notification, adapter). `app/delivery/records.py` is the one

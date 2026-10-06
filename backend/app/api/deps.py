@@ -1,5 +1,6 @@
 """Shared FastAPI dependencies."""
 
+import uuid
 from typing import Annotated
 
 from fastapi import Depends
@@ -10,6 +11,7 @@ from app.context.service import ContextService
 from app.core.config import Settings, get_settings
 from app.database.session import get_db_session, get_session_factory
 from app.delivery.service import NotificationDeliveryService
+from app.delivery.status import DeliveryStatusReader
 from app.llm.base import LLMProvider
 from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
@@ -20,6 +22,8 @@ from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
 from app.orchestration.service import OrchestrationService
 from app.planning.service import PlanningService
+from app.tasks.models import LOCAL_OWNER_ID
+from app.tasks.notifications import NotificationService
 from app.tasks.service import TaskService
 from app.runtime.facts import build as build_runtime_facts
 from app.tools.authorization import AuthorizationService
@@ -198,6 +202,29 @@ def get_notification_delivery_service(session: DbSession) -> NotificationDeliver
     return notification_delivery_service(session)
 
 
+def get_owner_id() -> uuid.UUID:
+    """Stage 6M.2. The one place a request's owner is resolved.
+
+    Mai has no authentication (AGENTS.md §2): there is one owner, the
+    documented constant. Never a request value. Stage 6M.4 replaces this
+    function, and everything that depends on it follows.
+    """
+    return LOCAL_OWNER_ID
+
+
+OwnerId = Annotated[uuid.UUID, Depends(get_owner_id)]
+
+
+def get_notification_service(session: DbSession, owner_id: OwnerId) -> NotificationService:
+    """Stage 6M.2. The 6H read service, bound to the request's owner."""
+    return NotificationService(session, owner_id)
+
+
+def get_delivery_status_reader(session: DbSession, owner_id: OwnerId) -> DeliveryStatusReader:
+    """Stage 6M.2. Read-only delivery state, bound to the request's owner."""
+    return DeliveryStatusReader(session, owner_id)
+
+
 def get_entity_service(
     session: DbSession, provider: Provider, settings: AppSettings
 ) -> EntityService:
@@ -236,3 +263,5 @@ Tasks = Annotated[TaskService, Depends(get_task_service)]
 NotificationDeliveries = Annotated[
     NotificationDeliveryService, Depends(get_notification_delivery_service)
 ]
+TaskNotifications = Annotated[NotificationService, Depends(get_notification_service)]
+DeliveryStatuses = Annotated[DeliveryStatusReader, Depends(get_delivery_status_reader)]

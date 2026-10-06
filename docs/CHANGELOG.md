@@ -21,47 +21,38 @@ before substantial work and updates it after completing work (see
 
 ---
 
-## Current state (as of 2026-10-02)
+## Current state (as of 2026-10-06)
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6M.1: durable notification delivery records**: the commit titled `Stage 6M.1: durable notification delivery records` (the commit that adds `backend/app/delivery/records.py`; find it with `git log -1 -- backend/app/delivery/records.py`) |
-| Since 6M.1 | Fix (not a stage): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved) |
-| Previous stages | 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Latest completed stage | **Stage 6M.2: notification read API**: the commit titled `Stage 6M.2: notification read API` (the commit that adds `backend/app/delivery/status.py`; find it with `git log -1 -- backend/app/delivery/status.py`) |
+| Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved) |
+| Previous stages | 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0019_notification_deliveries.py` (head, 6M.1). The real `mai` database observed at `0016`; it was not migrated by any verification. |
-| Next stage | **6M.2: notification read API, not started.** 6M is split into four commits with an owner checkpoint between each: 6M.1 durable delivery records (done), 6M.2 read API, 6M.3 automatic delivery, 6M.4 authentication. Do not begin the next one without an explicit go-ahead. |
+| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2 added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
+| Next stage | **6M.3: automatic delivery, not started.** 6M is split into four commits with an owner checkpoint between each: 6M.1 durable delivery records (done), 6M.2 read API (done), 6M.3 automatic delivery, 6M.4 authentication. Do not begin the next one without an explicit go-ahead. |
 
 ### Uncommitted / in progress (NOT completed)
 
 These are in the working tree and are **not** part of any completed stage. Do
 not commit them as part of other work, and do not describe them as done.
 
-- **Telegram chat/webhook interface: uncommitted and incomplete.** (The
-  Telegram *settings and Bot API sender* are committed in `6626912`, and the
-  *notification adapter* in 6J. This is only the conversational webhook.)
-  - Files: `backend/app/api/routes/telegram.py`,
-    `backend/tests/test_telegram_adapter.py`, plus webhook edits to
-    `backend/app/api/routes/__init__.py`, `backend/app/api/routes/conversations.py`
-    and `backend/app/main.py`.
-  - Its `main.py` and `routes/__init__.py` lines sit beside 6L's router
-    registration in the same files. 6L committed only its own lines (staged
-    from HEAD plus the 6L edits); the webhook lines remain unstaged.
-  - It previously hit a Python 3.9 compatibility issue, which was corrected.
-  - Focused testing then exposed a defect in the conversation route (see
-    *Known defects*). That defect is unresolved, and the webhook is not
-    verified. 6J does not depend on it and does not touch it.
-- **Frontend/branding changes: uncommitted.** Edits to
-  `frontend/app/{globals.css,layout.tsx,page.tsx}` and
-  `frontend/components/{MessageInput,MessageList,Sidebar}.tsx`; new
-  `frontend/public/branding/`, `frontend/public/favicon.svg`,
-  `frontend/package-lock.json`, and `MAi branding .png` at the repository
-  root. Not reviewed or verified as part of any stage.
+- **`MAi branding .png`** at the repository root: untracked. Nothing else is
+  uncommitted (checked 2026-10-06).
+- *(Resolved)* The Telegram chat/webhook interface (`routes/telegram.py`,
+  `tests/test_telegram_adapter.py` and its `main.py` / `routes/__init__.py` /
+  `conversations.py` edits) and the frontend/branding changes were committed
+  by the owner in `e10b7ca`, together with the `payload` fix (Known defect 1).
+  They were not verified as part of any stage. The webhook's own Telegram
+  sender is still to be reconciled with the 6K composition (see Deferred).
 
 ### Known defects
 
-1. **`backend/app/api/routes/conversations.py` (~line 238) references the
-   undefined name `payload`.** The extracted helper calls
+1. ~~**`backend/app/api/routes/conversations.py` (~line 238) referenced the
+   undefined name `payload`.**~~ **Resolved in `e10b7ca`** (the helper now
+   passes its own `content` parameter; one line; chat tests and the webhook
+   tests passed, and a live chat turn returned 201 on 2026-10-02). Original
+   entry: The extracted helper calls
    `chat.send_message(..., content=payload.content)`, but only `content` is
    in scope, so every chat turn raises `NameError` and returns 500. The
    defect exists only in the uncommitted Telegram edits; committed `d249170`
@@ -181,17 +172,16 @@ not commit them as part of other work, and do not describe them as done.
   `LOCAL_OWNER_ID`, never a request value, and the backend is bound to
   127.0.0.1. A JSON-only body blocks cross-site form posts (CORS preflight).
   A real authentication layer would be its own stage.
-- **The uncommitted webhook builds its own Telegram sender.** The webhook
-  work (`backend/app/api/routes/telegram.py`, uncommitted) constructs a
+- **The webhook builds its own Telegram sender.** The webhook
+  (`backend/app/api/routes/telegram.py`, committed in `e10b7ca`) constructs a
   `BotApiSender` per request in `get_telegram_sender`, a second Telegram
-  send path beside the 6K composition. When that work is finished it should
-  be reconciled with the composition rather than committed as is.
+  send path beside the 6K composition. It should be reconciled with the
+  composition.
 - **Stage 6M plan (owner decisions, 2026-10-02).** Four commits, in
   dependency order, each verified and committed alone, with an owner
   checkpoint before the next:
   1. 6M.1 durable delivery records: done (see Completed);
-  2. 6M.2 task-notification read API: thin routes over `NotificationService`,
-     plus one keyset-cursor list method;
+  2. 6M.2 task-notification read API: done (see Completed);
   3. 6M.3 automatic delivery: a third bounded work source in the existing
      runtime tick. It is opt-in (`NOTIFICATION_AUTO_DELIVER_ADAPTERS`,
      default empty), delivers only notifications created after enablement,
@@ -202,10 +192,9 @@ not commit them as part of other work, and do not describe them as done.
      frontend work.
 
   Each needs its own approval of details before implementation.
-- **No read surface for task notifications.** `NotificationService` (unread,
-  for_task, get, mark_read) exists in-process only. Unlike the reminder inbox
-  (`GET /api/reminders/notifications`), no HTTP route exposes it, by
-  decision. Adding a read-only route is a separate, approved change.
+- ~~**No read surface for task notifications.**~~ Built in 6M.2 (list, get
+  and mark-read). Still deferred: a per-task lookup (6H's `for_task`) and an
+  unread count.
 - **Two inboxes.** Reminder notifications (5F.1) and task notifications (6H)
   are separate tables. Unifying them behind one read contract is deferred.
 - No HTTP or UI surface exists for `TaskService.schedule_background`,
@@ -273,11 +262,176 @@ not commit them as part of other work, and do not describe them as done.
 - The uncommitted Telegram webhook and frontend/branding work in the tree was
   not touched, staged or verified.
 
-### Stage 6M.1: Durable notification delivery records (commit titled `Stage 6M.1: durable notification delivery records`, 2026-10-02)
+### Stage 6M.2: Notification read API (commit titled `Stage 6M.2: notification read API`, 2026-10-06)
 
-- **Status:** completed, verified, committed. Parent `a0e16ae` (6L). It is the
-  commit that adds `backend/app/delivery/records.py` (a commit cannot contain
+- **Status:** completed, verified, committed. Parent `e10b7ca`. It is the
+  commit that adds `backend/app/delivery/status.py` (a commit cannot contain
   its own hash).
+- **Purpose:** the owner can read their task notifications over HTTP. Before
+  6M.2, 6H's `NotificationService` existed in-process only, and 6L could only
+  deliver a notification whose id the client already knew.
+- **Owner decisions (2026-10-06):**
+  - extend the existing `/api/task-notifications` router (no `main.py` change);
+  - include mark-read;
+  - delivery state shown as the stored status plus a derived `retryable`;
+  - per-task lookup deferred.
+- **Endpoints** (all in `app/api/routes/notification_delivery.py`, beside
+  6L's delivery POST):
+  - `GET /api/task-notifications?limit=&before=&unread_only=`: newest
+    first (`created_at DESC, id DESC`); `limit` 1-50 (default 20; 50 is 6H's
+    `MAX_LISTED`). Keyset paging: `before=<id of the last row>`, which must
+    be one of the owner's notifications, read or unread. The response is
+    `{notifications, next_before}`; `next_before` is null on the last page.
+    There is no total count.
+  - `GET /api/task-notifications/{id}`: the same shape as a list item.
+  - `POST /api/task-notifications/{id}/read` with exactly `{}`: 204 whether
+    this call marked it or it was already read (idempotent). It delegates to
+    6H's conditional `mark_read`.
+- **Fields:**
+  - Returned: `id`, `task_id`, `kind`, `check_number`, `execution_id`,
+    `created_at`, `read_at`, and `deliveries[]`. Each delivery has
+    `adapter`, `status` (sending / delivered / failed), `attempts`,
+    `last_attempt_at`, `delivered_at` and `retryable` (`failed`, or
+    `sending` past its lease: exactly when 6M.1 would grant a new claim).
+  - Never returned: owner id, delivery-record id, lease, delivery key, or any
+    text, recipient, credential or error (none is stored).
+- **Errors:**
+  - 404 `notification_not_found`: missing, or another owner's (identical
+    body).
+  - 422 `validation_error`: a malformed id, limit, cursor or body (including
+    any field in the mark-read body, and non-JSON content types).
+  - 422 `invalid_cursor`: an unknown or foreign `before` (identical; a
+    cursor reveals nothing).
+  - Unknown query parameters and headers are ignored.
+- **Architecture** (thin adapters; no new service, writer or setting):
+  - 6H gains one owner-scoped method, `NotificationService.page()`. It is
+    bounded by `MAX_LISTED`, resolves its cursor through the owner-scoped
+    `get`, and fetches `limit + 1` to know whether a next page exists. No
+    6H semantics changed.
+  - `app/delivery/status.py` (new, read-only): `DeliveryStatusReader`, one
+    owner-scoped `select` over 6M.1's records (owner **and** notification
+    ids). It never imports or calls the 6M.1 writer.
+  - `deps.py`: `get_owner_id()` is the one place a request's owner is
+    resolved; today it returns `LOCAL_OWNER_ID`, and 6M.4 replaces it.
+    `get_notification_service` and `get_delivery_status_reader` bind it. No
+    route takes an owner.
+  - **Not changed:** 6M.1 (records, models, migration, claim and lease
+    semantics), 6I, 6K, 6L's delivery semantics, `main.py`,
+    `routes/__init__.py`, the runtime, runner, execution, authorization,
+    configuration and migrations.
+  - **Known follow-up for 6M.4:** the 6L delivery dependency and `TaskService`
+    still take their owner from their own `LOCAL_OWNER_ID` defaults, not from
+    `get_owner_id`. Authentication must route them through the seam too.
+- **Existing pins changed (deliberately; each an exact allow-list, none
+  loosened):**
+  - 6H: "no HTTP route reaches notifications" became "only `deps.py` (which
+    builds the read service) and the route (which imports `MAX_LISTED`)
+    reach it, and no HTTP module names the writer or the row model"; the
+    read service's method list adds `page`; "no `get` call" became "the only
+    `get` call is the service's own `self.get`".
+  - 6I: the module list adds `status.py`; "no loop" now allows exactly one
+    `for` in `status.py`, over its query rows, with no await or adapter or
+    claim call; the delivery importers list adds `status` to `deps.py` and
+    the route.
+  - 6K: the route/deps reach-list adds `app.delivery.status`.
+  - 6L: the route's imports and endpoint list are exact multi-endpoint lists;
+    `Query` is allowed only in the list endpoint; `mark_read` is called only
+    by the mark-read endpoint.
+- **Verification:**
+  - Tests: 51 behavioural (`tests/test_notification_read_api.py`) and 14
+    security (`tests/security/test_notification_read_api_security.py`).
+    Covered:
+    - an empty inbox; the exact contract fields; newest-first pages with no
+      repeat or skip; equal timestamps; unread-only with any cursor; the
+      default and ceiling;
+    - nine malformed list parameters; unknown and foreign cursors
+      identical;
+    - get equals the list item; missing and foreign identical 404; malformed
+      ids on every endpoint; path-traversal shapes;
+    - per-owner isolation from both sides (by overriding the seam) and the
+      real seam's default; forged owner in query, headers and body;
+      enumeration;
+    - another owner's delivery rows filtered; a real 6I delivery reported;
+      each stored state and its `retryable`; several channels; no internal
+      or secret value in any response;
+    - mark-read: sets `read_at` once, idempotent, changes nothing else, 404
+      for foreign and missing, only `{}` as JSON, only the offered methods;
+    - reading writes nothing and never builds the delivery composition;
+      five concurrent mark-reads on separate connections.
+  - Focused: 6M.2 51/51 and 14/14. All of `tests/security`: 2275 passed.
+    Notification, delivery and Telegram groups (6H-6M.2): 361+ passed.
+  - Full suite (isolated worktree: `e10b7ca` plus the 6M.2 files): ordered
+    5998 passed, 2 skipped (304 s). Shuffled with the scratch shuffle plugin
+    (real reordering, seed reported; 5998 or more of 6000 items moved): seeds
+    20261006, 937166689 and 1626385444, each 5998 passed, 2 skipped (303 to
+    306 s). No segfault. A first set of shuffled runs never ran: the plugin
+    had been cleaned from the scratchpad and pytest failed to import it. They
+    were discarded, not counted, and rerun after restoring the plugin.
+  - Mutation: 24/24 killed. The validated harness passed (anchors unique,
+    green baseline, two controls survived: an unasserted comment and an
+    unasserted docstring; the new code logs nothing, so there was no log
+    string to use as a control).
+    - Targets: paging (owner scope, unread filter, the 6H bound, an
+      owner-scoped cursor anchor, the cursor ignored, tie order, no
+      `next_before`, no look-ahead row, oldest first); delivery state (owner
+      scope, `retryable` for failed, the lease comparison, every sending row
+      retryable); routes (invalid cursor accepted, missing not 404, mark-read
+      not idempotent, missing marked 204, extra fields accepted, delivery
+      state dropped, limit ceiling raised, mark-read not delegated); and the
+      owner seam (returns another owner; read service or reader ignore it).
+    - With the behavioural tests alone, 23/24. N3 (the 6H bound removed)
+      survived, because the route's `le=50` hides it over HTTP. It was a
+      real gap in `page()`'s own contract, closed by one direct service test;
+      re-run: killed.
+    - Two harness incidents, both fixed: a paging test looped until
+      `next_before` was null, so the "cursor ignored" mutant hung instead of
+      failing (the loop is now bounded); and stopping that run left the
+      mutant in the scratch copy, which was restored and re-synced before
+      the final run.
+  - **PostgreSQL / Docker** (the existing `mai-backend:latest` image,
+    throwaway database, isolated source mounted read-only, mounted hashes
+    checked), 12/12 over real HTTP to the running server, on notifications
+    from the real runtime:
+    - 25 notifications paged 10/10/5, newest first, with no repeats;
+    - another owner's notification never listed, and the same 404 as a
+      missing one;
+    - contract fields only, with delivery state failed / retryable;
+    - malformed limits, ids and bodies gave 422; a foreign cursor gave 422
+      `invalid_cursor`;
+    - mark-read gave 204 twice, and another owner's gave 404 (it stayed
+      unread);
+    - unread-only excluded it; no owner id, lease, record id or delivery key
+      appeared;
+    - no delivery record was written;
+    - `EXPLAIN` (sequential scans disabled) shows the page query can use
+      `ix_task_notifications_owner_id_read_at_created_at` (then a sort,
+      because the `id` tie-break is not in the index: fine at single-owner
+      volume), and the delivery-state query can use
+      `uq_notification_deliveries_notification_adapter`.
+    - The server log had no traceback, ERROR or 5xx, and no database
+      password. Graceful stop; throwaway database dropped; real database
+      untouched (0019).
+  - Structural audit 15/15 on the exact tree committed:
+    - one `AuthorizationService`, `ExecutionService`, `TaskRunner`,
+      `BackgroundRuntime`, notification writer, notification read service,
+      delivery-record writer, composition root and owner seam;
+    - no new setting or migration; 6M.1 and every protected file unchanged;
+      the writer still imported only by 6I; only 6M.2 paths changed.
+    - **Finding (pre-existing, not 6M.2):** "exactly one Telegram sender" no
+      longer holds at HEAD. The webhook committed in `e10b7ca` builds its own
+      `BotApiSender` (see Deferred).
+  - `git diff --check`: clean.
+- **Known limitations:**
+  - **No authentication:** the owner is the server constant (6M.4).
+  - **No total or unread count, and no per-task lookup.**
+  - **Delivery state is a snapshot:** a claim can change between the
+    notification read and the delivery read in one request (read
+    committed). It is reported as stored.
+
+### Stage 6M.1: Durable notification delivery records (`87365aa`, 2026-10-02)
+
+- **Status:** completed, verified, committed as `87365aa`. Parent `a0e16ae`
+  (6L). It adds `backend/app/delivery/records.py`.
 - **Purpose:** make "delivered once" durable. Until now, duplicate protection
   was 6J's in-process memory: a restart, or a second process, could deliver
   the same notification again. The database is now the source of truth.

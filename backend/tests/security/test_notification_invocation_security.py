@@ -84,8 +84,13 @@ def endpoints(tree) -> list:
 
 
 def test_the_route_imports_exactly_http_and_the_result_contract() -> None:
+    """Changed deliberately in 6M.2: the read endpoints add `datetime` and
+    `typing` for their response models, the read-only delivery-state model,
+    the notification kind enum and 6H's listing bound -- nothing that writes."""
     assert imports(parse(ROUTE)) == {
-        "uuid", "fastapi", "pydantic", "app.api.deps", "app.delivery.contract",
+        "uuid", "datetime", "typing", "fastapi", "pydantic", "app.api.deps",
+        "app.delivery.contract", "app.delivery.status", "app.tasks.models",
+        "app.tasks.notifications",
     }
 
 
@@ -114,11 +119,16 @@ def test_the_route_names_no_destination_credential_or_message() -> None:
 # ============================================================================
 
 
-def test_exactly_one_endpoint_one_post_under_its_own_prefix() -> None:
+def test_exactly_these_endpoints_under_their_own_prefix() -> None:
+    """Changed deliberately in 6M.2: one delivery POST (6L), plus two GETs and
+    one mark-read POST (6M.2). Nothing else."""
     tree = parse(ROUTE)
-    assert [(f.name, m, p) for f, m, p in endpoints(tree)] == [
+    assert sorted((f.name, m, p) for f, m, p in endpoints(tree)) == sorted([
         ("deliver_notification", "post", "/{notification_id}/deliveries"),
-    ]
+        ("list_task_notifications", "get", ""),
+        ("get_task_notification", "get", "/{notification_id}"),
+        ("mark_task_notification_read", "post", "/{notification_id}/read"),
+    ])
     [router] = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
                 and any(isinstance(t, ast.Name) and t.id == "router" for t in n.targets)]
     prefix = next(k.value.value for k in router.value.keywords if k.arg == "prefix")
@@ -136,7 +146,13 @@ def test_the_endpoint_takes_only_the_id_the_body_and_the_dependency() -> None:
         ("service", "NotificationDeliveries"),
     ]
     assert not endpoint.args.kwonlyargs and endpoint.args.vararg is None and endpoint.args.kwarg is None
-    assert not {"Header", "Query", "Cookie", "Form", "Request", "BackgroundTasks"} & mentioned(parse(ROUTE))
+    # Changed deliberately in 6M.2: `Query` now appears, only in the list
+    # endpoint's bounded parameters. No header, cookie, form or raw request.
+    tree = parse(ROUTE)
+    assert not {"Header", "Cookie", "Form", "Request", "BackgroundTasks"} & mentioned(tree)
+    users = {fn.name for fn in ast.walk(tree) if isinstance(fn, ast.AsyncFunctionDef)
+             and "Query" in mentioned(fn)}
+    assert users == {"list_task_notifications"}
 
 
 def test_the_body_is_exactly_one_bounded_strict_field_and_forbids_extras() -> None:
@@ -179,8 +195,13 @@ def test_errors_carry_only_6is_reason_code_or_a_fixed_code() -> None:
 
 
 def test_the_route_writes_logs_schedules_and_loops_nothing() -> None:
+    """Changed deliberately in 6M.2: `mark_read` (6H's conditional, owner-
+    scoped write of `read_at`) is called, and only by the mark-read endpoint."""
     tree = parse(ROUTE)
-    for forbidden in ("mark_read", "commit", "add", "flush", "execute", "create_task",
+    callers = {fn.name for fn in ast.walk(tree) if isinstance(fn, ast.AsyncFunctionDef)
+               and "mark_read" in called(fn)}
+    assert callers == {"mark_task_notification_read"}
+    for forbidden in ("commit", "add", "flush", "execute", "create_task",
                       "ensure_future", "gather", "sleep", "add_task", "info", "warning",
                       "error", "debug", "getattr", "setattr", "eval", "exec", "import_module",
                       "__import__", "compile"):
