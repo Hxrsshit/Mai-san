@@ -105,7 +105,8 @@ def test_the_read_services_are_built_only_where_expected() -> None:
             if isinstance(n, ast.Call) and getattr(n.func, "id", None) in sites:
                 sites[n.func.id].append(str(path.relative_to(BACKEND)))
     assert sorted(sites["NotificationService"]) == ["app/api/deps.py", "app/delivery/service.py"]
-    assert sites["DeliveryStatusReader"] == ["app/api/deps.py"]
+    # Stage 6M.3 adds the automatic-delivery work source, for its candidates.
+    assert sorted(sites["DeliveryStatusReader"]) == ["app/api/deps.py", "app/background/deliveries.py"]
 
 
 # ============================================================================
@@ -186,21 +187,32 @@ def test_the_status_module_reaches_only_the_record_model() -> None:
     assert imports(parse(STATUS)) == {
         "uuid", "datetime", "typing", "pydantic", "sqlalchemy", "sqlalchemy.ext.asyncio",
         "app.delivery.models",
+        # Stage 6M.3: the candidate query reads notification ids and times.
+        "app.tasks.models",
     }
 
 
-def test_the_status_modules_only_database_call_is_one_owner_scoped_select() -> None:
+def test_the_status_modules_only_database_calls_are_owner_scoped_selects() -> None:
+    """Changed deliberately in 6M.3: a second read, the automatic-delivery
+    candidates. Both are SELECTs, both filtered on the reader's owner."""
     tree = parse(STATUS)
     writes = {"add", "add_all", "flush", "commit", "delete", "merge", "execute", "update",
               "insert", "begin", "rollback", "refresh"}
     assert not writes & set(called(tree))
-    scalars = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-               and getattr(n.func, "attr", None) == "scalars"]
-    assert len(scalars) == 1
-    query = ast.unparse(scalars[0].args[0])
-    assert query.startswith("select(NotificationDelivery)")
-    assert "NotificationDelivery.owner_id == self._owner_id" in query
-    assert "NotificationDelivery.notification_id.in_(ids)" in query
+    scalars = {fn.name: [ast.unparse(n.args[0]) for n in ast.walk(fn) if isinstance(n, ast.Call)
+                         and getattr(n.func, "attr", None) == "scalars"]
+               for fn in ast.walk(tree) if isinstance(fn, ast.AsyncFunctionDef)}
+    scalars = {k: v for k, v in scalars.items() if v}
+    assert sorted(scalars) == ["awaiting_first_attempt", "for_notifications"]
+    [states] = scalars["for_notifications"]
+    assert states.startswith("select(NotificationDelivery)")
+    assert "NotificationDelivery.owner_id == self._owner_id" in states
+    assert "NotificationDelivery.notification_id.in_(ids)" in states
+    [candidates] = scalars["awaiting_first_attempt"]
+    assert candidates.startswith("select(TaskNotification.id)")
+    assert "TaskNotification.owner_id == self._owner_id" in candidates
+    assert "TaskNotification.created_at >= created_since" in candidates
+    assert "~attempted" in candidates and ".limit(limit)" in candidates
 
 
 def test_retryable_restates_the_writers_reclaim_condition() -> None:

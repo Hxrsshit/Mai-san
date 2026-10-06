@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.delivery.models import DeliveryRecordStatus, NotificationDelivery
+from app.tasks.models import TaskNotification
 
 
 class DeliveryState(BaseModel):
@@ -90,6 +91,41 @@ class DeliveryStatusReader:
                 retryable=is_retryable(record, moment),
             ))
         return states
+
+    async def awaiting_first_attempt(
+        self, adapter: str, created_since: datetime, limit: int
+    ) -> List[uuid.UUID]:
+        """Stage 6M.3. The owner's notifications never attempted through
+        `adapter`, created at or after `created_since`, oldest first, at most
+        `limit`.
+
+        "Never attempted" means no delivery record of any status: delivered,
+        failed, or sending (live or abandoned). That is what keeps automatic
+        delivery from ever retrying -- a failure, and a claim a crash left
+        behind, are both records, so neither is a candidate again. Recovering
+        them is a person's explicit delivery (6L), where 6M.1's re-claim
+        rules apply. Reads only; the 6I claim still decides every send.
+        """
+        if limit < 1:
+            return []
+        attempted = (
+            select(NotificationDelivery.id)
+            .where(
+                NotificationDelivery.notification_id == TaskNotification.id,
+                NotificationDelivery.adapter == adapter,
+            )
+            .exists()
+        )
+        return list((await self._session.scalars(
+            select(TaskNotification.id)
+            .where(
+                TaskNotification.owner_id == self._owner_id,
+                TaskNotification.created_at >= created_since,
+                ~attempted,
+            )
+            .order_by(TaskNotification.created_at.asc(), TaskNotification.id.asc())
+            .limit(limit)
+        )).all())
 
 
 __all__ = ["DeliveryState", "DeliveryStatusReader", "is_retryable"]

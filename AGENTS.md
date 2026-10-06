@@ -187,6 +187,17 @@ a change pass. If a test blocks a change, the test is usually right.
   lease), calls the runner, and reschedules. It resolves no capability, asks
   no authorization question, and calls no dispatcher or execution service.
   There is no second scheduler, worker framework, queue, or in-memory state.
+- **Automatic delivery (Stage 6M.3)** is the loop's third work source, after
+  reminders and tasks, in `app/background/deliveries.py`. It is off unless
+  `NOTIFICATION_AUTO_DELIVER_ADAPTERS` names registered channels. It
+  delivers only notifications of the delivery owner (the 6K composition's,
+  `LOCAL_OWNER_ID` today) created at or after the moment the runtime was
+  created with the setting on. It sends only candidates with **no** delivery
+  record for that channel, so it never retries a failure and never takes
+  over an abandoned claim (those are a person's, through 6L). It makes at
+  most 3 attempts per tick, sequentially, every one through the 6K factory
+  and 6I's durable claim. The runtime itself resolves no owner and calls no
+  adapter.
 - Claims are exactly-once by conditional UPDATE with `rowcount == 1`
   (reminders, steps, task leases, and monitoring `check_count`). External
   effects are at-least-once only in the crash window documented in
@@ -274,8 +285,8 @@ a change pass. If a test blocks a change, the test is usually right.
   the server's, and the message, chat and host are the channel's. It marks
   nothing read. It is ungated, and inert while no
   channel is configured. Nothing but a person's client calls it: no model
-  output, chat turn, runner or background loop. Automatic delivery would be
-  a separate architectural decision (§6).
+  output, chat turn or runner. (Automatic delivery, Stage 6M.3, calls 6I
+  through the same 6K factory from the runtime, not through this route.)
 - **Notification read API (Stage 6M.2, approved by the owner):** on the same
   router, `GET /api/task-notifications` (newest first, at most 50 per page,
   keyset-paged by `before=<id>`, optional `unread_only`),

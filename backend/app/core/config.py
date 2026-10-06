@@ -411,6 +411,16 @@ class Settings(BaseSettings):
     #: value cannot raise the ceiling.
     BACKGROUND_MAX_TASKS_PER_TICK: int = 5
 
+    #: Stage 6M.3. Channels the runtime delivers new task notifications
+    #: through automatically, by registered adapter name (e.g. `telegram`).
+    #: **Empty -- the default -- means off.** Names only, never credentials:
+    #: a channel's own settings configure it. Only notifications created after
+    #: the runtime started with this set are delivered, each at most once and
+    #: never retried automatically; see `app.background.deliveries`.
+    NOTIFICATION_AUTO_DELIVER_ADAPTERS: Annotated[List[str], NoDecode] = Field(
+        default_factory=list
+    )
+
     # --- Context retrieval (Stage 2D) ---
     # Retrieval runs on the request path before the chat call. It adds no
     # model calls -- every step is a bounded database query.
@@ -476,6 +486,21 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError, KeyError) as exc:
             raise ValueError(f"MAI_TIMEZONE is not a known IANA zone: {name!r}") from exc
         return name
+
+    @field_validator("NOTIFICATION_AUTO_DELIVER_ADAPTERS", mode="before")
+    @classmethod
+    def _split_adapters(cls, value):
+        """A comma-separated string of names; normalised as 6I does."""
+        if isinstance(value, str):
+            value = value.split(",")
+        if isinstance(value, (list, tuple)):
+            names = []
+            for item in value:
+                name = str(item).strip().lower()
+                if name and name not in names:
+                    names.append(name)
+            return names
+        return value
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

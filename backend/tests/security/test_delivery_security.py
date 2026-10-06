@@ -342,6 +342,9 @@ def test_only_the_channel_and_the_composition_root_import_delivery() -> None:
         "app/api/routes/notification_delivery.py": {"app.delivery.contract", "app.delivery.status"},
         # Stage 6M.1: the metadata registry imports the delivery-record model.
         "app/database/metadata.py": {"app.delivery"},
+        # Stage 6M.3: automatic delivery reads candidates (status) and the
+        # outcome (contract). Never the writer, the service or the registry.
+        "app/background/deliveries.py": {"app.delivery.contract", "app.delivery.status"},
     }, importers
 
 

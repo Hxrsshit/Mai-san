@@ -25,12 +25,12 @@ before substantial work and updates it after completing work (see
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6M.2: notification read API**: the commit titled `Stage 6M.2: notification read API` (the commit that adds `backend/app/delivery/status.py`; find it with `git log -1 -- backend/app/delivery/status.py`) |
+| Latest completed stage | **Stage 6M.3: automatic notification delivery**: the commit titled `Stage 6M.3: automatic notification delivery` (the commit that adds `backend/app/background/deliveries.py`; find it with `git log -1 -- backend/app/background/deliveries.py`) |
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved) |
-| Previous stages | 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Previous stages | 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2 added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
-| Next stage | **6M.3: automatic delivery, not started.** 6M is split into four commits with an owner checkpoint between each: 6M.1 durable delivery records (done), 6M.2 read API (done), 6M.3 automatic delivery, 6M.4 authentication. Do not begin the next one without an explicit go-ahead. |
+| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2 and 6M.3 added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
+| Next stage | **6M.4: authentication, not started.** 6M.1 durable delivery records, 6M.2 read API and 6M.3 automatic delivery are done. Do not begin 6M.4 without an explicit go-ahead. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -124,6 +124,16 @@ not commit them as part of other work, and do not describe them as done.
    now imports them, and `tests/test_metadata_registry.py` checks the
    registry alone in a subprocess. Live scripts no longer need to import
    `app.main` first.
+7. **Order-dependent Stage 4C/4D security test** (found in 6M.3, not fixed,
+   not caused by 6M.3). `test_tool_mutation_guards.py` and
+   `test_orchestration_mutation_guards.py` define a throwaway
+   `class _Executable(Tool)` with `execute`. It stays in
+   `Tool.__subclasses__()` until garbage collection, so
+   `test_orchestration_security.py::test_stage_4c_still_defines_no_way_to_run_a_tool`
+   fails when one of them runs first in the same process. It reproduced
+   deterministically on clean `922dbbd` (the guard test, then that test: 1
+   failed) and surfaced in one shuffled full run (seed 1265397829). It is
+   offered as a separate test-only fix.
 
 ### Deferred / not built
 
@@ -161,12 +171,13 @@ not commit them as part of other work, and do not describe them as done.
     when configured), with no endpoint and no worker. It needs explicit
     approval. **That composition root was then approved and built as Stage 6K
     (see Completed).** Gap 2, the invocation surface, remains open.
-- **Automatic delivery.** 6L added the explicit trigger: a person's client asks
-  for one notification to be delivered through one channel. Nothing delivers
-  automatically: 6H's `record_outcome` still only records, and no runtime,
-  runner or startup hook calls delivery. Which events (if any) should deliver
-  without being asked, and through what (the runtime would be the only loop),
-  is a separate architectural decision.
+- ~~**Automatic delivery.**~~ Built in 6M.3 (opt-in; see Completed).
+- **For 6M.4: the owner of background work.** Automatic delivery uses
+  `app.background.deliveries.DELIVERY_OWNER_ID` (= `LOCAL_OWNER_ID`, the 6K
+  composition's owner), not the request seam `deps.get_owner_id`, which a
+  background loop has no request for. With the 6L delivery dependency and
+  `TaskService`'s own defaults, these are the places authentication must make
+  the configured owner explicit.
 - **No authentication.** Mai has no authentication layer (AGENTS.md §2). The
   6L route follows every other route: the owner is the server's
   `LOCAL_OWNER_ID`, never a request value, and the backend is bound to
@@ -182,10 +193,7 @@ not commit them as part of other work, and do not describe them as done.
   checkpoint before the next:
   1. 6M.1 durable delivery records: done (see Completed);
   2. 6M.2 task-notification read API: done (see Completed);
-  3. 6M.3 automatic delivery: a third bounded work source in the existing
-     runtime tick. It is opt-in (`NOTIFICATION_AUTO_DELIVER_ADAPTERS`,
-     default empty), delivers only notifications created after enablement,
-     and never retries a failed attempt (a person retries through 6L);
+  3. 6M.3 automatic delivery: done (see Completed);
   4. 6M.4 authentication: hashed owner API tokens (an `api_tokens` table)
      and one `current_owner` dependency. `/health` and the OAuth callbacks
      are exempt. A browser token-entry screen waits for the other agent's
@@ -262,11 +270,158 @@ not commit them as part of other work, and do not describe them as done.
 - The uncommitted Telegram webhook and frontend/branding work in the tree was
   not touched, staged or verified.
 
-### Stage 6M.2: Notification read API (commit titled `Stage 6M.2: notification read API`, 2026-10-06)
+### Stage 6M.3: Automatic notification delivery (commit titled `Stage 6M.3: automatic notification delivery`, 2026-10-06)
 
-- **Status:** completed, verified, committed. Parent `e10b7ca`. It is the
-  commit that adds `backend/app/delivery/status.py` (a commit cannot contain
-  its own hash).
+- **Status:** completed, verified, committed. Parent `922dbbd` (6M.2). It is
+  the commit that adds `backend/app/background/deliveries.py`.
+- **Purpose:** a notification Mai records can now reach the owner's channel
+  without anyone asking, safely: once, never in a retry loop, never for
+  history, never for another owner.
+- **Owner decisions (2026-10-06):**
+  - boundary = the runtime's start time (no migration);
+  - owner = the 6K composition's owner (the request seam does not apply to
+    background work);
+  - one line each in `docker-compose.yml` and `.env.example`;
+  - at most 3 deliveries per tick.
+- **Setting:** `NOTIFICATION_AUTO_DELIVER_ADAPTERS`, a comma-separated list
+  of registered channel names, **empty by default (off)**. Names only,
+  normalised like 6I's (trim, lowercase, de-duplicate); unregistered names
+  are skipped. It is passed empty in `docker-compose.yml` and documented
+  empty in `.env.example`.
+- **Flow:** the third work source in `BackgroundRuntime.tick()`, after
+  reminders and tasks (so a notification recorded in a tick is delivered in
+  that tick). It calls `app.background.deliveries.run_automatic_deliveries`:
+  - Candidates come from `DeliveryStatusReader.awaiting_first_attempt` (one
+    read-only, owner-scoped SELECT): the delivery owner's notifications,
+    `created_at >= boundary`, with **no delivery record of any status** for
+    that channel, oldest first, `LIMIT`ed by the remaining budget.
+  - Each candidate goes through
+    `notification_delivery_service(session, owner).deliver(id, channel)` in
+    its own session, so through 6I's owner-scoped read and 6M.1's committed
+    durable claim.
+  - At most `HARD_MAX_DELIVERIES_PER_TICK = 3` attempts per tick in total
+    (a code constant), sequentially, each bounded by 6I's 10 s timeout. A
+    failure in the pass is logged by type and never breaks the tick.
+- **Boundary:** fixed once, when the runtime is created with the setting on
+  (`datetime.now`). It is never a parameter. Notifications are written by
+  the same runtime earlier in the same tick, so it excludes only history,
+  plus a notification written in a tick that crashed before delivering. That
+  one stays deliverable by a person (6L).
+- **No retry:** any record (`failed`, live or abandoned `sending`, or
+  `delivered`) excludes a notification from automatic delivery for that
+  channel permanently. 6M.1's lease takeover stays exclusive to explicit
+  6L calls, and a person's explicit retry after an automatic failure still
+  works.
+- **Durability:** the candidate query is an optimisation; 6I's committed
+  claim decides every send. A restart re-reads nothing it has recorded, and
+  the send path answers `DUPLICATE` without calling the channel.
+- **Not changed:** 6I, `records.py`, models and migrations; the 6K
+  composition; 6J; the Telegram webhook (it still builds its own sender, as
+  recorded in Deferred, untouched); all routes and `deps.py`; `main.py`;
+  tasks, runner, monitoring, execution, authorization, tools and LLM.
+- **Existing pins changed (deliberately; exact allow-lists, none loosened):**
+  - 6K: the composition's importers became `deps.py` plus
+    `background/deliveries.py`.
+  - 6I: the delivery importers add `background/deliveries.py` (`contract`,
+    `status`; never the writer, the service or the registry).
+  - 6M.2: the reader is built in `deps.py` plus the work source; `status.py`
+    may import `app.tasks.models`; its two database calls are both
+    owner-scoped SELECTs.
+  - The runtime's own pins were untouched and still pass: no
+    `LOCAL_OWNER_ID`, no `app.api`, nothing spawned per item.
+- **Verification:**
+  - Tests: 21 behavioural (`tests/test_automatic_delivery.py`) and 15
+    security (`tests/security/test_automatic_delivery_security.py`), through
+    the real `tick()`, 6K, 6I with 6M.1's records, and 6J with a stubbed
+    transport. Covered:
+    - off by default (nothing built); delivered in the tick that recorded
+      it;
+    - history never delivered; after enablement eligible;
+    - not sent again over many ticks; a failure recorded and never retried,
+      yet still retryable by a person; an abandoned claim left alone;
+    - another channel's record does not block this one;
+    - restart (new runtime, rebuilt composition) sends nothing again;
+    - two concurrent runtimes held at a barrier until both hold the same
+      candidate send once;
+    - 3/3/1/0 per tick; the budget shared across channels; oldest first;
+    - another owner's never; unregistered or unconfigured channels fail
+      closed;
+    - a failing pass never breaks the tick; no notification, task or read
+      state changes; start and stop.
+  - Focused: 21/21 and 15/15. All of `tests/security`: 2290 passed.
+    Runtime, monitoring, reminders and delivery groups: 567 passed.
+  - Full suite (isolated worktree: `922dbbd` plus the 6M.3 files): ordered
+    6034 passed, 2 skipped (298 s). Shuffled with the scratch shuffle plugin
+    (real reordering; 6034 or more of 6036 items moved):
+    - seeds 20261007, 766895937 and 539397754: each 6034 passed, 2 skipped;
+    - seed 1265397829: 1 failed, 6033 passed. The failure is Known defect 7,
+      a pre-existing order dependence between two Stage 4C/4D test files.
+      It reproduces on clean `922dbbd` without any 6M.3 file, and touches no
+      code 6M.3 changed. It is recorded and offered as a separate fix, not
+      worked around.
+    - No segfault in any run.
+  - Mutation: 14/14 killed. The validated harness passed (anchors unique,
+    green baseline, two controls survived: an unasserted comment and a
+    docstring).
+    - Targets: the opt-in check, cap raised, budget not shared, unregistered
+      channels used, wrong owner, budget stop removed, boundary ignored,
+      candidates not owner-scoped, only delivered excluded (retry), newest
+      first, any channel's record excluding all, boundary reaching back,
+      the source never running, and running when off.
+    - With the behavioural tests alone, 11/14 at first. ST5 (one channel's
+      record excluding every channel) was a real gap, closed by a test;
+      AU3 was closed beforehand by the shared-budget test. AU1 (the work
+      source's own empty check) and AU6 (the budget stop) are
+      **equivalent**: the empty setting short-circuits in `usable_channels`
+      and in the runtime, and a zero budget asks the reader for zero rows.
+  - **PostgreSQL / Docker** (throwaway database, the existing image, the
+    isolated source mounted read-only, mounted hashes checked):
+    - Phase one, 6/6:
+      - one tick both recorded the monitor's notification and delivered it
+        (one request);
+      - history never delivered; another owner's never;
+      - later ticks sent nothing; a failure was recorded and not retried
+        over 4 ticks; 7 new notifications went 3/3/1/0.
+    - **Cross-process race:** two separate OS processes, each with its own
+      composition and adapter, ticked at the same moment. Exactly one
+      request and one delivered record. In this run the second process
+      queried after the first had committed its claim, so the candidate
+      query excluded it; that claim decides a true overlap is shown by the
+      barrier test and by 6M.1's 20-connection PostgreSQL race.
+    - **After a real `docker restart`**, 2/2: the delivered notification
+      answered `DUPLICATE` without a request, and the failed one was not
+      retried.
+    - The real server with the setting **on** and no Telegram credentials
+      started with `deliveries=True`, ticked, and failed closed. It
+      delivered nothing and logged no error or traceback, and no sentinel
+      or database password. Graceful stop; throwaway database dropped; real
+      database untouched (0019).
+  - Structural audit 15/15 on the exact tree committed:
+    - one authorization decision, execution service, runner, runtime (and
+      `create_task` only in it), notification writer, delivery-record writer
+      and composition root;
+    - 6I `deliver` called only by the 6L route and the work source;
+    - exactly one new setting; no migration; the runtime still free of
+      owner constants, the API and direct delivery imports; compose and
+      `.env.example` add only the empty setting; every protected file
+      unchanged.
+    - The webhook's second `BotApiSender` is unchanged (known, deferred).
+  - **Live Telegram not tested:** no credentials are configured, and none
+    were requested.
+- **Known limitations:**
+  - **A crash mid-tick skips a notification:** one written but not yet
+    delivered before a restart falls behind the new boundary. It stays
+    deliverable by a person.
+  - **Failures are never retried automatically**, by policy: a person
+    retries through 6L.
+  - **One delivery owner:** see Deferred (6M.4).
+  - **A slow channel delays the tick:** up to about 30 s when all three
+    attempts time out.
+
+### Stage 6M.2: Notification read API (`922dbbd`, 2026-10-06)
+
+- **Status:** completed, verified, committed as `922dbbd`. Parent `e10b7ca`.
+  It adds `backend/app/delivery/status.py`.
 - **Purpose:** the owner can read their task notifications over HTTP. Before
   6M.2, 6H's `NotificationService` existed in-process only, and 6L could only
   deliver a notification whose id the client already knew.

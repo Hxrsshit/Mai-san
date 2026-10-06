@@ -190,7 +190,10 @@ def test_only_the_api_dependency_calls_the_composition() -> None:
         if any(m == "app.composition" or m.startswith("app.composition.")
                for m in imports(parse(path))):
             importers.append(str(path.relative_to(BACKEND)))
-    assert importers == ["app/api/deps.py"]
+    # Changed deliberately in 6M.3: the runtime's automatic-delivery work
+    # source is the second, and only other, caller. It uses the same service
+    # factory (and the registry's names, never to register anything).
+    assert sorted(importers) == ["app/api/deps.py", "app/background/deliveries.py"]
 
 
 def test_only_the_6l_route_reaches_delivery_and_never_the_lifespan() -> None:

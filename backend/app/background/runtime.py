@@ -8,6 +8,7 @@ queue, and nothing kept in memory that the database does not also hold.
     tick
      |-- reminders:  run_due_reminders()          (Stage 5F.1, unchanged)
      |-- tasks:      discover -> claim -> TaskRunner.advance -> reschedule
+     |-- deliveries: Stage 6M.3, opt-in -- app.background.deliveries
      '-- wait on the stop event for one interval
 
 ### What was generalised from the reminder poller, and what was not
@@ -71,7 +72,16 @@ H  after a failed step      the step is `failed`, `next_run_at` NULL. Failed
 When `_record_failure` blocks a monitoring task, the same transaction records
 one notification through `app.tasks.notifications.record_outcome`; a met
 condition is recorded the same way by the runner. The runtime decides nothing
-about notifications beyond calling that one writer, and delivers nothing.
+about notifications beyond calling that one writer.
+
+### Automatic delivery (Stage 6M.3)
+
+Off unless `NOTIFICATION_AUTO_DELIVER_ADAPTERS` names channels. Then, after
+tasks, each tick hands `app.background.deliveries` the boundary fixed when this
+runtime was created, and that module delivers -- through the 6K composition
+and 6I's durable claim, at most a few per tick, never retrying -- only
+notifications created since. The runtime itself resolves no owner, chooses no
+channel and calls no adapter.
 
 ### Monitoring (Stage 6G)
 
@@ -141,6 +151,8 @@ class TickReport(NamedTuple):
     tasks_discovered: int = 0
     tasks_claimed: int = 0
     tasks_advanced: int = 0
+    #: Stage 6M.3: automatic notification delivery attempts this tick.
+    deliveries_attempted: int = 0
 
 
 def _utc(moment: Optional[datetime]) -> datetime:
@@ -453,6 +465,14 @@ class BackgroundRuntime:
         #: pass without sleeping on a guess.
         self.ticks = 0
         self._tick_done = asyncio.Event()
+        #: Stage 6M.3. The automatic-delivery boundary: only notifications
+        #: created at or after this moment are delivered automatically. Fixed
+        #: when the runtime is created with the setting on (the lifespan
+        #: creates it immediately before starting it); never a parameter, so
+        #: nothing can move it back over history.
+        self._deliveries_since: Optional[datetime] = (
+            datetime.now(timezone.utc) if self.deliveries_enabled else None
+        )
 
     @property
     def running(self) -> bool:
@@ -470,8 +490,13 @@ class BackgroundRuntime:
         return bool(getattr(self._settings, "BACKGROUND_TASKS_ENABLED", False))
 
     @property
+    def deliveries_enabled(self) -> bool:
+        """Stage 6M.3. Opt-in: off unless channels are configured."""
+        return bool(getattr(self._settings, "NOTIFICATION_AUTO_DELIVER_ADAPTERS", None))
+
+    @property
     def has_work_sources(self) -> bool:
-        return self.reminders_enabled or self.tasks_enabled
+        return self.reminders_enabled or self.tasks_enabled or self.deliveries_enabled
 
     def start(self) -> None:
         """Begin polling. Idempotent: a second call does nothing."""
@@ -485,6 +510,7 @@ class BackgroundRuntime:
                 "interval_seconds": self._settings.REMINDER_POLL_SECONDS,
                 "reminders": self.reminders_enabled,
                 "tasks": self.tasks_enabled,
+                "deliveries": self.deliveries_enabled,
             },
         )
 
@@ -523,7 +549,23 @@ class BackgroundRuntime:
                 self._session_factory, self._settings, now=now
             )
 
-        return TickReport(fired, discovered, claimed, advanced)
+        # Stage 6M.3. After tasks, so a notification recorded this tick is
+        # delivered this tick. Bounded and sequential inside; every send goes
+        # through 6I's durable claim.
+        attempted = 0
+        if self.deliveries_enabled and self._deliveries_since is not None:
+            try:
+                from app.background.deliveries import run_automatic_deliveries
+
+                attempted = (await run_automatic_deliveries(
+                    self._session_factory, self._settings, since=self._deliveries_since
+                )).attempted
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Automatic delivery pass failed", extra={"error": type(exc).__name__}
+                )
+
+        return TickReport(fired, discovered, claimed, advanced, attempted)
 
     async def wait_for_ticks(self, count: int, timeout: float = 5.0) -> bool:
         """Wait until at least `count` ticks have completed, or time out."""
