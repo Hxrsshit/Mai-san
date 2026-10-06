@@ -37,8 +37,17 @@ before substantial work and updates it after completing work (see
 These are in the working tree and are **not** part of any completed stage. Do
 not commit them as part of other work, and do not describe them as done.
 
-- **`MAi branding .png`** at the repository root: untracked. Nothing else is
-  uncommitted (checked 2026-10-06).
+- **`MAi branding .png`** at the repository root: untracked.
+- **Another agent's uncommitted work, apparently Stage 6M.4
+  (authentication)**, appeared in the tree on 2026-10-07 during the
+  `7e7b978` test fix: new `backend/app/core/auth.py`, `core/owner.py`,
+  `tests/test_authentication.py`, `tests/security/test_authentication_security.py`,
+  and edits to `deps.py`, `main.py`, `config.py`, `errors.py`,
+  `background/deliveries.py`, several tests, `.env.example`,
+  `docker-compose.yml`, `frontend/lib/api.ts`, `AGENTS.md` and this file. It
+  is not committed and not verified here, and the `7e7b978` fix did not touch
+  it. While it was being written it failed 4 AST security tests in one shuffled
+  run (seed 1703306132) that pass on HEAD.
 - *(Resolved)* The Telegram chat/webhook interface (`routes/telegram.py`,
   `tests/test_telegram_adapter.py` and its `main.py` / `routes/__init__.py` /
   `conversations.py` edits) and the frontend/branding changes were committed
@@ -124,8 +133,10 @@ not commit them as part of other work, and do not describe them as done.
    now imports them, and `tests/test_metadata_registry.py` checks the
    registry alone in a subprocess. Live scripts no longer need to import
    `app.main` first.
-7. **Order-dependent Stage 4C/4D security test** (found in 6M.3, not fixed,
-   not caused by 6M.3). `test_tool_mutation_guards.py` and
+7. ~~**Order-dependent Stage 4C/4D security test.**~~ **Resolved in
+   `7e7b978`** (test only: each guard test now removes its throwaway
+   subclass and asserts it is gone; the Stage 4C check is unchanged). Original
+   entry (found in 6M.3, not caused by 6M.3): `test_tool_mutation_guards.py` and
    `test_orchestration_mutation_guards.py` define a throwaway
    `class _Executable(Tool)` with `execute`. It stays in
    `Tool.__subclasses__()` until garbage collection, so
@@ -229,6 +240,44 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Fix: order-independent no-execution guard tests (`7e7b978`, 2026-10-07)
+
+- **Status:** completed. Resolves Known defect 7. Test only: no application
+  code, schema or migration change.
+- `backend/tests/security/test_tool_mutation_guards.py`
+  (`test_the_no_execution_guard_is_load_bearing`) and
+  `backend/tests/security/test_orchestration_mutation_guards.py`
+  (`test_the_no_execution_guard_still_holds`) now take a weak reference to
+  their throwaway `_Executable(Tool)` and, in a `finally` block, delete it and
+  call `gc.collect()`. They then assert the class is dead and that no subclass
+  from their module is left in `Tool.__subclasses__()`.
+  `test_orchestration_security.py::test_stage_4c_still_defines_no_way_to_run_a_tool`
+  is unchanged. It has no exemption for test modules, so a leaked test
+  subclass still fails it.
+- **Verification** (isolated worktree of `1e2ddd2` plus the two files; the
+  files were byte-identical to the committed ones):
+  - The repro on HEAD failed (1 failed) for each guard test followed by the
+    Stage 4C test. With the fix, both guard tests pass in both orders with it
+    (4 of 4 pairs, 2 passed each).
+  - Mutations (scratch harness, anchors matched once, baseline green): a
+    blinded check (each guard), removing the added `execute` (each guard),
+    removing the cleanup (each guard; also brings back the Stage 4C failure)
+    and keeping `del` but dropping `gc.collect()` (each guard) all fail. Adding
+    `execute` to the application's `EchoTool` fails the Stage 4C test. Two
+    controls (an unasserted comment, an unasserted message) survive. 11 of 11
+    as expected.
+  - Full suite: ordered 6034 passed, 2 skipped. Shuffled (scratch shuffle
+    plugin), each 6034 passed, 2 skipped: seed 1265397829 (the seed that
+    exposed the defect), 1102903539, 1703306132 and 369929252. The skips are
+    the expected two (`test_secrets.py` with no `.env` in the worktree;
+    PostgreSQL migration-chain test with `TEST_POSTGRES_URL` unset). No
+    segfaults.
+  - Runs made first in the shared tree are not counted. Another agent's
+    uncommitted 6M.4 edits landed during them, and seed 1703306132 there
+    failed 4 AST tests on that agent's code. The same seed passes in
+    isolation.
+- No live PostgreSQL run: nothing touches persistence.
 
 ### Fix: metadata registry registers the workflows models (`107d879`, 2026-10-02)
 
