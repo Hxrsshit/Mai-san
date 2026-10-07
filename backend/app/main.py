@@ -2,9 +2,10 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.deps import get_owner_id
 from app.api.errors import register_exception_handlers
 from app.api.middleware import RequestContextMiddleware
 from app.api.routes import (
@@ -144,23 +145,32 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
 
+    # Stage 6M.4. Every router below that reads or changes Mai's data requires
+    # the authenticated owner. Public by design, and only these: `/health`;
+    # the OAuth callbacks (Google redirects the browser there; single-use
+    # `state` protects them), whose router protects its other routes itself;
+    # the Telegram webhook, which authenticates with its own secret and
+    # allowed chat; and FastAPI's /docs and /openapi.json. A route-
+    # introspection test fails if anything else is reachable without it.
+    AUTHENTICATED = [Depends(get_owner_id)]
+
     app.include_router(health_router)
-    app.include_router(conversations_router)
+    app.include_router(conversations_router, dependencies=AUTHENTICATED)
     # Prompt inspection is registered unconditionally: it describes the chat
     # request path itself, which exists whether or not the memory subsystem
     # does. With memory off it is how you confirm no knowledge reaches the
     # model.
-    app.include_router(prompt_router)
+    app.include_router(prompt_router, dependencies=AUTHENTICATED)
     # Stage 4A understanding. Registered unconditionally alongside the
     # chat path it describes: it reads no memory and needs no knowledge
     # subsystem, and with memory disabled it is how you confirm that.
-    app.include_router(intent_router)
+    app.include_router(intent_router, dependencies=AUTHENTICATED)
     # Stage 4B planning. Like intent, it reads no memory and needs no
     # knowledge subsystem, so it is registered unconditionally.
-    app.include_router(planning_router)
+    app.include_router(planning_router, dependencies=AUTHENTICATED)
     # Stage 4C authorization. Read-only: it lists declarations and answers
     # whether an action would be permitted. Nothing here runs anything.
-    app.include_router(tools_router)
+    app.include_router(tools_router, dependencies=AUTHENTICATED)
     # Stage 4F-G. Connecting an external account is an operator action and is
     # registered unconditionally: a deployment with no Google client
     # configured still needs somewhere to report that, and `/connect` refuses
@@ -170,58 +180,58 @@ def create_app() -> FastAPI:
     # settings are present and it never starts a polling/background worker.
     app.include_router(telegram_router)
     # Stage 4D orchestration. Propose, authorize, return -- never execute.
-    app.include_router(orchestration_router)
+    app.include_router(orchestration_router, dependencies=AUTHENTICATED)
 
     # Stage 4E controlled execution. Registered only when the operator has
     # switched execution on, so a deployment that cannot run anything does not
     # expose endpoints that talk about running things. The service refuses
     # independently -- this is the outer of two doors, not the only one.
     if settings.EXECUTION_ENABLED:
-        app.include_router(execution_router)
+        app.include_router(execution_router, dependencies=AUTHENTICATED)
 
     # The memory subsystem can be disabled entirely; when it is, the
     # inspection routes are not registered at all.
     if settings.MEMORY_ENABLED:
-        app.include_router(memories_router)
+        app.include_router(memories_router, dependencies=AUTHENTICATED)
         # Entities are derived from memories, so they share the master switch.
-        app.include_router(entities_router)
-        app.include_router(relationships_router)
-        app.include_router(entity_relationships_router)
+        app.include_router(entities_router, dependencies=AUTHENTICATED)
+        app.include_router(relationships_router, dependencies=AUTHENTICATED)
+        app.include_router(entity_relationships_router, dependencies=AUTHENTICATED)
         # Retrieval reads memories/entities/relationships, so it shares their
         # master switch.
-        app.include_router(retrieval_router)
-        app.include_router(context_preview_router)
+        app.include_router(retrieval_router, dependencies=AUTHENTICATED)
+        app.include_router(context_preview_router, dependencies=AUTHENTICATED)
         # Stage 3A assembly reads memories/entities/relationships, so it
         # shares their master switch.
-        app.include_router(context_router)
+        app.include_router(context_router, dependencies=AUTHENTICATED)
         # Stage 3C lifecycle inspection reads memories and relationships,
         # so it shares their master switch.
-        app.include_router(knowledge_router)
+        app.include_router(knowledge_router, dependencies=AUTHENTICATED)
         # Stage 5C history import derives memories, so it shares the memory
         # master switch too: a deployment with memory off has nowhere to put
         # what an import would produce, and the raw archive alone would be
         # storage with no purpose. The service refuses independently on
         # HISTORY_IMPORT_ENABLED -- this is the outer of two doors.
         if settings.HISTORY_IMPORT_ENABLED:
-            app.include_router(history_router)
+            app.include_router(history_router, dependencies=AUTHENTICATED)
 
     # Stage 5F.1. Reminders are local-only and have their own master switch:
     # they depend on no integration and no model, so they are not gated on the
     # memory subsystem the way the inspection routes above are.
     if settings.REMINDERS_ENABLED:
-        app.include_router(reminders_router)
+        app.include_router(reminders_router, dependencies=AUTHENTICATED)
 
     # Stage 6A. Read-only: the router offers no way to create, change or run
     # a task. Ungated, because reading Mai's own task state depends on no
     # integration, no model and no capability -- and because an activity view
     # that can be switched off is an audit trail that can be switched off.
-    app.include_router(tasks_router)
+    app.include_router(tasks_router, dependencies=AUTHENTICATED)
 
     # Stage 6L. A person asks for one existing task notification to be
     # delivered through one registered channel. Ungated: with no channel
     # configured the 6K registry is empty and every request is refused, so
     # the route is inert, like the integrations router above.
-    app.include_router(notification_delivery_router)
+    app.include_router(notification_delivery_router, dependencies=AUTHENTICATED)
 
     return app
 

@@ -66,6 +66,9 @@ services:
       TELEGRAM_CONVERSATION_ID: ${TELEGRAM_CONVERSATION_ID:-}
       # Stage 6M.3. Channel names for automatic notification delivery; empty = off.
       NOTIFICATION_AUTO_DELIVER_ADAPTERS: ${NOTIFICATION_AUTO_DELIVER_ADAPTERS:-}
+      # Stage 6M.4. SHA-256 of the API token (never the token). Empty = every
+      # protected route refuses with 503 until it is set.
+      MAI_API_TOKEN_SHA256: ${MAI_API_TOKEN_SHA256:-}
       # Stage 4F-G. A "Desktop app" OAuth client. Optional: without it the
       # calendar integration reports not_configured and reads nothing.
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}

@@ -457,6 +457,14 @@ class Settings(BaseSettings):
     # accounting is isolated so token budgeting can replace it.
     CONTEXT_MAX_TOTAL_CHARS: int = 10000
 
+    # --- API authentication (Stage 6M.4) ---
+    #: The SHA-256 (64 hex characters) of the one API token -- never the token
+    #: itself. Empty, the default, means unconfigured: every protected route
+    #: then refuses with 503 `authentication_not_configured`. There is no
+    #: bypass. Generate a token, hash it, and set only the hash; see
+    #: `.env.example`.
+    MAI_API_TOKEN_SHA256: str = ""
+
     # --- CORS ---
     # NoDecode is required: without it pydantic-settings tries to JSON-decode
     # any complex-typed value coming from the environment, so a plain

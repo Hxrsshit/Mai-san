@@ -73,9 +73,11 @@ strictly scoped stages (see `docs/CHANGELOG.md`).
   on Python 3.9: no runtime-evaluated `X | Y` unions, no `match`, no other
   3.10+ syntax. Dependency pins in `backend/requirements.txt` were chosen to
   support 3.9.
-- **Single owner:** there is no authentication layer. The owner is the
-  documented constant `LOCAL_OWNER_ID` (`app/tasks/models.py`). Owner columns
-  exist anyway, and every owner-scoped query filters on them.
+- **Single owner, one API token (Stage 6M.4):** the owner is
+  `CONFIGURED_OWNER_ID` (`app/core/owner.py`, the only definition;
+  `app.tasks.models.LOCAL_OWNER_ID` re-exports it). Owner columns exist, and
+  every owner-scoped query filters on them. HTTP callers authenticate with one
+  token; see §3 "API authentication".
 
 ### Package map (backend/app)
 
@@ -99,6 +101,24 @@ strictly scoped stages (see `docs/CHANGELOG.md`).
 
 ## 3. Security requirements (non-negotiable)
 
+- **API authentication (Stage 6M.4).** Every data route requires
+  `Authorization: Bearer <token>`. The backend stores only the token's
+  SHA-256 (`MAI_API_TOKEN_SHA256`) and compares in constant time
+  (`app/core/auth.py`, the one authenticator, pure: no FastAPI, database or
+  channel). `deps.get_owner_id` is the one request seam: unconfigured gives
+  503 `authentication_not_configured`; a missing or malformed header gives
+  401 `authentication_required` (with `WWW-Authenticate: Bearer`); a wrong
+  token gives 401 `invalid_credentials`. There is no bypass. The owner is
+  the token's, never a request value. Every router is included with
+  `dependencies=[Depends(get_owner_id)]` except the public allow-list:
+  `/health`, the two OAuth callbacks (protected by single-use `state`), the
+  Telegram webhook (its own secret and allowed chat; the API token grants
+  nothing there), `/docs` and `/openapi.json`. A route-introspection test
+  fails for any other route without the seam: **a new data route must be
+  protected.** Background work never authenticates and never imports
+  `app.api`; it uses `CONFIGURED_OWNER_ID` directly. The browser asks for
+  the token and keeps it only in `sessionStorage`; never put a token in
+  `NEXT_PUBLIC_*`, a build, a cookie, `localStorage` or a URL.
 - **Secrets.** Never read, print, copy or commit `.env` or any credential
   file. Never put a real secret in a test, fixture, log, prompt, database row,
   task or execution event, or API response. Use synthetic sentinel values in
@@ -190,8 +210,8 @@ a change pass. If a test blocks a change, the test is usually right.
 - **Automatic delivery (Stage 6M.3)** is the loop's third work source, after
   reminders and tasks, in `app/background/deliveries.py`. It is off unless
   `NOTIFICATION_AUTO_DELIVER_ADAPTERS` names registered channels. It
-  delivers only notifications of the delivery owner (the 6K composition's,
-  `LOCAL_OWNER_ID` today) created at or after the moment the runtime was
+  delivers only notifications of the configured owner
+  (`app.core.owner.CONFIGURED_OWNER_ID`) created at or after the moment the runtime was
   created with the setting on. It sends only candidates with **no** delivery
   record for that channel, so it never retries a failure and never takes
   over an abandoned claim (those are a person's, through 6L). It makes at
@@ -282,7 +302,7 @@ a change pass. If a test blocks a change, the test is usually right.
   the id and name to the 6I `NotificationDeliveryService` from the 6K
   composition root (through `deps.get_notification_delivery_service`) and
   maps the result to a status. The body accepts no other field: the owner is
-  the server's, and the message, chat and host are the channel's. It marks
+  the authenticated owner's, and the message, chat and host are the channel's. It marks
   nothing read. It is ungated, and inert while no
   channel is configured. Nothing but a person's client calls it: no model
   output, chat turn or runner. (Automatic delivery, Stage 6M.3, calls 6I
@@ -294,7 +314,7 @@ a change pass. If a test blocks a change, the test is usually right.
   (empty JSON body, idempotent, 204). The routes delegate to 6H's
   `NotificationService` and to the read-only `app/delivery/status.py`, both
   bound in `deps.py` to the request's owner, which is resolved only by
-  `deps.get_owner_id` (today always `LOCAL_OWNER_ID`; 6M.4 replaces it). No
+  `deps.get_owner_id`, which authenticates the bearer token (Stage 6M.4). No
   route takes an owner. Another owner's notification is the same 404 as a
   missing one. Responses carry references, times and codes only: no owner, no
   record id, lease or delivery key, and no text. Mark-read writes only 6H's

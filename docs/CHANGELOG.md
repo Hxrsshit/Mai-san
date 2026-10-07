@@ -21,16 +21,16 @@ before substantial work and updates it after completing work (see
 
 ---
 
-## Current state (as of 2026-10-06)
+## Current state (as of 2026-10-07)
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6M.3: automatic notification delivery**: the commit titled `Stage 6M.3: automatic notification delivery` (the commit that adds `backend/app/background/deliveries.py`; find it with `git log -1 -- backend/app/background/deliveries.py`) |
+| Latest completed stage | **Stage 6M.4: authentication**: the commit titled `Stage 6M.4: authentication` (the commit that adds `backend/app/core/auth.py`; find it with `git log -1 -- backend/app/core/auth.py`) |
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved) |
-| Previous stages | 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Previous stages | 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2 and 6M.3 added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
-| Next stage | **6M.4: authentication, not started.** 6M.1 durable delivery records, 6M.2 read API and 6M.3 automatic delivery are done. Do not begin 6M.4 without an explicit go-ahead. |
+| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2, 6M.3 and 6M.4 added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
+| Next stage | **None started.** Stage 6M is complete (6M.1 to 6M.4). Do not begin another stage without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -38,16 +38,11 @@ These are in the working tree and are **not** part of any completed stage. Do
 not commit them as part of other work, and do not describe them as done.
 
 - **`MAi branding .png`** at the repository root: untracked.
-- **Another agent's uncommitted work, apparently Stage 6M.4
-  (authentication)**, appeared in the tree on 2026-10-07 during the
-  `7e7b978` test fix: new `backend/app/core/auth.py`, `core/owner.py`,
-  `tests/test_authentication.py`, `tests/security/test_authentication_security.py`,
-  and edits to `deps.py`, `main.py`, `config.py`, `errors.py`,
-  `background/deliveries.py`, several tests, `.env.example`,
-  `docker-compose.yml`, `frontend/lib/api.ts`, `AGENTS.md` and this file. It
-  is not committed and not verified here, and the `7e7b978` fix did not touch
-  it. While it was being written it failed 4 AST security tests in one shuffled
-  run (seed 1703306132) that pass on HEAD.
+- *(Resolved)* The uncommitted Stage 6M.4 work noted here on 2026-10-07 was
+  this stage in progress; it is now committed (see Stage 6M.4). The four AST
+  failures seen in one shuffled run (seed 1703306132) during the `7e7b978` fix
+  came from pins that 6M.4 then deliberately updated while it was being
+  written; the final 6M.4 suite is green (see its entry).
 - *(Resolved)* The Telegram chat/webhook interface (`routes/telegram.py`,
   `tests/test_telegram_adapter.py` and its `main.py` / `routes/__init__.py` /
   `conversations.py` edits) and the frontend/branding changes were committed
@@ -183,17 +178,19 @@ not commit them as part of other work, and do not describe them as done.
     approval. **That composition root was then approved and built as Stage 6K
     (see Completed).** Gap 2, the invocation surface, remains open.
 - ~~**Automatic delivery.**~~ Built in 6M.3 (opt-in; see Completed).
-- **For 6M.4: the owner of background work.** Automatic delivery uses
-  `app.background.deliveries.DELIVERY_OWNER_ID` (= `LOCAL_OWNER_ID`, the 6K
-  composition's owner), not the request seam `deps.get_owner_id`, which a
-  background loop has no request for. With the 6L delivery dependency and
-  `TaskService`'s own defaults, these are the places authentication must make
-  the configured owner explicit.
-- **No authentication.** Mai has no authentication layer (AGENTS.md §2). The
-  6L route follows every other route: the owner is the server's
-  `LOCAL_OWNER_ID`, never a request value, and the backend is bound to
-  127.0.0.1. A JSON-only body blocks cross-site form posts (CORS preflight).
-  A real authentication layer would be its own stage.
+- ~~**For 6M.4: the owner of background work / No authentication.**~~ Built
+  in 6M.4 (see Completed). Still deferred:
+  - **Per-device or revocable tokens:** one token today; rotating it means a
+    new hash and a restart. An `api_tokens` table was considered and
+    declined for 6M.4.
+  - **A masked token prompt:** the browser uses `window.prompt`, which shows
+    what is typed.
+  - **No rate limit on failed authentication:** a 256-bit token cannot be
+    guessed, but repeated 401s are only logged, not throttled.
+  - **`TaskService` and the 6K composition keep their defaults:** the
+    configured owner, now from `app.core.owner`. Routes pass the
+    authenticated owner explicitly; in-process callers (chat turns, the
+    runner) use the default, which is the same owner.
 - **The webhook builds its own Telegram sender.** The webhook
   (`backend/app/api/routes/telegram.py`, committed in `e10b7ca`) constructs a
   `BotApiSender` per request in `get_telegram_sender`, a second Telegram
@@ -205,10 +202,8 @@ not commit them as part of other work, and do not describe them as done.
   1. 6M.1 durable delivery records: done (see Completed);
   2. 6M.2 task-notification read API: done (see Completed);
   3. 6M.3 automatic delivery: done (see Completed);
-  4. 6M.4 authentication: hashed owner API tokens (an `api_tokens` table)
-     and one `current_owner` dependency. `/health` and the OAuth callbacks
-     are exempt. A browser token-entry screen waits for the other agent's
-     frontend work.
+  4. 6M.4 authentication: done (see Completed; one hashed token, not a
+     table, by the owner's decision on 2026-10-07).
 
   Each needs its own approval of details before implementation.
 - ~~**No read surface for task notifications.**~~ Built in 6M.2 (list, get
@@ -319,10 +314,215 @@ not commit them as part of other work, and do not describe them as done.
 - The uncommitted Telegram webhook and frontend/branding work in the tree was
   not touched, staged or verified.
 
-### Stage 6M.3: Automatic notification delivery (commit titled `Stage 6M.3: automatic notification delivery`, 2026-10-06)
+### Stage 6M.4: Authentication (commit titled `Stage 6M.4: authentication`, 2026-10-07)
 
-- **Status:** completed, verified, committed. Parent `922dbbd` (6M.2). It is
-  the commit that adds `backend/app/background/deliveries.py`.
+- **Status:** completed, verified, committed. Parent `45e0275` (on top of 6M.3
+  `1e2ddd2` and the Known-defect-7 fix `7e7b978`, made in a separate session).
+  It is the commit that adds `backend/app/core/auth.py`.
+- **Purpose:** the HTTP API no longer treats every caller as the owner. Each
+  data request must present the one API token, and the owner it acts for is
+  the token's.
+- **Owner decisions (2026-10-07):**
+  - one hashed token in configuration (no token table, no migration);
+  - a minimal browser prompt with `sessionStorage`;
+  - fail closed with 503 when unconfigured;
+  - `/docs` and `/openapi.json` stay public.
+- **One owner:** `app/core/owner.py` holds `CONFIGURED_OWNER_ID`, the only
+  definition of the owner's id. `app.tasks.models.LOCAL_OWNER_ID` re-exports
+  it (same object), so existing rows and imports are unchanged.
+- **One authenticator:** `app/core/auth.py`, pure (`hashlib`, `hmac`, `re`
+  and settings).
+  - `authenticate(token)` returns the configured owner or None: the SHA-256
+    of the token compared with `MAI_API_TOKEN_SHA256` by
+    `hmac.compare_digest`. It never says why.
+  - `is_configured()` asks whether a well-formed 64-hex digest is
+    configured.
+  - Tokens over 1024 characters are refused before hashing.
+- **One request seam:** `deps.get_owner_id` reads
+  `Authorization: Bearer <token>`. Its answers:
+  - unconfigured: 503 `authentication_not_configured`;
+  - missing or malformed header: 401 `authentication_required`, with
+    `WWW-Authenticate: Bearer`;
+  - wrong token: 401 `invalid_credentials`, with the same header;
+  - otherwise it returns the owner.
+
+  The messages are fixed and never echo the token. There is no bypass. The
+  owner-bound dependencies take its owner explicitly: `TaskService`, the 6K
+  factory (for 6L), `NotificationService` and `DeliveryStatusReader`.
+  `MaiError` gained optional response headers, which the error handler now
+  passes through.
+- **Protection:**
+  - `main.py` includes every router with
+    `dependencies=[Depends(get_owner_id)]`, except `health`, `telegram` and
+    `integrations`. Integrations protects its status, connect and disconnect
+    routes per route; its two OAuth callbacks stay public, guarded by
+    single-use `state`.
+  - Public: `/health`, the Google and Gmail callbacks,
+    `/api/telegram/webhook` (its own secret and allowed chat, unchanged; the
+    API token grants nothing there), `/docs` and `/openapi.json`.
+- **Background:** unchanged behaviour. `deliveries.DELIVERY_OWNER_ID` is now
+  `app.core.owner.CONFIGURED_OWNER_ID`, the same value. The runtime imports
+  nothing from `app.api` and never authenticates.
+- **Frontend (`frontend/lib/api.ts` only):**
+  - The token is entered by the person and kept in `sessionStorage` for the
+    browser session.
+  - It is sent as `Authorization: Bearer` to the Mai API URL only.
+  - On a 401 the stored token is forgotten, a `window.prompt` asks once, and
+    the request is retried once.
+  - It never goes into a build, `NEXT_PUBLIC_*`, `localStorage`, a cookie, a
+    URL or a log.
+- **Configuration:** `MAI_API_TOKEN_SHA256`, empty by default, in
+  `config.py`; passed empty in `docker-compose.yml`; documented empty in
+  `.env.example`, with how to generate a token and hash it without saving it
+  to shell history. **Until it is set, every data route answers 503.**
+- **No migration.**
+- **Test fixtures:** `conftest.py` puts the SHA-256 of a deterministic,
+  obviously fake test token (`TEST_API_TOKEN`) into the test process's
+  environment before the app is imported, and the shared clients send
+  `AUTH_HEADERS`. `anon_client` sends nothing. Every existing test client
+  (23 sites in 7 files) now sends the header explicitly.
+- **Existing pins changed (deliberately; exact, none loosened):**
+  - 6M.2 "the owner seam is parameterless" became "it takes exactly the
+    settings and the `Authorization` header, and returns what `core.auth`
+    authenticated";
+  - 6L "the dependency passes only the session" became "it passes the
+    session and the authenticated owner";
+  - 6L "the router is included unconditionally" now expects the
+    `AUTHENTICATED` dependency;
+  - 6M.3: the work source imports `app.core.owner`, and the owner constant
+    is `CONFIGURED_OWNER_ID`.
+  - **Two frontend browser-storage pins** (5B
+    `test_the_frontend_stores_no_credential`, infrastructure
+    `test_no_personal_data_is_persisted_in_browser_storage`) banned every
+    `sessionStorage.` use. The approved design keeps the token there, so
+    both now allow exactly three calls (get, set and remove on the one
+    `mai.apiToken` key) in `frontend/lib/api.ts`, and nothing else
+    anywhere. Probes confirmed they still fail for an extra key,
+    `localStorage` or a cookie. The trade-off is accepted by design: a
+    script injected into the page could read the token for that session.
+  - AGENTS.md §2/§3/§4 now describe the authentication boundary.
+- **Verification.** The final suite ran in an isolated worktree of `45e0275`
+  plus the 6M.4 files. Earlier runs used `1e2ddd2`; they were superseded when
+  `7e7b978`/`45e0275` landed mid-stage. 6M.4 did not touch Known defect 7.
+  - Tests: 42 behavioural (`tests/test_authentication.py`) and 17 security
+    (`tests/security/test_authentication_security.py`). Covered:
+    - the core: right, wrong, case, empty, non-string and bytes tokens; the
+      digest presented as the token; oversized (even the right one);
+      unconfigured and seven malformed digests; constant-time comparison;
+      the default empty;
+    - HTTP: missing; seven malformed headers; wrong; the right token under
+      three scheme spellings; unconfigured (even with the right token)
+      while `/health` stays up; no token echo;
+    - coverage: every route the app registers, with every optional router
+      on, refuses without a token, and the allow-list stays reachable;
+    - spoofing through query, header and body owner values; another owner's
+      tasks, task state, notifications, mark-read and delivery stay
+      invisible (404) and unchanged;
+    - the API token does not authenticate the Telegram webhook, as a bearer
+      or as its secret;
+    - the token is in no log record or response;
+    - AST pins:
+      - the pure authenticator, constant-time with no `==`, answering only
+        the owner or None;
+      - one authenticator, one reader of the digest, and one `Authorization`
+        header reader;
+      - the fail-closed order, the error codes and the challenge;
+      - owner-bound dependencies;
+      - route introspection: every registered route but the allow-list
+        depends on the seam;
+      - `main.py` and integrations protection;
+      - one owner literal; the background never authenticates;
+      - no migration; empty configuration; no token in `NEXT_PUBLIC_*` or
+        the frontend build; `sessionStorage` only, one fetch, no
+        `localStorage`, cookie, console or URL token.
+  - Full suite (isolated worktree: `45e0275` plus the 6M.4 files): ordered
+    6093 passed, 2 skipped (337 s). Shuffled with the scratch shuffle plugin
+    (real reordering; 6094 or more of 6095 items moved): seeds 108301676,
+    1721985211 and 816789450, each 6093 passed, 2 skipped (326 to 327 s).
+    No segfault, and Known defect 7 (fixed in `7e7b978`) did not appear.
+    - Earlier full runs on `1e2ddd2` found the two browser-storage pins
+      (updated above) and were superseded.
+    - Three attempts were killed with no result while the Mac slept. Their
+      output stopped at 79%, 0% and 18%, at different places, ruling out a
+      hang. They are not counted; the runs above were made with the machine
+      held awake.
+  - Mutation: 19/19 killed. The validated harness passed (anchors unique,
+    green baseline, two controls survived: an unasserted comment and a
+    docstring).
+    - Targets: bypass, equality instead of `compare_digest`, unhashed
+      token, malformed digest as configured, no length bound, the seam
+      skipping the configuration check, any scheme, wrong token reported as
+      missing, owner without authentication, the task service ignoring the
+      owner, no challenge header, 403 for missing, 401 for unconfigured, a
+      router or the dependency list left unprotected, Google connect public,
+      a callback demanding the token, background for another owner, and
+      `localStorage` in the frontend.
+    - A5 (no length bound) survived the first run. It was a real gap,
+      closed by the oversized-token test, then killed.
+    - With behavioural tests alone, 16/19:
+      - **S5** (the task service ignores the seam's owner) is
+        **equivalent** in a single-owner system: the default is the same
+        configured owner.
+      - **R1** (the tasks router without the dependency) is **equivalent
+        for that router**: every tasks route still needs the owner through
+        `get_task_service`. The same mutant on the conversations router
+        (R1b) is killed by the route sweep.
+      - **F1** (`localStorage`) has no Python behavioural surface; the
+        structural frontend pin kills it.
+  - **PostgreSQL / Docker** (throwaway database; a synthetic token
+    generated into a `600` scratch file and only its hash passed to the
+    container; the full-suite worktree mounted read-only; seven mounted
+    file hashes checked):
+    - health 200 without a token;
+    - `/api/tasks` without a token: 401 `authentication_required` with
+      `WWW-Authenticate: Bearer`; wrong token 401 `invalid_credentials`;
+      malformed 401; right 200;
+    - conversations, task notifications, tools, Google status, memories,
+      reminders and activity: 401 without a token, 200 with it; creating a
+      conversation 401 without, 201 with;
+    - the OAuth callbacks gave their own 400, and the webhook with the API
+      token gave its own 404 (Telegram unconfigured);
+    - **every one of the 63 operations in the live OpenAPI document**: all
+      protected ones 401 without a token, none of the public ones;
+    - 6M.3 background delivery under 6M.4: 6/6;
+    - an unconfigured server: health 200, data routes 503 with or without a
+      token;
+    - the server log had no token, no token hash, no database password and
+      no traceback; migrations stayed at 0019.
+    - A first live run was **discarded**: it mounted the mutation worktree
+      while the harness was mutating `core/auth.py` (one hash mismatch).
+      It was redone against the full-suite worktree.
+    - Graceful stop; the throwaway database, environment and token file
+      were deleted; the real database was untouched (0019).
+  - **Frontend:** `npm run typecheck` passed and `npm run build` succeeded.
+    The build contains no test token, and the only `NEXT_PUBLIC_*` variable
+    is `NEXT_PUBLIC_API_URL`. `npm run lint` could not run: the project has
+    no ESLint configuration and `next lint` stops at an interactive setup
+    prompt (pre-existing; not configured as part of 6M.4). The generated
+    `tsconfig.tsbuildinfo` was removed. The running `mai-frontend` image is
+    not rebuilt by this stage.
+  - Structural audit 14/14 on the exact tree committed:
+    - one authenticator, called only by the seam; one seam; one owner
+      literal, re-exported;
+    - the background has no `app.api`, `fastapi` or `core.auth` import; the
+      core authenticator is pure;
+    - one authorization decision, execution service, runner, runtime,
+      notification writer, delivery-record writer and composition root;
+    - the webhook's sender unchanged; no migration;
+    - every protected file unchanged (delivery, composition, Telegram,
+      webhook, conversations, `TaskService`, runner, runtime, execution,
+      authorization, tools, LLM, migrations);
+    - `deliveries.py` code AST-identical to 6M.3 apart from the owner's
+      source; exactly one new setting.
+- **Known limitations:** see Deferred (one token without revocation; an
+  unmasked prompt; no rate limit). **Operator action needed:** set
+  `MAI_API_TOKEN_SHA256` before using a 6M.4 backend, or every data route
+  answers 503.
+
+### Stage 6M.3: Automatic notification delivery (`1e2ddd2`, 2026-10-06)
+
+- **Status:** completed, verified, committed as `1e2ddd2`. Parent `922dbbd`
+  (6M.2). It adds `backend/app/background/deliveries.py`.
 - **Purpose:** a notification Mai records can now reach the owner's channel
   without anyone asking, safely: once, never in a retry loop, never for
   history, never for another owner.

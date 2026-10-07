@@ -37,12 +37,12 @@ concurrent tick cannot send twice -- the loser is told `duplicate` or
 
 ### The owner
 
-Background work has no request, so the request-scoped owner seam
-(`app.api.deps.get_owner_id`) does not apply. This module delivers only for the
-owner the 6K composition already serves -- the owner of the configured
-channels, `LOCAL_OWNER_ID` today -- and never for anyone else: another owner's
-notification would otherwise reach this owner's chat. Stage 6M.4 must make the
-configured owner explicit.
+Background work has no request, so the request seam
+(`app.api.deps.get_owner_id`, which authenticates a bearer token since Stage
+6M.4) does not apply and is never imported. This module delivers only for the
+configured owner, `app.core.owner.CONFIGURED_OWNER_ID` -- the owner of the
+configured channels -- and never for anyone else: another owner's
+notification would otherwise reach this owner's chat.
 
 It constructs no adapter or sender, writes no delivery record itself, and
 decides nothing about whether a notification should exist.
@@ -57,9 +57,9 @@ from app.composition.notification_delivery import (
 )
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.core.owner import CONFIGURED_OWNER_ID
 from app.delivery.contract import DeliveryOutcome
 from app.delivery.status import DeliveryStatusReader
-from app.tasks.models import LOCAL_OWNER_ID
 
 logger = get_logger(__name__)
 
@@ -68,9 +68,9 @@ logger = get_logger(__name__)
 #: hangs. A code constant, deliberately not a setting.
 HARD_MAX_DELIVERIES_PER_TICK = 3
 
-#: Whose notifications are delivered automatically: the owner of the channels
-#: the composition serves. See "The owner" above.
-DELIVERY_OWNER_ID = LOCAL_OWNER_ID
+#: Whose notifications are delivered automatically: the configured owner, the
+#: owner of the channels the composition serves. See "The owner" above.
+DELIVERY_OWNER_ID = CONFIGURED_OWNER_ID
 
 
 class DeliveryPass(NamedTuple):

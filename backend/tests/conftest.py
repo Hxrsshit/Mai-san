@@ -4,8 +4,20 @@ Tests run against an in-process SQLite database and a fake LLM provider, so
 the suite needs neither PostgreSQL nor network access or an API key.
 """
 
+import hashlib
+import os
 import uuid
 from typing import AsyncIterator, List, NamedTuple, Optional
+
+# --- API authentication (Stage 6M.4) ----------------------------------------
+# A deterministic, obviously fake, test-only token. Its SHA-256 is put in the
+# test process's environment *before* the app is imported, so every Settings
+# the suite builds -- including the app's own -- is configured with it, and the
+# shared clients below send it. It authenticates nothing outside this suite.
+# Refusal tests use `anon_client` (no credential) or build their own client.
+TEST_API_TOKEN = "mai-test-only-api-token-not-a-real-secret"
+os.environ["MAI_API_TOKEN_SHA256"] = hashlib.sha256(TEST_API_TOKEN.encode("utf-8")).hexdigest()
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_API_TOKEN}"}
 
 import pytest
 import pytest_asyncio
@@ -298,9 +310,29 @@ async def client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as http_client:
         yield http_client
 
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def anon_client(
+    session_factory, fake_provider: FakeLLMProvider, settings: Settings
+) -> AsyncIterator[AsyncClient]:
+    """Stage 6M.4. The `client` app with no credential: for refusal tests."""
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http_client:
+        yield http_client
     app.dependency_overrides.clear()
 
 
@@ -458,7 +490,7 @@ async def import_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as http_client:
         yield http_client
 
     app.dependency_overrides.clear()
@@ -525,7 +557,7 @@ async def execution_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as http_client:
         yield http_client
 
     app.dependency_overrides.clear()
@@ -700,7 +732,7 @@ async def research_client(
 
     transport_holder = transport
     transport_client = AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     )
     transport_client.search_transport = transport_holder
     transport_client.search_integration = integration
@@ -852,7 +884,7 @@ async def calendar_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_chat_service] = override_chat
 
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS)
     client.calendar_transport = transport
     client.calendar_integration = integration
     client.token_store = calendar_tokens
@@ -996,7 +1028,7 @@ async def briefing_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_chat_service] = override_chat
 
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS)
     client.calendar_transport = calendar_transport
     client.search_transport = search_transport
     client.calendar_integration = calendar_integration
@@ -1158,7 +1190,7 @@ async def gmail_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_chat_service] = override_chat
 
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS)
     client.gmail_transport = transport
     client.gmail_integration = integration
     client.token_store = gmail_tokens

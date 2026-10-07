@@ -33,6 +33,7 @@ from app.main import create_app
 from app.tasks.models import LOCAL_OWNER_ID, TaskNotification, TaskNotificationKind
 from app.tasks.notifications import MAX_LISTED, NotificationService
 from tests.test_delivery import OTHER, SpyAdapter, deliver, met_notification, registry_with, snapshot
+from tests.conftest import AUTH_HEADERS
 
 pytestmark = pytest.mark.anyio
 
@@ -78,7 +79,7 @@ async def client(monkeypatch, app_settings, factory, fake_provider, owner=LOCAL_
     app.dependency_overrides[get_settings] = lambda: app_settings
     if owner is not None:
         app.dependency_overrides[get_owner_id] = lambda: owner
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS) as http:
         yield http
     app.dependency_overrides.clear()
 

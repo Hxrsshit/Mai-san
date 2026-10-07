@@ -216,12 +216,14 @@ def test_the_route_writes_logs_schedules_and_loops_nothing() -> None:
 
 
 def test_the_dependency_only_asks_the_composition_for_a_service() -> None:
-    """One call, one argument: the session. No owner is passed, so the
-    composition's own default applies; no registry or adapter is touched."""
+    """One call. Changed deliberately in 6M.4: the authenticated owner (the
+    seam's `OwnerId`) is passed explicitly instead of relying on the
+    composition's default; no registry or adapter is touched."""
     dependency = function(parse(DEPS), "get_notification_delivery_service")
-    assert [a.arg for a in dependency.args.args] == ["session"]
+    assert [(a.arg, ast.unparse(a.annotation)) for a in dependency.args.args] == [
+        ("session", "DbSession"), ("owner_id", "'OwnerId'")]
     [ret] = [n for n in ast.walk(dependency) if isinstance(n, ast.Return)]
-    assert ast.unparse(ret.value) == "notification_delivery_service(session)"
+    assert ast.unparse(ret.value) == "notification_delivery_service(session, owner_id)"
     assert called(dependency) == ["notification_delivery_service"]
     tree = parse(DEPS)
     assert "NotificationDeliveryService" not in [
@@ -233,12 +235,14 @@ def test_the_dependency_only_asks_the_composition_for_a_service() -> None:
 
 def test_the_router_is_included_once_and_unconditionally() -> None:
     tree = parse(MAIN)
-    includes = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
-                and ast.unparse(n) == "app.include_router(notification_delivery_router)"]
+    # Changed deliberately in 6M.4: included with the authenticated-owner
+    # dependency, like every protected router.
+    expected = "app.include_router(notification_delivery_router, dependencies=AUTHENTICATED)"
+    includes = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n) == expected]
     assert len(includes) == 1
     create_app = function(tree, "create_app")
     top_level = [ast.unparse(s) for s in create_app.body]
-    assert "app.include_router(notification_delivery_router)" in top_level      # not inside an `if`
+    assert expected in top_level      # not inside an `if`
 
 
 def test_exactly_one_route_in_the_application_triggers_delivery() -> None:

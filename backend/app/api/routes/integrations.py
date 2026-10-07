@@ -14,10 +14,10 @@ a replayed callback finds nothing.
 
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.api.deps import AppSettings
+from app.api.deps import AppSettings, get_owner_id
 from app.core.errors import MaiError
 from app.core.logging import get_logger
 from app.integrations.credentials import CredentialStatus
@@ -39,6 +39,12 @@ from app.integrations.token_store import FileTokenStore, TokenStoreError, Stored
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
+
+#: Stage 6M.4. Status, connect and disconnect require the authenticated owner.
+#: The two callbacks do not, deliberately: Google redirects the browser there
+#: with no Mai credential, and each is protected instead by the single-use
+#: OAuth `state` this module issued.
+AUTHENTICATED = [Depends(get_owner_id)]
 
 #: In-flight authorizations for this process.
 #:
@@ -162,6 +168,7 @@ def _integration(settings):
 
 @router.get(
     "/google/status",
+    dependencies=AUTHENTICATED,
     response_model=ConnectionRead,
     summary="Whether a Google account is connected. Returns no credential.",
 )
@@ -180,6 +187,7 @@ async def google_status(settings: AppSettings) -> ConnectionRead:
 
 @router.post(
     "/google/connect",
+    dependencies=AUTHENTICATED,
     response_model=AuthorizationStart,
     summary="Begin authorization. Returns a URL; starts nothing itself.",
 )
@@ -296,6 +304,7 @@ async def google_callback(
 
 @router.post(
     "/google/disconnect",
+    dependencies=AUTHENTICATED,
     response_model=DisconnectResult,
     summary="Withdraw access and delete the stored token.",
 )
@@ -346,6 +355,7 @@ def _gmail(settings):
 
 @router.get(
     "/gmail/status",
+    dependencies=AUTHENTICATED,
     response_model=ConnectionRead,
     summary="Whether Gmail is connected. Returns no credential.",
 )
@@ -364,6 +374,7 @@ async def gmail_status(settings: AppSettings) -> ConnectionRead:
 
 @router.post(
     "/gmail/connect",
+    dependencies=AUTHENTICATED,
     response_model=AuthorizationStart,
     summary="Begin Gmail authorization. Returns a URL; starts nothing itself.",
 )
@@ -473,6 +484,7 @@ async def gmail_callback(
 
 @router.post(
     "/gmail/disconnect",
+    dependencies=AUTHENTICATED,
     response_model=DisconnectResult,
     summary="Withdraw Gmail access and delete the stored token.",
 )

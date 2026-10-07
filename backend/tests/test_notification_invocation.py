@@ -40,6 +40,7 @@ from app.telegram import notifier as telegram_notifier
 from tests.support.stub_transport import StubTransport
 from tests.test_delivery import OTHER, met_notification, snapshot
 from tests.test_notification_composition import stub_network
+from tests.conftest import AUTH_HEADERS
 
 pytestmark = pytest.mark.anyio
 
@@ -104,7 +105,7 @@ async def app_client(monkeypatch, app_settings, factory, fake_provider, raise_ap
     app.dependency_overrides[get_llm_provider] = lambda: fake_provider
     app.dependency_overrides[get_settings] = lambda: app_settings
     transport = ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions)
-    async with AsyncClient(transport=transport, base_url="http://test") as http:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as http:
         yield http
     app.dependency_overrides.clear()
 

@@ -69,12 +69,20 @@ def model_config(tree, name) -> dict:
 # ============================================================================
 
 
-def test_the_owner_is_resolved_in_one_parameterless_function() -> None:
-    """No request, header, query or cookie can reach it: it takes nothing."""
+def test_the_owner_is_resolved_in_one_function_from_the_credential_only() -> None:
+    """Changed deliberately in 6M.4: the seam now takes the settings and the
+    `Authorization` header -- and nothing else a caller could use to name an
+    owner. The owner it returns is whatever `core.auth` authenticated."""
     owner = function(parse(DEPS), "get_owner_id")
-    assert not owner.args.args and not owner.args.kwonlyargs
+    assert [(a.arg, ast.unparse(a.annotation)) for a in owner.args.args] == [
+        ("settings", "AppSettings"), ("authorization", "Optional[str]")]
+    assert [ast.unparse(d) for d in owner.args.defaults] == ["Header(default=None)"]
+    assert not owner.args.kwonlyargs
     [ret] = [n for n in ast.walk(owner) if isinstance(n, ast.Return)]
-    assert ast.unparse(ret.value) == "LOCAL_OWNER_ID"
+    assert ast.unparse(ret.value) == "owner_id"
+    assigned = [ast.unparse(n.value) for n in ast.walk(owner)
+                if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "owner_id"]
+    assert assigned == ["auth.authenticate(token, settings)"]
 
 
 def test_the_read_dependencies_bind_the_seams_owner_and_nothing_else() -> None:

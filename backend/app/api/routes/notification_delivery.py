@@ -27,9 +27,10 @@ route does HTTP only: it hands the id and the adapter name to the 6I
 `NotificationDeliveryService` built by the 6K composition root, and turns the
 6I result into a status code. Everything that matters is decided there:
 
-- **Owner.** The service's owner is the composition's own default, never a
-  request value. Another owner's notification is refused exactly like a
-  missing one, by 6I's owner-scoped read.
+- **Owner.** The service's owner is the authenticated owner (`get_owner_id`,
+  Stage 6M.4), passed explicitly; never a request value. Another owner's
+  notification is refused exactly like a missing one, by 6I's owner-scoped
+  read.
 - **Channel.** The name is looked up in the one sealed process registry.
   Unknown and unconfigured channels are the same answer: nothing is
   registered under that name. A name is data; it never resolves to code.

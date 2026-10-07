@@ -55,15 +55,70 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   source_too_large: "That file is larger than the configured import limit.",
   uncompressed_too_large: "That archive expands to more than the configured limit.",
   history_import_disabled: "History import is switched off on this server.",
+  // Stage 6M.4 authentication.
+  authentication_required: "Mai needs its API token for this session.",
+  invalid_credentials: "That API token was not accepted.",
+  authentication_not_configured:
+    "The backend has no API token configured. Set MAI_API_TOKEN_SHA256.",
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * Stage 6M.4: the API token, entered by the person and kept only for this
+ * browser session (sessionStorage). It is never part of the build, never in
+ * NEXT_PUBLIC_* configuration, a cookie, localStorage or a URL, never logged,
+ * and sent only to the Mai backend, as `Authorization: Bearer`.
+ */
+const TOKEN_KEY = "mai.apiToken";
+
+function storedToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function forgetToken(): void {
+  try {
+    window.sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Storage unavailable: nothing was kept.
+  }
+}
+
+/** Ask once for the token after a 401. True if one was entered and kept. */
+function askForToken(): boolean {
+  if (typeof window === "undefined") return false;
+  const entered = window.prompt("Enter your Mai API token for this browser session:");
+  const token = entered?.trim();
+  if (!token) return false;
+  try {
+    window.sessionStorage.setItem(TOKEN_KEY, token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const AUTH_FAILURES = new Set(["authentication_required", "invalid_credentials"]);
+
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  retried = false,
+): Promise<T> {
   let response: Response;
+  const token = storedToken();
 
   try {
     response = await fetch(`${API_URL}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       cache: "no-store",
     });
   } catch {
@@ -83,6 +138,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const code = body?.error?.code ?? "unknown_error";
+    // Stage 6M.4: a missing or rejected token. Forget it, ask once, retry once.
+    if (response.status === 401 && AUTH_FAILURES.has(code) && !retried) {
+      forgetToken();
+      if (askForToken()) {
+        return request<T>(path, init, true);
+      }
+    }
     const message =
       FRIENDLY_MESSAGES[code] ??
       body?.error?.message ??

@@ -1,13 +1,15 @@
 """Shared FastAPI dependencies."""
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import Depends
+from fastapi import Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.composition.notification_delivery import notification_delivery_service
 from app.context.service import ContextService
+from app.core import auth
+from app.core.errors import AuthenticationNotConfigured, AuthenticationRequired, InvalidCredentials
 from app.core.config import Settings, get_settings
 from app.database.session import get_db_session, get_session_factory
 from app.delivery.service import NotificationDeliveryService
@@ -22,7 +24,6 @@ from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
 from app.orchestration.service import OrchestrationService
 from app.planning.service import PlanningService
-from app.tasks.models import LOCAL_OWNER_ID
 from app.tasks.notifications import NotificationService
 from app.tasks.service import TaskService
 from app.runtime.facts import build as build_runtime_facts
@@ -181,35 +182,51 @@ def get_reminder_service(
     return ReminderService(session=session, settings=settings)
 
 
-def get_task_service(session: DbSession, settings: AppSettings) -> TaskService:
+def get_task_service(session: DbSession, settings: AppSettings, owner_id: "OwnerId") -> TaskService:
     """Stage 6A. Takes no provider: nothing in the task layer calls a model.
 
-    The owner is the service's own, not a request parameter -- an endpoint
-    that could name an owner would be an endpoint that could read another
-    owner's tasks the moment Mai has two.
+    The owner is the authenticated owner (`get_owner_id`, Stage 6M.4), never a
+    request parameter -- an endpoint that could name an owner would be an
+    endpoint that could read another owner's tasks the moment Mai has two.
     """
-    return TaskService(session=session, settings=settings)
+    return TaskService(session=session, settings=settings, owner_id=owner_id)
 
 
-def get_notification_delivery_service(session: DbSession) -> NotificationDeliveryService:
+def get_notification_delivery_service(session: DbSession, owner_id: "OwnerId") -> NotificationDeliveryService:
     """Stage 6L. The 6I delivery service, from the 6K composition root.
 
-    Takes no owner and no adapter: the owner is the composition's own
-    default, never a request parameter, and the adapters are whatever the
-    one process registry holds. Built per request because it holds this
+    Takes no adapter: the adapters are whatever the one process registry
+    holds. The owner is the authenticated owner (`get_owner_id`, Stage 6M.4),
+    passed explicitly, never a request parameter. Built per request because it holds this
     request's session; the registry and adapters behind it are shared.
     """
-    return notification_delivery_service(session)
+    return notification_delivery_service(session, owner_id)
 
 
-def get_owner_id() -> uuid.UUID:
-    """Stage 6M.2. The one place a request's owner is resolved.
+def get_owner_id(
+    settings: AppSettings,
+    authorization: Optional[str] = Header(default=None),
+) -> uuid.UUID:
+    """The one place a request's owner is resolved (6M.2), and since 6M.4 the
+    one place a request is authenticated.
 
-    Mai has no authentication (AGENTS.md §2): there is one owner, the
-    documented constant. Never a request value. Stage 6M.4 replaces this
-    function, and everything that depends on it follows.
+    `Authorization: Bearer <token>` is checked by `app.core.auth`; the owner
+    is whoever the token authenticates -- the configured owner -- and never a
+    request value. Fails closed: no configured digest is 503, no or malformed
+    header is 401 `authentication_required`, a wrong token is 401
+    `invalid_credentials`. Every protected router depends on this (see
+    `app.main`), and the owner-bound services below receive its answer.
     """
-    return LOCAL_OWNER_ID
+    if not auth.is_configured(settings):
+        raise AuthenticationNotConfigured()
+    scheme, _, token = (authorization or "").strip().partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token or " " in token:
+        raise AuthenticationRequired()
+    owner_id = auth.authenticate(token, settings)
+    if owner_id is None:
+        raise InvalidCredentials()
+    return owner_id
 
 
 OwnerId = Annotated[uuid.UUID, Depends(get_owner_id)]

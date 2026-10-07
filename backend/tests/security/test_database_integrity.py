@@ -28,6 +28,7 @@ from app.relationships.models import (
     RelationshipType,
 )
 from app.services.conversation_service import ConversationService
+from tests.conftest import AUTH_HEADERS
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -368,7 +369,7 @@ async def test_concurrent_identical_turns_do_not_duplicate_knowledge(
     )
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversations = [
             (await client.post("/api/conversations", json={})).json()["id"]
@@ -401,7 +402,7 @@ async def test_concurrent_deletes_of_the_same_record_are_safe(
     app, _, engine = concurrent_app
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversation = (
             await client.post("/api/conversations", json={})
@@ -433,7 +434,7 @@ async def test_a_delete_racing_a_read_does_not_corrupt_state(
     provider.extraction_reply = NOTHING_TO_STORE
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversation = (
             await client.post("/api/conversations", json={})

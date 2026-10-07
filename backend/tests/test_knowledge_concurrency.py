@@ -22,7 +22,7 @@ from app.main import create_app
 from app.memory.models import Memory, MemoryStatus
 from app.relationships.models import Relationship, RelationshipStatus
 
-from tests.conftest import FakeLLMProvider
+from tests.conftest import AUTH_HEADERS, FakeLLMProvider
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -120,7 +120,7 @@ async def test_concurrent_turns_do_not_duplicate_lifecycle_links(
     app, provider, engine = file_backed
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         # Establish the knowledge that will be retired.
         provider.extraction_reply = json.dumps(
@@ -199,7 +199,7 @@ async def test_concurrent_evaluation_leaves_a_deterministic_final_state(
     app, provider, engine = file_backed
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         provider.extraction_reply = json.dumps(
             {
@@ -255,7 +255,7 @@ async def test_no_orphaned_or_self_referential_links_are_created(
     app, provider, engine = file_backed
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         provider.entity_reply = ENTITIES
         provider.relationship_reply = json.dumps({"relationships": []})

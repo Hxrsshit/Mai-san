@@ -61,7 +61,8 @@ def test_the_work_source_imports_exactly_these() -> None:
     assert imports(parse(AUTO)) == {
         "datetime", "typing",
         "app.composition.notification_delivery", "app.core.config", "app.core.logging",
-        "app.delivery.contract", "app.delivery.status", "app.tasks.models",
+        # Changed deliberately in 6M.4: the owner comes from `app.core.owner`.
+        "app.core.owner", "app.delivery.contract", "app.delivery.status",
     }
 
 
@@ -102,9 +103,12 @@ def test_the_delivery_owner_is_one_named_constant() -> None:
     tree = parse(AUTO)
     owners = [n for n in tree.body if isinstance(n, ast.Assign)
               and ast.unparse(n.targets[0]) == "DELIVERY_OWNER_ID"]
-    assert [ast.unparse(o.value) for o in owners] == ["LOCAL_OWNER_ID"]
-    uses = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "LOCAL_OWNER_ID"]
+    # Changed deliberately in 6M.4: the canonical core owner, not the
+    # `tasks.models` re-export.
+    assert [ast.unparse(o.value) for o in owners] == ["CONFIGURED_OWNER_ID"]
+    uses = [n for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id == "CONFIGURED_OWNER_ID"]
     assert len(uses) == 1                     # only in that assignment
+    assert "LOCAL_OWNER_ID" not in {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
     assert not [m for m in imports(tree) if m.startswith(("app.api", "fastapi", "starlette"))]
 
 

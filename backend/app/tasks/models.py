@@ -49,6 +49,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.owner import CONFIGURED_OWNER_ID
 from app.database.models.base import Base, utcnow
 from app.tasks.states import TaskState, TaskStepState
 
@@ -76,7 +77,10 @@ def _enum_values(enum_cls) -> list:
 #: background runtime that claims work must never have to guess whose work it
 #: claimed. Making owner nullable today and mandatory later is a migration
 #: over live rows with no correct backfill.
-LOCAL_OWNER_ID = uuid.UUID("00000000-0000-0000-0000-00000000a1a1")
+#:
+#: Since Stage 6M.4 the value is defined once, in `app.core.owner`; this name
+#: re-exports it so every existing import keeps working.
+LOCAL_OWNER_ID = CONFIGURED_OWNER_ID
 
 
 class TaskOrigin(str, enum.Enum):
