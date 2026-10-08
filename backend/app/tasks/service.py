@@ -509,6 +509,21 @@ class TaskService:
             # SQLite hands back naive values; reading one as machine-local
             # would expire a fresh grant or revive a stale one.
             granted = granted.replace(tzinfo=timezone.utc)
+        if task.monitor is not None and task.deadline is not None:
+            # Stage 6N. A confirmed monitor's authorization lasts until its
+            # deadline -- the end the person saw and agreed to -- and never
+            # past `MAX_MONITOR_LIFETIME_SECONDS` from the decision, however
+            # far away the deadline was set. Every other task keeps the
+            # short window below, unchanged.
+            from app.tasks.monitoring import MAX_MONITOR_LIFETIME_SECONDS
+
+            deadline = task.deadline
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            return moment < min(
+                deadline,
+                granted + timedelta(seconds=MAX_MONITOR_LIFETIME_SECONDS),
+            )
         ttl = int(
             getattr(self._settings, "TASK_AUTHORIZATION_TTL_SECONDS", 900) or 900
         )

@@ -44,6 +44,8 @@ class GmailListMessagesTool(AsyncIntegrationTool):
             "newer_than_days": arguments.newer_than_days,
             "max_results": arguments.max_results,
             "body_count": arguments.body_count,
+            # Stage 6N. Named, like the rest: a monitor's baseline.
+            "received_after": arguments.received_after,
         }
 
 

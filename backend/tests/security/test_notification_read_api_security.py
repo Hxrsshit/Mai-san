@@ -97,11 +97,21 @@ def test_the_read_dependencies_bind_the_seams_owner_and_nothing_else() -> None:
 
 
 def test_no_route_takes_an_owner() -> None:
+    seam = []
     for path in (APP / "api" / "routes").rglob("*.py"):
         for fn in ast.walk(parse(path)):
             if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                params = [a.arg for a in fn.args.args + fn.args.kwonlyargs]
-                assert not [p for p in params if "owner" in p], (path.name, fn.name, params)
+                for a in fn.args.args + fn.args.kwonlyargs:
+                    if "owner" in a.arg:
+                        seam.append((path.name, fn.name, a.arg, ast.unparse(a.annotation)))
+    # Changed deliberately in 6N: the conversations route takes the owner
+    # *from the authentication seam* (`OwnerId` is `Depends(get_owner_id)`),
+    # never from the request, and hands it to the shared turn helper -- which
+    # the Telegram webhook calls with `owner_id=None`. Nothing else.
+    assert seam == [
+        ("conversations.py", "send_message", "owner_id", "OwnerId"),
+        ("conversations.py", "send_conversation_turn", "owner_id", "Optional[uuid.UUID]"),
+    ], seam
 
 
 def test_the_read_services_are_built_only_where_expected() -> None:

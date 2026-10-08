@@ -37,6 +37,7 @@ authorised.
 import enum
 import math
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, FrozenSet, NamedTuple, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -50,6 +51,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 MIN_INTERVAL_SECONDS = 300
 #: Most seconds between checks. Seven days.
 MAX_INTERVAL_SECONDS = 604_800
+
+#: Stage 6N. The longest a monitoring task's authorization may last, however
+#: far away its deadline. Seven days: the same ceiling as a standing grant
+#: (`app.authorization.models.MAX_GRANT_TTL_SECONDS`, which a test pins this
+#: equal to), so a monitor can never outlive the permission it runs on.
+MAX_MONITOR_LIFETIME_SECONDS = 7 * 24 * 3600
 
 #: Path segments, and their shape. A path is dictionary keys, nothing else.
 MAX_PATH_SEGMENTS = 4
@@ -232,6 +239,33 @@ def interval_of(raw: Any) -> Optional[int]:
         return None
 
 
+def _utc(value: datetime) -> datetime:
+    # SQLite hands back naive values; they are UTC by construction.
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def deadline_passed(task: Any, now: Optional[datetime] = None) -> bool:
+    """Whether this is a monitoring task whose deadline has arrived.
+
+    Stage 6N. False for an ordinary task and for a monitor with no deadline:
+    only a monitor that was given an end has one to reach.
+    """
+    if task.monitor is None or task.deadline is None:
+        return False
+    return (now or datetime.now(timezone.utc)) >= _utc(task.deadline)
+
+
+def clamp_to_deadline(task: Any, when: datetime) -> datetime:
+    """`when`, or a monitor's deadline if that comes first.
+
+    Stage 6N. So no check is ever scheduled after a monitor ends: the run at
+    the deadline is the one that finds it expired.
+    """
+    if task.monitor is None or task.deadline is None:
+        return when
+    return min(when, _utc(task.deadline))
+
+
 # --- Evaluation ---------------------------------------------------------------
 
 
@@ -351,6 +385,7 @@ def evaluate(condition: Condition, data: Any) -> Evaluation:
 __all__ = [
     "ALLOWED_OPERATORS",
     "MAX_INTERVAL_SECONDS",
+    "MAX_MONITOR_LIFETIME_SECONDS",
     "MAX_PATH_SEGMENTS",
     "MIN_INTERVAL_SECONDS",
     "MONITORABLE_CAPABILITIES",
@@ -361,6 +396,8 @@ __all__ = [
     "MonitorSpec",
     "Operator",
     "SpecRefused",
+    "clamp_to_deadline",
+    "deadline_passed",
     "evaluate",
     "interval_of",
     "parse_spec",

@@ -180,6 +180,8 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
         workflow,
         calendar,
         mail,
+        # Stage 6N: the monitor step's result, now part of every turn.
+        monitor,
     ) = await chat.send_message(
         conversation.id, "hello from the test"
     )

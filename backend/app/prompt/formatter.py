@@ -859,6 +859,14 @@ def render_runtime_facts(facts: RuntimeFacts) -> str:
     lines.append(
         f"- Background tasks: {_on_off(facts.background_tasks_enabled)}"
     )
+    # Stage 6N. Gmail monitoring is set up by the application, from a
+    # proposal the person confirmed -- never by the model. A sentence saying
+    # it started, changed or found mail is a claim only application state can
+    # make, so the model is told plainly that it cannot make one.
+    lines.append(
+        "- Gmail monitoring: set up only through Mai's own confirmed proposal. "
+        "Never say monitoring has started, changed, stopped or found an email."
+    )
     lines.append(
         f"- Action identification: {_on_off(facts.action_orchestration_enabled)}"
     )

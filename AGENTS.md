@@ -169,7 +169,11 @@ a change pass. If a test blocks a change, the test is usually right.
 - `GrantService` (`app/authorization/grants.py`) stores and finds grants. It
   makes no decision. Grants are scoped to one canonical tool name (no
   wildcards), always expire (one week maximum), and are revoked by conditional
-  UPDATE, never deleted. Grant creation has no `source` parameter.
+  UPDATE, never deleted. Grant creation has no `source` parameter. In
+  production a grant is created in exactly one place: a person's confirmation
+  of a Stage 6N monitoring proposal (`app/tasks/requests.py` `_confirm`), for
+  `gmail_list_messages` at its own risk (HIGH), ending at the monitor's
+  deadline. Only the runner consults grants (`authorize_with_grants`).
 - Nothing approves on a person's behalf. The runner approves an execution only
   when policy or a standing grant already cleared it, or a person already
   approved that specific execution.
@@ -193,7 +197,30 @@ a change pass. If a test blocks a change, the test is usually right.
   `TaskService.schedule_background` schedules background work, and only
   `TaskService.configure_monitoring` configures monitoring. None of them takes
   a `source` parameter, and no content-handling module can reach them. There
-  is currently **no HTTP route** for scheduling or monitoring.
+  is **no HTTP route** for scheduling or monitoring.
+- **Confirmed Gmail monitoring (Stage 6N)** is the one way a chat turn reaches
+  the task layer: `chat_service.py` imports `app.tasks.requests` and nothing
+  else from `app.tasks`, and passes it the user's raw message only. A
+  deterministic grammar (no model) recognises the request; the proposal is a
+  `planned` task with a monitor and no authorization, grant or schedule, so it
+  is runtime-inert. Only an exact plain confirmation ("yes", "go ahead", ...)
+  of that persisted row, in the same conversation within 900 s, authorizes,
+  approves, grants and schedules it, in one savepoint after a conditional
+  claim. Anything else cancels the proposal; a changed specification needs a
+  new request. Every reply is application-written. The owner comes from the
+  authentication seam; the Telegram webhook passes none, so monitoring is
+  never set up from Telegram.
+- **Monitor lifetime (Stage 6N):** a monitoring task with a deadline stays
+  authorized until `min(deadline, authorized_at + 7 days)`; every other task
+  keeps `TASK_AUTHORIZATION_TTL_SECONDS` (900). A monitor's deadline is the
+  sooner of the lifetime asked for and 40 intervals (the task budget's
+  `max_tool_calls`). At the deadline, or when that authorization lapses, the
+  runner refuses with `monitor_expired` before any authorization or
+  execution, and the runtime cancels the task (reason `expired`), unschedules
+  it and releases the grant: not a failure, no block, no notification.
+  Reschedules are clamped to the deadline. Task completion is conditional on
+  the task still being active, so a check in flight cannot complete a task
+  cancelled meanwhile.
 - Plans are validated by the one graph validator
   (`app/planning/validator.validate_graph`) before persistence. Capabilities
   are bound (`app/tasks/capabilities.py`) and re-bound at run time.
@@ -293,9 +320,14 @@ a change pass. If a test blocks a change, the test is usually right.
   run" endpoint, and nothing routes model output to these endpoints.
 - `POST /api/tools/authorize` and `POST /api/orchestration/debug` only answer
   "would this be permitted?". They run nothing.
-- The task API is read-only (GETs). There is no HTTP surface for scheduling
-  background work, configuring monitoring, creating standing grants, or
-  running the runner. Adding one is an architectural change (§6).
+- The task API is read-only (GETs) except for one write (Stage 6N):
+  `POST /api/tasks/{task_id}/cancel` with the body exactly `{}`, owner-scoped
+  (another owner's task is the same 404 as a missing one), idempotent for a
+  cancelled task, 409 for a completed or failed one. It can only stop work,
+  through `TaskService.cancel`, and releases a monitor's grant when no other
+  active task needs it. There is no HTTP surface for scheduling background
+  work, configuring monitoring, creating standing grants, or running the
+  runner. Adding one is an architectural change (§6).
 - **Notification delivery (Stage 6L, approved by the owner):**
   `POST /api/task-notifications/{notification_id}/deliveries` with the body
   `{"adapter": "<name>"}` is the one route that triggers delivery. It hands

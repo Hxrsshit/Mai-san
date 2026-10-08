@@ -85,9 +85,11 @@ def test_spam_and_trash_are_never_searched() -> None:
 
 def test_the_query_has_no_free_text_field() -> None:
     """§: no raw `q`, no label ids, no page token, no spam toggle."""
+    # Changed deliberately in 6N: `received_after`, an integer epoch -- not
+    # free text -- rendered only as `after:<int>`.
     assert set(MailQuery.model_fields) == {
         "sender", "subject_terms", "text_terms", "unread_only",
-        "newer_than_days", "max_results",
+        "newer_than_days", "max_results", "received_after",
     }
     for forbidden in ("q", "labelIds", "pageToken", "includeSpamTrash",
                       "raw", "format", "url", "endpoint"):

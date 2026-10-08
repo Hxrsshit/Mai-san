@@ -165,9 +165,11 @@ def test_no_gmail_operation_accepts_a_url_method_or_header() -> None:
     """The arguments are fields, never a request description."""
     from app.tools.catalog import GmailGetMessageArguments, GmailListMessagesArguments
 
+    # Changed deliberately in 6N: `received_after`, a monitor's baseline --
+    # an integer epoch rendered as Gmail's `after:`, bounded on every use.
     assert set(GmailListMessagesArguments.model_fields) == {
         "sender", "subject_terms", "text_terms", "unread_only",
-        "newer_than_days", "max_results", "body_count",
+        "newer_than_days", "max_results", "body_count", "received_after",
     }
     assert set(GmailGetMessageArguments.model_fields) == {"message_id"}
 

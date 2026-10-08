@@ -149,6 +149,10 @@ async def telegram_webhook(
             provider=provider,
             session_factory=session_factory,
             session=session,
+            # Stage 6N. No owner: Telegram is authenticated by chat id, not
+            # by the owner seam, so a monitor is never set up from here --
+            # the request is explained and nothing is persisted.
+            owner_id=None,
         )
     except Exception:  # Existing API handlers classify the underlying failure.
         # The normal HTTP route lets its dependency roll this transaction

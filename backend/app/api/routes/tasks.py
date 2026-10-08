@@ -1,10 +1,15 @@
 """Stage 6A: reading tasks, their steps, their journal and Mai's activity.
 
-**Read-only, deliberately.** There is no create, no update, no transition and
-no execute endpoint. A task is created from a user turn through
-`TaskService.create_for_user`; exposing an HTTP constructor would be a second
-way in, and the one thing this stage must guarantee is that a task has a
-person behind it.
+**Read-only, deliberately -- with one exception.** There is no create, no
+update, no approve and no execute endpoint. A task is created from a user turn
+through `TaskService.create_for_user`; exposing an HTTP constructor would be a
+second way in, and the one thing this stage must guarantee is that a task has
+a person behind it.
+
+The exception, Stage 6N: `POST /{task_id}/cancel`, body exactly `{}`. It can
+only stop work -- never start, widen or approve any -- goes through
+`TaskService.cancel` with its declared transitions, and releases a monitor's
+grant when nothing else needs it. Owner-scoped like every read here.
 
 Nothing here interprets a task's objective. It is returned as stored and
 rendered by the client as text.
@@ -14,8 +19,9 @@ import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict
 
-from app.api.deps import Tasks
+from app.api.deps import MonitorRequests, Tasks
 from app.core.logging import get_logger
 from app.tasks.models import Task, TaskEvent, TaskStep
 from app.tasks.schemas import (
@@ -27,6 +33,7 @@ from app.tasks.schemas import (
     TaskEventRead,
     TaskList,
     TaskRead,
+    TaskOutcome,
     TaskStepRead,
 )
 from app.tasks.states import TaskState
@@ -220,6 +227,48 @@ async def get_events(
             status_code=status.HTTP_404_NOT_FOUND, detail="task_not_found"
         )
     return [_event(e) for e in await service.events_for(task_id, limit=limit)]
+
+
+class CancelRequest(BaseModel):
+    """An empty JSON object. Required, so that only a JSON request -- which a
+    cross-site form cannot send without a preflight -- can cancel anything.
+    The same rule as 6M.2's mark-read."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+@router.post("/{task_id}/cancel", response_model=TaskRead)
+async def cancel_task(
+    task_id: uuid.UUID,
+    request: CancelRequest,
+    monitors: MonitorRequests,
+    service: Tasks,
+) -> TaskRead:
+    """Stage 6N. Cancel one of the owner's tasks.
+
+    200 with the task once it is cancelled, including when it already was;
+    404 `task_not_found` for a task this owner does not have, whoever else
+    might; 409 `task_is_terminal` for a task that already completed or
+    failed. A running monitor stops at its next check: the runner refuses a
+    cancelled task, and a cancelled task cannot be completed.
+    """
+    result = await monitors.cancel(task_id)
+    if result.outcome is TaskOutcome.NOT_FOUND:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="task_not_found"
+        )
+    if result.outcome is TaskOutcome.TERMINAL:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="task_is_terminal"
+        )
+    if not result.ok:
+        # Persistence failed. Nothing was cancelled, so nothing may say so.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="task_not_cancelled",
+        )
+    task = await service.get(task_id)
+    return _task(task)
 
 
 __all__ = ["router"]

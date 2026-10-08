@@ -21,16 +21,16 @@ before substantial work and updates it after completing work (see
 
 ---
 
-## Current state (as of 2026-10-07)
+## Current state (as of 2026-10-08)
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6M.4: authentication**: the commit titled `Stage 6M.4: authentication` (the commit that adds `backend/app/core/auth.py`; find it with `git log -1 -- backend/app/core/auth.py`) |
+| Latest completed stage | **Stage 6N: confirmed Gmail monitoring**: the commit titled `Stage 6N: confirmed Gmail monitoring` (the commit that adds `backend/app/tasks/requests.py`; find it with `git log -1 -- backend/app/tasks/requests.py`) |
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved) |
-| Previous stages | 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Previous stages | 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2, 6M.3 and 6M.4 added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
-| Next stage | **None started.** Stage 6M is complete (6M.1 to 6M.4). Do not begin another stage without an explicit request. |
+| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2, 6M.3, 6M.4 and 6N added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
+| Next stage | **None started.** Stage 6N is complete. Do not begin another stage without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -140,6 +140,19 @@ not commit them as part of other work, and do not describe them as done.
    deterministically on clean `922dbbd` (the guard test, then that test: 1
    failed) and surfaced in one shuffled full run (seed 1265397829). It is
    offered as a separate test-only fix.
+8. **`TaskService.transition` writes state unconditionally** (found during
+   6N; pre-existing since 6A). It reads the task, checks the edge, then
+   updates by id only, so two concurrent transitions on PostgreSQL can lose
+   one (the second overwrites the first). 6N does not change it; for the one
+   path 6N made reachable -- a cancel racing a monitoring check -- the
+   cancel now locks and re-reads the row first (`SELECT ... FOR UPDATE`) and
+   the runner's completion is conditional, so that race resolves correctly
+   (verified on PostgreSQL with two connections, including a control that
+   fails without the lock). Other concurrent transitions remain exposed.
+9. **`ChatService.start_conversation_with_message` is broken dead code**
+   (found during 6N; pre-existing). It unpacks five values from
+   `send_message`, which has returned nine since 5B (ten since 6N), so it
+   would raise `ValueError`. Nothing calls it. Not fixed in 6N.
 
 ### Deferred / not built
 
@@ -212,9 +225,13 @@ not commit them as part of other work, and do not describe them as done.
 - **Two inboxes.** Reminder notifications (5F.1) and task notifications (6H)
   are separate tables. Unifying them behind one read contract is deferred.
 - No HTTP or UI surface exists for `TaskService.schedule_background`,
-  `TaskService.configure_monitoring` or standing-grant creation. These
-  features are currently reachable only programmatically, by design, until a
-  stage adds a person-facing surface.
+  `TaskService.configure_monitoring` or standing-grant creation. Since 6N
+  they are reachable from a person in exactly one way: a confirmed Gmail
+  monitoring proposal in an authenticated chat turn (see Stage 6N). Still
+  deferred from 6N: a frontend view of monitors and notifications with a
+  cancel button; other monitorable sources; monitoring requested from
+  Telegram; per-argument (rather than capability-wide) grants; amending a
+  proposal in place; recurring monitors after a match.
 - `max_model_calls` and `max_seconds` task budgets are recorded but
   deliberately unenforced (nothing measures them).
 - The `replanned` task event remains unwritable (no replanning exists).
@@ -235,6 +252,229 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 6N: Confirmed Gmail monitoring (commit titled `Stage 6N: confirmed Gmail monitoring`, 2026-10-08)
+
+- **Status:** completed, verified, committed. Parent `25bfb98` (6M.4). It is
+  the commit that adds `backend/app/tasks/requests.py`.
+- **Purpose:** the front half of the agent loop. "Watch my Gmail for an email
+  from X about Y and tell me when it arrives" becomes an application-written
+  proposal, then, on the person's plain confirmation, a scheduled monitoring
+  task. Everything after scheduling (runtime, runner, authorization with a
+  standing grant, execution, Gmail, evaluation, 6H notification, 6M.3
+  delivery) already existed and is reused unchanged.
+- **V-1 (live, read-only, before implementation; 2026-10-08):** Gmail
+  `after:<epoch>` verified against the owner's connected mailbox, counts only:
+  - future and current bounds returned 0;
+  - `after:<now-7d>` and `newer_than:7d` returned the same 186 ids;
+  - 50 sampled timestamps (25 inside, 25 outside) were on the correct side
+    of a one-day epoch boundary (second precision, received time);
+  - `after:t` includes a message whose received time floors to `t`;
+  - combined with `is:unread` and `from:` it was accepted and returned
+    subsets.
+- **Owner decisions:**
+  - R1: the baseline (`received_after`) is the second the proposal is
+    persisted; mail between the request and the confirmation counts.
+  - R2: expiry uses existing event types with reason codes (no enum, no
+    migration).
+  - R3: defaults of 15 minutes and 7 days, within 5 minutes to 24 hours and
+    1 hour to 7 days.
+  - During implementation (2026-10-08), two facts in the code contradicted
+    the design, and the owner chose:
+    - `gmail_list_messages` is HIGH risk (not MEDIUM), so the grant is at
+      the capability's own risk, HIGH;
+    - the task budget caps a monitor at 40 checks (`max_tool_calls`), so the
+      deadline is `min(requested lifetime, 40 x interval)`. At the
+      15-minute default a monitor runs 10 hours; "every 6 hours for 7 days"
+      runs the full week. The proposal shows the exact deadline.
+- **The front door (`app/tasks/requests.py`):**
+  - `recognise()`: a deterministic grammar (no model) over the raw user
+    message only. It needs a trigger ("watch", "monitor", "keep an eye on")
+    with a mail source plus a notify phrase, or a "tell me when I get an
+    email ..." form. It extracts exactly one sender (2 to 96 characters) and
+    up to 3 subject words, with optional "every N minutes/hours/day" and
+    "for N hours/days/a week". It asks for clarification on a missing,
+    vague, multiple or unreadable sender, a bad interval or lifetime, an
+    absolute date, or more than 3 subject words. Write verbs are refused
+    outright. Anything else falls through to the existing chat.
+  - The proposal is one savepoint: `create_for_user` (with the deadline),
+    then `attach_plan` (one step, `gmail_list_messages`, sender, subject
+    terms, `max_results=1`, `body_count=0`, `received_after`), then
+    `configure_monitoring` with the condition `external.content !=
+    NO_MESSAGES_MATCHED`. The row is `planned`, unauthorized and
+    unscheduled, so it is **runtime-inert**: not claimable, not schedulable,
+    not executable, no Gmail access, no grant, no notification (all
+    tested).
+  - `classify_reply()`: CONFIRM is an exact whitelist (`[please] [yes |
+    yeah | yep | ok | okay | sure | confirm | confirmed] [do it | go ahead |
+    start it | start monitoring | set it up] [please | thanks | thank you]`,
+    at most 40 characters, letters and spaces only). Then DECLINE,
+    REPLACE (a full new request), INVALIDATED (an affirmative head,
+    spec-change words or any digit, e.g. "yes, every 30 minutes"), and
+    OTHER. Everything except CONFIRM cancels the pending proposal (reasons
+    `proposal_declined` / `_replaced` / `_invalidated` / `_abandoned`);
+    a proposal older than 900 s is `proposal_expired`.
+  - Confirmation is bound to the persisted row: a conditional claim
+    (`planned` and unauthorized), then one savepoint with `authorize_plan`,
+    then `transition(QUEUED, actor="user")`, then
+    `GrantService.create("gmail_list_messages", HIGH, ttl=ceil(deadline -
+    now))`, then `schedule_background`. Any failure rolls all of it back and
+    cancels the proposal (`proposal_failed`). A second "yes" finds nothing
+    and falls through.
+  - Every reply is application-written; "Done. I'm monitoring" is built
+    only after the savepoint held.
+  - `release_monitor_grants()` revokes the owner's live grants for the
+    capability when no active task still needs it.
+- **Gmail:** `received_after` on `GmailListMessagesArguments` and
+  `MailQuery` (a strict integer, at most 60 s ahead, at most 30 days old,
+  checked by the one `check_received_after` at both layers), rendered only
+  as `after:<int>`. `NO_MESSAGES_MATCHED` is the named sentinel. The tool and
+  integration forward the field by name.
+- **Lifetime and expiry:**
+  - `TaskService.authorization_valid`: a monitor with a deadline is valid
+    while `now < min(deadline, authorized_at + 7 days)`; everything else
+    keeps the unchanged 900 s.
+  - The runner refuses a monitor with `monitor_expired` at its deadline
+    (checked before authorization) or when that authorization has lapsed.
+  - The runtime then cancels it with reason `expired`, clears
+    `next_run_at`, records `background_unscheduled` (`monitor_expired`) and
+    releases the grant. There is no failure count, no block and no
+    notification.
+  - Every reschedule (interval, contention, failure backoff) is clamped to
+    the deadline.
+  - Before 6N, a monitor whose authorization lapsed was silently left
+    `running` and unscheduled.
+- **Cancellation:** `POST /api/tasks/{task_id}/cancel`, body exactly `{}`,
+  authenticated at router level, owner-scoped (another owner's task is 404),
+  idempotent (200 for a cancelled task), 409 `task_is_terminal` for a
+  completed or failed one. It runs through `TaskService.cancel` and releases
+  the grant.
+  - Concurrency, found while designing the live check and fixed within 6N's
+    own code:
+    - the runner's completion is now conditional on the task still being
+      active in the database (`task_not_active` otherwise, also for
+      `advance`);
+    - the cancel locks and re-reads the row (`SELECT ... FOR UPDATE`) before
+      deciding, so a cancel racing a check on PostgreSQL waits for the check
+      and answers "terminal" instead of overwriting a completion whose
+      notification already exists.
+  - See Known defect 8 for the wider pre-existing issue.
+- **Wiring:**
+  - `ChatService.send_message(..., owner_id=None)` runs the monitor step
+    first (before calendar, reminders, mail, workflow and research) and
+    returns a 10th element. `chat_service.py` imports `app.tasks.requests`
+    and nothing else from `app.tasks`.
+  - The conversations route passes `OwnerId` from the seam. The Telegram
+    webhook passes `owner_id=None`, so a monitoring request there gets
+    "only in the Mai app" and nothing is persisted.
+  - `ChatResponse.monitor` (`app/schemas/monitor.py`) carries the outcome
+    and task id only.
+  - `deps.get_monitor_request_service` provides the cancel route's service.
+  - The prompt facts gained: "Gmail monitoring: set up only through Mai's
+    own confirmed proposal. Never say monitoring has started, changed,
+    stopped or found an email."
+- **No migration, no new event type, no frontend change, no new scheduler,
+  runner, registry, authorization or notification system, no model call.**
+  `orchestration/mail_language.py` was not changed: the design's plan to
+  expose its helpers proved unnecessary, because the monitor grammar has
+  its own stricter sender and subject parsing.
+- **Existing pins changed (deliberately, each to an exact allow-list, none
+  loosened):**
+  - the content-handling import pins (background runtime, task runner,
+    tasks) allow exactly `chat_service.py -> app.tasks.requests`;
+  - `configure_monitoring` is called only by `requests._propose`;
+  - the five "task router is read-only" pins allow exactly one POST,
+    `/{task_id}/cancel`, and the old "no write verb" test now checks that
+    cancel answers 422 without `{}` and 404 for an unknown task;
+  - "no route takes an owner" allows exactly the conversations route's
+    `owner_id: OwnerId` and the shared turn helper's
+    `Optional[uuid.UUID]`;
+  - the Gmail and `MailQuery` field sets gain `received_after`;
+  - monitoring imports `datetime`; the runtime imports `clamp_to_deadline`;
+  - the planning pin allows `tasks/requests.py` to build its one plan;
+  - the task layer may take exactly `NO_MESSAGES_MATCHED` from
+    `app.integrations.gmail_schemas`;
+  - the capability pin allows exactly one grant `revoke`, in
+    `release_monitor_grants`;
+  - the task package has `requests.py`;
+  - chat may import exactly `app.tasks.requests` and still never names
+    `TaskService`;
+  - `test_providers` unpacks the 10th element.
+- **Verification:**
+  - 219 new tests: `tests/test_monitor_requests.py` 155,
+    `tests/test_monitor_runtime.py` 17, `tests/test_monitor_api.py` 13,
+    `tests/security/test_monitor_requests_security.py` 34.
+  - Full suite, isolated worktree (`25bfb98` plus the 6N files): ordered
+    6315 passed, 2 skipped (6M.4: 6093 passed, 2 skipped; +219 new tests and
+    3 per-module parametrized cases now including `requests.py`). Five
+    complete shuffled runs, all 6315 passed, 2 skipped: seeds 928791601,
+    892857922, 1533660104, 50230125, 1926282308.
+  - **One unexplained failure, not reproduced.** A sixth shuffled run was
+    killed by the session's background time limit at about 76%, after
+    printing one `F`. The seed and test name are only printed at the end, so
+    both were lost. It did not recur in the five complete shuffled runs,
+    the ordered run, or 25 further shuffled runs (random seeds) of the 465
+    tests in the 6N, monitoring, runner, Gmail and automatic-delivery
+    files. Whether it was a 6N test, a pre-existing order dependence (see
+    Known defects 4 and 7) or something else is **unknown**.
+  - Mutation testing (isolated worktree; harness validated: anchors match,
+    the unmutated set passes, 3 controls survive):
+    - run 1: 70 mutations, 62 killed. G2, G3, G4, G6, R4, Q2 and Q32 led
+      to new tests (baseline bounds, the sentinel pinned as persisted data,
+      `advance` after a cancellation, declines with more words, no grant
+      attempt after a refused authorization).
+    - run 2: those 8 and 2 cancel-lock mutations; 8 killed.
+    - 2 survivors are equivalent and documented. G4: a bool baseline is 0
+      or 1, always refused by the 30-day bound. Q15: the 40-character reply
+      bound can never decide a result, because the longest valid
+      confirmation is 37 characters.
+  - Live PostgreSQL (throwaway databases in the `mai-db` container, the
+    existing `mai-backend:latest` image, a clean worktree mounted
+    read-only; both databases dropped afterwards; the real `mai` database
+    untouched at `0019`):
+    - (a) a script with stubbed Gmail on real PostgreSQL: 24/24, including
+      inertness against the runtime, confirmation, the grant, no match then
+      a match with exactly one notification, expiry, a cancel racing an
+      in-flight check on two real connections, two concurrent
+      confirmations (exactly one wins, one grant), and owner scoping. A
+      control without the cancel lock failed exactly the race check
+      (23/24).
+    - (b) a live authenticated HTTP server:
+      - the chat and cancel routes answer 401 without or with a wrong token;
+      - a proposal stayed inert over runtime ticks;
+      - confirmation scheduled the same row with one HIGH grant;
+      - the runtime made one **real, read-only** Gmail listing (a
+        non-existent sender; 0 results, no message content). The owner's
+        credentials volume was mounted read-only, after the running app
+        refreshed the token through its normal path;
+      - a second "yes" fell through (502 there only because that
+        environment's LLM key is deliberately fake);
+      - cancel answered 200, 200 again, 422 for a bad body, 404 for an
+        unknown or other owner's task and 409 for a completed one, and
+        released the grant; a cancelled task was not run;
+      - expiry through the live runtime ended `cancelled`/`expired` with no
+        failure, read or notification, and the grant released;
+      - the server log has no token, hash, password, Google token shape,
+        subject or sender, and no traceback.
+  - Structural audit: exactly one `AuthorizationService`, one
+    `authorize_with_grants` caller (the runner), one `ExecutionService` and
+    Execution constructor, one `TaskRunner`, one `BackgroundRuntime`, one
+    notification writer, one delivery-record writer, one
+    `SecureHttpClient` (the only `httpx` importer), one owner seam
+    (`get_owner_id`); no scheduler imports in `app/tasks`; no model call in
+    `requests.py`; latest migration `0019`.
+- **Known limitations:**
+  - The grant is capability-wide (owner plus `gmail_list_messages`, HIGH)
+    while any monitor is active; only the runner consults grants and only
+    6N creates such tasks.
+  - At the default interval a monitor ends after 10 hours (the 40-check
+    budget); a longer watch needs a longer interval.
+  - The grammar is narrow by design; phrasings it misses fall through to
+    the model, which the prompt tells not to claim monitoring.
+  - Telegram cannot create monitors.
+  - No frontend view.
+  - Any digit or spec word in an answer to a pending proposal cancels it,
+    even when the message was about something else (the reply says so).
 
 ### Fix: order-independent no-execution guard tests (`7e7b978`, 2026-10-07)
 

@@ -181,7 +181,10 @@ def test_the_task_http_surface_is_still_read_only() -> None:
                 decorator.func, ast.Attribute
             ):
                 methods.append(decorator.func.attr)
-    assert sorted(methods) == ["get"] * 6, methods
+    # Changed deliberately in 6N: one POST, `/{task_id}/cancel`, which can
+    # only stop work -- never create, approve, run or widen any. Its path and
+    # body are pinned in `test_monitor_requests_security.py`.
+    assert sorted(methods) == ["get"] * 6 + ["post"], methods
     source = (BACKEND / "app" / "api" / "routes" / "tasks.py").read_text()
     assert "TaskRunner" not in source
     assert "advance" not in source
@@ -254,7 +257,9 @@ async def test_no_content_handling_module_reaches_the_runner() -> None:
                     module = ",".join(a.name for a in node.names)
                 if "app.tasks" in module:
                     offenders.append((str(path.relative_to(BACKEND)), module))
-    assert offenders == [], offenders
+    # Changed deliberately in 6N: exactly the one door, `app.tasks.requests`,
+    # from `chat_service.py`. It never names the runner.
+    assert offenders == [("app/services/chat_service.py", "app.tasks.requests")], offenders
 
 
 # ============================================================================

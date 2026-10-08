@@ -255,8 +255,12 @@ def test_exactly_one_route_in_the_application_triggers_delivery() -> None:
 
 
 def test_the_task_api_is_still_read_only() -> None:
-    methods = {m for _, m, _ in endpoints(parse(APP / "api" / "routes" / "tasks.py"))}
-    assert methods == {"get"}
+    routes = endpoints(parse(APP / "api" / "routes" / "tasks.py"))
+    # Changed deliberately in 6N: one POST, `/{task_id}/cancel`, which can
+    # only stop work -- never create, approve, run or widen any. Its path and
+    # body are pinned in `test_monitor_requests_security.py`.
+    assert {m for _, m, _ in routes} == {"get", "post"}
+    assert [(m, p) for _, m, p in routes if m != "get"] == [("post", "/{task_id}/cancel")]
 
 
 def test_6l_adds_no_migration_or_table() -> None:

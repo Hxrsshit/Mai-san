@@ -25,6 +25,7 @@ from app.memory.service import MemoryService
 from app.orchestration.service import OrchestrationService
 from app.planning.service import PlanningService
 from app.tasks.notifications import NotificationService
+from app.tasks.requests import MonitorRequestService
 from app.tasks.service import TaskService
 from app.runtime.facts import build as build_runtime_facts
 from app.tools.authorization import AuthorizationService
@@ -192,6 +193,14 @@ def get_task_service(session: DbSession, settings: AppSettings, owner_id: "Owner
     return TaskService(session=session, settings=settings, owner_id=owner_id)
 
 
+def get_monitor_request_service(
+    session: DbSession, settings: AppSettings, owner_id: "OwnerId"
+) -> MonitorRequestService:
+    """Stage 6N. The monitor service for the cancel route, bound to the
+    authenticated owner. Takes no provider: nothing in it calls a model."""
+    return MonitorRequestService(session, settings=settings, owner_id=owner_id)
+
+
 def get_notification_delivery_service(session: DbSession, owner_id: "OwnerId") -> NotificationDeliveryService:
     """Stage 6L. The 6I delivery service, from the 6K composition root.
 
@@ -277,6 +286,7 @@ Orchestration = Annotated[
 Executions = Annotated[ExecutionService, Depends(get_execution_service)]
 
 Tasks = Annotated[TaskService, Depends(get_task_service)]
+MonitorRequests = Annotated[MonitorRequestService, Depends(get_monitor_request_service)]
 NotificationDeliveries = Annotated[
     NotificationDeliveryService, Depends(get_notification_delivery_service)
 ]

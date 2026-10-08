@@ -33,6 +33,7 @@ not applied to any of it.
 import base64
 import binascii
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -77,6 +78,21 @@ MAX_TERM_CHARS = 64
 MAX_SENDER_QUERY_CHARS = 96
 MAX_NEWER_THAN_DAYS = 30
 
+#: Stage 6N. How far back `received_after` may reach, and how far ahead of
+#: this host's clock it may sit. A monitor's baseline is the moment its
+#: proposal was written, so a value days in the future or months in the past
+#: is not a baseline anyone set -- it is refused, never clamped.
+MAX_RECEIVED_AFTER_AGE_SECONDS = 30 * 86_400
+MAX_RECEIVED_AFTER_SKEW_SECONDS = 60
+
+#: Stage 6N. What a listing renders when nothing matched.
+#:
+#: Named because the monitoring condition compares against it: "at least one
+#: message matched" is `external.content != NO_MESSAGES_MATCHED`. Two copies
+#: of the literal would drift, and a drifted sentinel makes every empty
+#: listing look like a match.
+NO_MESSAGES_MATCHED = "(no messages matched)"
+
 #: The only headers Mai reads. Everything else is dropped unexamined.
 #:
 #: `To` and `Cc` are deliberately absent: they are other people's addresses,
@@ -96,6 +112,25 @@ _TERM_SAFE = re.compile(r"[^A-Za-z0-9 .@_'\-]+")
 
 #: The same, for a sender. Narrower still: an address, or part of one.
 _SENDER_SAFE = re.compile(r"[^A-Za-z0-9.@_\-+]+")
+
+
+def check_received_after(value: Any, now: Optional[float] = None) -> int:
+    """`value` as a `received_after` epoch, or `ValueError`.
+
+    Stage 6N. An integer -- never a bool, a float or a string -- no more than
+    `MAX_RECEIVED_AFTER_SKEW_SECONDS` ahead of the clock and no older than
+    `MAX_RECEIVED_AFTER_AGE_SECONDS`. The bounds are checked against the
+    clock on every validation, so a stored value that has aged out is refused
+    when it is next used rather than trusted because it was once fine.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("received_after must be an integer epoch")
+    moment = int(time.time() if now is None else now)
+    if value > moment + MAX_RECEIVED_AFTER_SKEW_SECONDS:
+        raise ValueError("received_after may not be in the future")
+    if value < moment - MAX_RECEIVED_AFTER_AGE_SECONDS:
+        raise ValueError("received_after is too old")
+    return value
 
 
 class MailQuery(BaseModel):
@@ -120,8 +155,14 @@ class MailQuery(BaseModel):
     #: is newest first -- so "latest email" needs no date bound at all.
     newer_than_days: Optional[int] = Field(default=None, ge=1, le=MAX_NEWER_THAN_DAYS)
     max_results: int = Field(default=MAX_MESSAGES, ge=1, le=MAX_MESSAGES)
+    #: Stage 6N. Only mail Gmail received after this epoch second. Rendered
+    #: as Gmail's own `after:<epoch>`, whose second-level semantics were
+    #: verified live (V-1) before this field existed.
+    received_after: Optional[int] = Field(default=None, strict=True)
 
     def model_post_init(self, _context: Any) -> None:
+        if self.received_after is not None:
+            check_received_after(self.received_after)
         # Written out rather than looped with `getattr`. There are two fields,
         # and `getattr` is the string-to-attribute primitive a boundary module
         # should not contain -- the structural audit asserts its absence here,
@@ -172,6 +213,11 @@ class MailQuery(BaseModel):
         if self.newer_than_days:
             days = max(1, min(int(self.newer_than_days), MAX_NEWER_THAN_DAYS))
             clauses.append(f"newer_than:{days}d")
+
+        if self.received_after is not None:
+            # From the validated integer only. Nothing a person typed can
+            # reach this clause.
+            clauses.append(f"after:{int(self.received_after)}")
 
         return " ".join(clauses)
 
@@ -244,7 +290,7 @@ class MailWindow(BaseModel):
                     lines.append(f"      {_flatten(line)}")
 
         if not lines:
-            lines.append("(no messages matched)")
+            lines.append(NO_MESSAGES_MATCHED)
 
         return ExternalData(
             source="google_gmail",
@@ -436,9 +482,13 @@ __all__ = [
     "MAX_MESSAGES",
     "MAX_PAGES",
     "MAX_QUERY_TERMS",
+    "MAX_RECEIVED_AFTER_AGE_SECONDS",
+    "MAX_RECEIVED_AFTER_SKEW_SECONDS",
     "MailMessage",
     "MailQuery",
     "MailWindow",
+    "NO_MESSAGES_MATCHED",
+    "check_received_after",
     "parse_message",
     "parse_message_ids",
 ]

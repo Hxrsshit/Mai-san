@@ -156,7 +156,13 @@ def test_only_two_modules_outside_planning_can_reach_a_plan() -> None:
                     holders.append(str(path.relative_to(APP)))
 
     # Only the API view imports the plan types, and only to serialise them.
-    assert set(holders) <= {"schemas/message.py", "api/routes/planning.py"}, holders
+    # Changed deliberately in 6N: the confirmed-monitoring proposal builds
+    # one application-written, single-step plan -- the first production
+    # caller of `TaskService.attach_plan`, which validates it on the way in.
+    # No model output becomes a plan there.
+    assert set(holders) <= {
+        "schemas/message.py", "api/routes/planning.py", "tasks/requests.py",
+    }, holders
 
 
 def test_no_module_outside_planning_iterates_a_plans_tasks() -> None:

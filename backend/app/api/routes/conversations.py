@@ -1,6 +1,7 @@
 """Conversation and message endpoints."""
 
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Query, Response, status
 
@@ -9,6 +10,7 @@ from app.api.deps import (
     Chat,
     Conversations,
     DbSession,
+    OwnerId,
     Provider,
     SessionFactory,
 )
@@ -27,6 +29,7 @@ from app.memory.tasks import run_memory_extraction
 from app.calendar.schemas import CalendarOutcome
 from app.schemas.calendar import CalendarRead
 from app.schemas.mail import MailRead
+from app.schemas.monitor import MonitorRead
 from app.schemas.workflow import WorkflowRead
 from app.schemas.message import (
     ChatResponse,
@@ -193,6 +196,7 @@ async def send_message(
     provider: Provider,
     session_factory: SessionFactory,
     session: DbSession,
+    owner_id: OwnerId,
 ) -> ChatResponse:
     return await send_conversation_turn(
         conversation_id=conversation_id,
@@ -203,6 +207,10 @@ async def send_message(
         provider=provider,
         session_factory=session_factory,
         session=session,
+        # Stage 6N. The authenticated owner, from the one seam. Only this
+        # route passes one, so only an authenticated API turn can set up
+        # monitoring.
+        owner_id=owner_id,
     )
 
 
@@ -216,6 +224,7 @@ async def send_conversation_turn(
     provider: Provider,
     session_factory: SessionFactory,
     session: DbSession,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> ChatResponse:
     """Run the established conversation turn for an approved interface.
 
@@ -234,8 +243,9 @@ async def send_conversation_turn(
         workflow,
         calendar,
         mail,
+        monitor,
     ) = await chat.send_message(
-        conversation_id=conversation_id, content=content
+        conversation_id=conversation_id, content=content, owner_id=owner_id
     )
 
     # Commit the turn before queueing extraction. FastAPI closes dependency
@@ -306,6 +316,8 @@ async def send_conversation_turn(
         # Stage 4F-G. Whether a calendar read happened and how many
         # events it found -- never the events, which are private.
         calendar=CalendarRead.from_result(calendar),
+        # Stage 6N. The monitoring outcome and its task, never its content.
+        monitor=MonitorRead.from_result(monitor),
     )
 
 

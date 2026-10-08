@@ -64,6 +64,7 @@ from app.execution.schemas import ExecutionRequest
 from app.tasks import events as journal
 from app.tasks.capabilities import BindingStatus, bind_step
 from app.tasks.models import TaskEventType, TaskStep
+from app.tasks.monitoring import deadline_passed
 from app.tasks.schemas import RunnerOutcome, RunnerResult
 from app.tasks.service import TaskService
 from app.tasks.states import TaskState, TaskStepState, is_terminal
@@ -473,6 +474,21 @@ class TaskRunner:
                 outcome=RunnerOutcome.REFUSED, task_id=task.id,
                 state=task.state, reason="plan_not_authorized",
             )
+        if task.monitor is not None and (
+            deadline_passed(task) or not self._tasks.authorization_valid(task)
+        ):
+            # Stage 6N. A monitor that has reached its deadline -- checked
+            # first, before its authorization is consulted -- or whose
+            # authorization has lapsed has ended. One refusal for both, so
+            # the runtime ends it the same way: terminal, and not a failure.
+            # No execution is created and nothing is read.
+            await self._record(
+                task, TaskEventType.RUNNER_REFUSED, {"reason": "monitor_expired"}
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                state=task.state, reason="monitor_expired",
+            )
         if not self._tasks.authorization_valid(task):
             await self._record(
                 task, TaskEventType.RUNNER_REFUSED, {"reason": "authorization_expired"}
@@ -664,7 +680,11 @@ class TaskRunner:
         if refreshed is not None and refreshed.steps and all(
             s.state is TaskStepState.COMPLETED for s in refreshed.steps
         ):
-            await self._complete(refreshed)
+            completed = await self._complete(refreshed)
+            if completed.outcome is not RunnerOutcome.TASK_COMPLETED:
+                # Stage 6N: cancelled while this step ran. Say so, never
+                # "completed".
+                return completed
             return RunnerResult(
                 outcome=RunnerOutcome.TASK_COMPLETED, task_id=task.id,
                 step_key=step.step_key, execution_id=execution_id,
@@ -725,6 +745,34 @@ class TaskRunner:
             )
 
         now = datetime.now(timezone.utc)
+        # Stage 6N. Completion is conditional on the task still being active
+        # in the database, not merely in this session's copy of it. A person
+        # can now cancel a running monitor (`POST /api/tasks/{id}/cancel`),
+        # and a check that was already in flight -- reading Gmail -- must not
+        # then complete the cancelled task and notify about it. The matched
+        # row stays locked until this transaction ends, so a cancellation
+        # arriving afterwards finds the task completed instead.
+        from app.tasks.models import Task
+
+        still_active = await self._session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.owner_id == self._tasks.owner_id,
+                Task.state.in_([TaskState.QUEUED, TaskState.RUNNING]),
+            )
+            .values(updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if still_active.rowcount != 1:
+            await self._record(
+                task, TaskEventType.RUNNER_REFUSED, {"reason": "task_not_active"}
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                state=task.state, reason="task_not_active",
+            )
+
         previous = task.state
         task.state = TaskState.COMPLETED
         task.completed_at = now

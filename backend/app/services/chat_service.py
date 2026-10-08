@@ -64,6 +64,9 @@ from app.mail.schemas import MailOutcome, MailResult
 from app.mail.service import MailService
 from app.workflows.schemas import WorkflowOutcome, WorkflowResult
 from app.workflows.service import WorkflowService
+# Stage 6N. The one door from a chat turn into the task layer: this module,
+# from this file, and nothing else (a structural test asserts both).
+from app.tasks.requests import MonitorRequestService, MonitorResult
 from app.database.models import Conversation, Message, MessageRole
 from app.intent.schemas import IntentResult
 from app.intent.service import IntentService
@@ -130,7 +133,10 @@ class ChatService:
         )
 
     async def send_message(
-        self, conversation_id: uuid.UUID, content: str
+        self,
+        conversation_id: uuid.UUID,
+        content: str,
+        owner_id: Optional[uuid.UUID] = None,
     ) -> Tuple[
         Message, Message, IntentResult, PlanningResult, OrchestrationResult,
         ResearchResult,
@@ -138,7 +144,13 @@ class ChatService:
         """Handle one user turn.
 
         Returns (user_message, assistant_message, intent, planning,
-        orchestration, research).
+        orchestration, research, workflow, calendar, mail, monitor).
+
+        `owner_id` is the authenticated owner, from the one seam
+        (`app.api.deps.get_owner_id`), passed by the conversations route.
+        Stage 6N uses it for monitoring and nothing else; a caller that has
+        none -- the Telegram webhook -- passes none, and monitoring is then
+        explained but never set up.
 
         Raises ConversationNotFoundError if the conversation does not exist,
         or an LLMError subclass if the model call fails. Nothing between those
@@ -240,6 +252,25 @@ class ChatService:
         # decides what gets searched for.
         resolved = await self._resolve_context(conversation_id, reading.text)
 
+        # Stage 6N. Gmail monitoring, before every other recogniser.
+        #
+        # First because a pending proposal's answer ("yes, do it") belongs to
+        # it and to nothing else, and because a monitoring request names mail
+        # and would otherwise be read as a one-shot mail read. Given the
+        # user's raw message only -- never the normalised reading, a model's
+        # output or anything retrieved -- and every reply is application
+        # text, so "I'm monitoring" is written by exactly one branch, after
+        # the confirmation's savepoint held.
+        monitor = await MonitorRequestService(
+            self._session, settings=self._settings, owner_id=owner_id
+        ).handle(conversation_id, content)
+
+        if monitor.has_reply:
+            return await self._answer_without_the_model(
+                conversation, conversation_id, content, ResearchResult(),
+                intent, planning, orchestration, monitor=monitor,
+            )
+
         # Stage 5F.1. Listing and cancelling reminders jump ahead of the
         # calendar. Both grammars require the literal word "reminder", so
         # such a message cannot be about anything else -- whereas the
@@ -267,7 +298,7 @@ class ChatService:
         if calendar.has_reply:
             return await self._answer_without_the_model(
                 conversation, conversation_id, content, ResearchResult(),
-                intent, planning, orchestration, calendar=calendar,
+                intent, planning, orchestration, calendar=calendar, monitor=monitor,
             )
 
         # Stage 5F.1. Reminders are recognised after the calendar and before
@@ -298,7 +329,7 @@ class ChatService:
             # and only after the row committed.
             return await self._answer_without_the_model(
                 conversation, conversation_id, content, ResearchResult(),
-                intent, planning, orchestration, reminder=reminder,
+                intent, planning, orchestration, reminder=reminder, monitor=monitor,
             )
 
         # Stage 5B. Mail is recognised after the calendar and before the
@@ -324,7 +355,7 @@ class ChatService:
         if mail.has_reply:
             return await self._answer_without_the_model(
                 conversation, conversation_id, content, ResearchResult(),
-                intent, planning, orchestration, mail=mail,
+                intent, planning, orchestration, mail=mail, monitor=monitor,
             )
 
         workflow = (
@@ -341,7 +372,7 @@ class ChatService:
         if workflow.has_reply:
             return await self._answer_without_the_model(
                 conversation, conversation_id, content, ResearchResult(),
-                intent, planning, orchestration, workflow=workflow,
+                intent, planning, orchestration, workflow=workflow, monitor=monitor,
             )
 
         # A turn the workflow layer claimed is not also a research turn.
@@ -400,7 +431,7 @@ class ChatService:
             # small difference that would matter a great deal.
             return await self._answer_without_the_model(
                 conversation, conversation_id, content, research,
-                intent, planning, orchestration,
+                intent, planning, orchestration, monitor=monitor,
             )
 
         prompt, timings = await self._build_prompt(
@@ -579,7 +610,7 @@ class ChatService:
         )
         return (
             user_message, assistant_message, intent, planning, orchestration,
-            research, workflow, calendar, mail,
+            research, workflow, calendar, mail, monitor,
         )
 
     @staticmethod
@@ -795,7 +826,7 @@ class ChatService:
     async def _answer_without_the_model(
         self, conversation, conversation_id, content, research,
         intent, planning, orchestration, workflow=None, calendar=None,
-        mail=None, reminder=None,
+        mail=None, reminder=None, monitor=None,
     ):
         """Persist a turn the application answered itself. No model call.
 
@@ -824,7 +855,7 @@ class ChatService:
             # Whichever layer answered. Both texts are written in
             # application code precisely so they are true by construction.
             content=self._application_reply(
-                calendar, reminder, mail, workflow, research
+                monitor, calendar, reminder, mail, workflow, research
             ),
         )
         await self._conversations.touch_conversation(conversation)
@@ -846,6 +877,7 @@ class ChatService:
             research, workflow if workflow is not None else WorkflowResult(),
             calendar if calendar is not None else CalendarResult(),
             mail if mail is not None else MailResult(),
+            monitor if monitor is not None else MonitorResult(),
         )
 
     async def start_conversation_with_message(

@@ -111,7 +111,7 @@ from app.tasks.models import (
     TaskEventType,
     TaskNotificationKind,
 )
-from app.tasks.monitoring import interval_of
+from app.tasks.monitoring import clamp_to_deadline, interval_of
 from app.tasks.notifications import record_outcome
 from app.tasks.runner import TaskRunner
 from app.tasks.schemas import RunnerOutcome
@@ -296,6 +296,17 @@ async def advance_claimed_task(
             await _record_failure(session_factory, settings, task_id, owner_id, now)
             return result.outcome
 
+        if result.outcome is RunnerOutcome.REFUSED and result.reason == "monitor_expired":
+            # Stage 6N. The monitor reached its deadline, or its
+            # authorization lapsed. It ends: cancelled with reason `expired`,
+            # unscheduled, and in the same transaction as the runner's own
+            # refusal event. Not a failure -- the count is untouched, the
+            # task is not blocked and no "stopped after failures"
+            # notification is written, because nothing failed.
+            await _expire_monitor(session, settings, task_id, owner_id)
+            await session.commit()
+            return result.outcome
+
         if result.outcome is RunnerOutcome.CHECK_FAILED:
             # The check ran and told us nothing. What it did -- the execution,
             # the observation, the failure event, the spent check number -- is
@@ -311,6 +322,33 @@ async def advance_claimed_task(
         await _reschedule(session, task_id, result, now)
         await session.commit()
         return result.outcome
+
+
+async def _expire_monitor(session, settings, task_id: uuid.UUID, owner_id) -> None:
+    """End a monitor whose time is up. Terminal, and not a failure.
+
+    The transition is `TaskService.transition`'s, so the cancellation is
+    journalled like any other -- with the reason `expired`. The owner's live
+    grant for the capability goes with it unless another active monitor still
+    needs it: a monitor that has ended keeps no permission behind it.
+    """
+    from app.tasks.requests import release_monitor_grants
+
+    await TaskService(session, settings=settings, owner_id=owner_id).transition(
+        task_id, TaskState.CANCELLED, actor="system", reason="expired",
+    )
+    task = (
+        await session.execute(select(Task).where(Task.id == task_id))
+    ).scalars().first()
+    if task is not None:
+        task.next_run_at = None
+        await session.flush()
+    await journal.record(
+        session, task_id, TaskEventType.BACKGROUND_UNSCHEDULED,
+        actor="system",
+        metadata={"outcome": RunnerOutcome.REFUSED.value, "reason": "monitor_expired"},
+    )
+    await release_monitor_grants(session, owner_id)
 
 
 async def _reschedule(session, task_id: uuid.UUID, result, now: datetime) -> None:
@@ -331,7 +369,10 @@ async def _reschedule(session, task_id: uuid.UUID, result, now: datetime) -> Non
     if result.outcome in _CHECK_AGAIN:
         interval = interval_of(task.monitor)
         if interval is not None:
-            task.next_run_at = now + timedelta(seconds=interval)
+            # Stage 6N: never past a monitor's deadline.
+            task.next_run_at = clamp_to_deadline(
+                task, now + timedelta(seconds=interval)
+            )
             task.failure_count = 0
             await session.flush()
             return
@@ -339,7 +380,9 @@ async def _reschedule(session, task_id: uuid.UUID, result, now: datetime) -> Non
 
     if result.outcome is RunnerOutcome.BLOCKED and result.reason in _CONTENDED:
         # Another worker holds the step. Contention, not failure.
-        task.next_run_at = now + timedelta(seconds=CONTENTION_BACKOFF_SECONDS)
+        task.next_run_at = clamp_to_deadline(
+            task, now + timedelta(seconds=CONTENTION_BACKOFF_SECONDS)
+        )
         await session.flush()
         return
 
@@ -402,7 +445,7 @@ async def _record_failure(
                 FAILURE_BACKOFF_SECONDS * (2 ** (task.failure_count - 1)),
                 min_delay_seconds,
             )
-            task.next_run_at = now + timedelta(seconds=delay)
+            task.next_run_at = clamp_to_deadline(task, now + timedelta(seconds=delay))
             await session.flush()
         await session.commit()
 
