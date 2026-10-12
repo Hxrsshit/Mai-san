@@ -583,7 +583,11 @@ async def test_a_row_already_answered_is_not_confirmed_twice(db_session, setting
     monitors = service(db_session, settings)
     await monitors.handle(conv, "yes")
     result = await monitors._confirm(task)
-    assert result.outcome is MonitorOutcome.NOT_MONITOR
+    # Changed deliberately in 6P: the loser says what actually happened --
+    # the monitor is already active -- instead of falling through to the
+    # model with a bare "yes".
+    assert result.outcome is MonitorOutcome.ALREADY_MONITORING
+    assert result.reply.startswith("That proposal had already been confirmed")
     await db_session.refresh(task)
     assert task.state is TaskState.QUEUED
     assert len(await grants_of(db_session)) == 1

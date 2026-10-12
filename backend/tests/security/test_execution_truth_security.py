@@ -199,7 +199,9 @@ def test_no_execution_state_is_ever_built_from_model_output() -> None:
         if isinstance(node, ast.FunctionDef) and node.name == "record_for_turn"
     )
     args = {argument.arg for argument in function.args.args}
-    assert args == {"research", "mail", "calendar", "workflow"}, args
+    # Changed deliberately in 6P: `monitor`, the application's own
+    # `MonitorResult` -- a layer result, like the others, never text.
+    assert args == {"research", "mail", "calendar", "workflow", "monitor"}, args
 
     # Its only inputs are layer results; no parameter carries text.
     for node in ast.walk(function):

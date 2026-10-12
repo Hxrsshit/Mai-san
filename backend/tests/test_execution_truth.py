@@ -362,7 +362,9 @@ def test_the_note_always_states_every_channel_including_the_negative() -> None:
     assert "web search" in note
     assert "email read" in note
     assert "calendar read" in note
-    assert note.count("did NOT happen") == 3
+    # Changed deliberately in 6P: Gmail monitoring is a fourth channel.
+    assert "Gmail monitoring setup" in note
+    assert note.count("did NOT happen") == 4
 
 
 def test_the_note_marks_a_real_execution_as_having_happened() -> None:
@@ -398,5 +400,8 @@ def test_the_truthful_reply_distinguishes_failure_from_never_ran() -> None:
 
 def test_the_adjudicated_channels_are_pinned() -> None:
     """A capability added later is not adjudicated until someone adds it."""
-    assert known_claim_channels() == (Channel.WEB, Channel.MAIL, Channel.CALENDAR)
-    assert len(list(Channel)) == 3
+    # Changed deliberately in 6P: monitoring claims are adjudicated too.
+    assert known_claim_channels() == (
+        Channel.WEB, Channel.MAIL, Channel.CALENDAR, Channel.MONITOR,
+    )
+    assert len(list(Channel)) == 4

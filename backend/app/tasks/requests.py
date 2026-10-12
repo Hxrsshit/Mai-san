@@ -560,6 +560,8 @@ class MonitorOutcome(str, enum.Enum):
     INVALIDATED = "invalidated"
     ABANDONED = "abandoned"
     EXPIRED = "expired"
+    #: Stage 6P. The proposal was answered by a concurrent turn first.
+    NOT_PENDING = "not_pending"
     SCHEDULED = "scheduled"
     FAILED = "failed"
 
@@ -756,21 +758,29 @@ class MonitorRequestService:
             if answer is ReplyClass.CONFIRM:
                 return await self._confirm(pending)
             if answer is ReplyClass.DECLINE:
-                await self._discard(pending, "proposal_declined")
+                if not await self._discard(pending, "proposal_declined"):
+                    # Stage 6P. A concurrent turn answered it first.
+                    return await self._no_longer_pending(pending.id)
                 return MonitorResult(
                     outcome=MonitorOutcome.DECLINED, task_id=pending.id,
                     reply="Okay, I won't monitor that. Nothing was set up.",
                 )
             if answer is ReplyClass.REPLACE:
-                await self._discard(pending, "proposal_replaced")
+                withdrawn = await self._discard(pending, "proposal_replaced")
+                earlier = (
+                    "I've cancelled the earlier proposal. " if withdrawn
+                    # Stage 6P. Not withdrawn: a concurrent "yes" activated
+                    # it first, and it stays active. Say so, and never claim
+                    # a cancellation that did not happen.
+                    else await self._earlier_status(pending.id)
+                )
                 replaced = await self._from_request(conversation_id, message)
                 if not replaced.has_reply:  # pragma: no cover - REPLACE means recognised
                     return replaced
-                return replaced.model_copy(update={
-                    "reply": f"I've cancelled the earlier proposal. {replaced.reply}",
-                })
+                return replaced.model_copy(update={"reply": f"{earlier}{replaced.reply}"})
             if answer is ReplyClass.INVALIDATED:
-                await self._discard(pending, "proposal_invalidated")
+                if not await self._discard(pending, "proposal_invalidated"):
+                    return await self._no_longer_pending(pending.id)
                 return MonitorResult(
                     outcome=MonitorOutcome.INVALIDATED, task_id=pending.id,
                     reply=(
@@ -986,8 +996,9 @@ class MonitorRequestService:
             )
             if not claimed:
                 # Someone else answered this proposal first. Nothing here
-                # owns it, so nothing here may cancel it.
-                return MonitorResult()
+                # owns it, so nothing here may cancel it -- and nothing here
+                # may say it started. Stage 6P: say what actually happened.
+                return await self._no_longer_pending(task_id)
             await self._discard_by_id(task_id, "proposal_failed")
             return MonitorResult(
                 outcome=MonitorOutcome.FAILED, task_id=task_id,
@@ -1134,16 +1145,51 @@ class MonitorRequestService:
 
     # --- Withdrawing ---------------------------------------------------------
 
-    async def _discard(self, task: Task, reason: str) -> None:
-        await self._discard_by_id(task.id, reason)
+    async def _discard(self, task: Task, reason: str) -> bool:
+        return await self._discard_by_id(task.id, reason)
 
-    async def _discard_by_id(self, task_id: uuid.UUID, reason: str) -> None:
-        """Cancel a proposal. It never had a grant, so there is none to release."""
+    async def _discard_by_id(self, task_id: uuid.UUID, reason: str) -> bool:
+        """Cancel a proposal. It never had a grant, so there is none to release.
+
+        Stage 6P. Only a proposal still planned and unauthorised is withdrawn:
+        the cancellation is `TaskService.transition`'s compare-and-set, so a
+        proposal a concurrent confirmation has just activated is left active,
+        and False says so.
+        """
+        task = await self._tasks.refresh(task_id)
+        if task is None or task.state is not TaskState.PLANNED or task.authorized_at is not None:
+            return False
         result = await self._tasks.cancel(task_id, reason=reason)
         logger.info(
-            "Monitor proposal withdrawn",
+            "Monitor proposal withdrawn" if result.ok else "Monitor proposal not withdrawn",
             extra={"task_id": str(task_id), "reason": reason, "outcome": result.outcome.value},
         )
+        return result.ok
+
+    async def _no_longer_pending(self, task_id: uuid.UUID) -> MonitorResult:
+        """Stage 6P. The truth about a proposal this turn did not get to answer."""
+        task = await self._tasks.refresh(task_id)
+        if task is not None and task.state in (TaskState.QUEUED, TaskState.RUNNING):
+            return MonitorResult(
+                outcome=MonitorOutcome.ALREADY_MONITORING, task_id=task_id,
+                reply=(
+                    "That proposal had already been confirmed, so that monitor "
+                    "is active and nothing was changed. To stop it, cancel the task."
+                ),
+            )
+        return MonitorResult(
+            outcome=MonitorOutcome.NOT_PENDING, task_id=task_id,
+            reply=(
+                "That proposal is no longer waiting for an answer -- it was "
+                "replaced, cancelled or has ended -- so nothing was started or changed."
+            ),
+        )
+
+    async def _earlier_status(self, task_id: uuid.UUID) -> str:
+        task = await self._tasks.refresh(task_id)
+        if task is not None and task.state in (TaskState.QUEUED, TaskState.RUNNING):
+            return "Your earlier proposal had just been confirmed, so that monitor is active. "
+        return ""
 
 
 async def release_monitor_grants(

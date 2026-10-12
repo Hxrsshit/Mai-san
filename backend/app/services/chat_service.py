@@ -67,7 +67,7 @@ from app.workflows.service import WorkflowService
 # Stage 6N. The one door from a chat turn into the task layer: this module,
 # from this file, and nothing else (a structural test asserts both).
 from app.tasks.requests import MonitorRequestService, MonitorResult
-from app.database.models import Conversation, Message, MessageRole
+from app.database.models import Message, MessageRole
 from app.intent.schemas import IntentResult
 from app.intent.service import IntentService
 from app.orchestration.schemas import OrchestrationResult
@@ -436,7 +436,7 @@ class ChatService:
 
         prompt, timings = await self._build_prompt(
             conversation_id, content, research=research, workflow=workflow,
-            calendar=calendar, mail=mail,
+            calendar=calendar, mail=mail, monitor=monitor,
         )
         prepare_ms = round((time.perf_counter() - started) * 1000, 2)
 
@@ -514,7 +514,10 @@ class ChatService:
         # Stage 5D.1. The authoritative account of what this turn actually
         # did, built from the layer results -- never from the model's prose.
         record = record_for_turn(
-            research=research, mail=mail, calendar=calendar, workflow=workflow
+            research=research, mail=mail, calendar=calendar, workflow=workflow,
+            # Stage 6P. Never claimable on a model-written turn: monitoring
+            # turns are answered by the application.
+            monitor=monitor,
         )
         # Two different failures, one budget. A well-formed paragraph
         # announcing search results that were never retrieved passes the
@@ -880,26 +883,6 @@ class ChatService:
             monitor if monitor is not None else MonitorResult(),
         )
 
-    async def start_conversation_with_message(
-        self, content: str, title: Optional[str] = None
-    ) -> Tuple[
-        Conversation, Message, Message, IntentResult, PlanningResult,
-        OrchestrationResult,
-    ]:
-        """Convenience path: create a conversation and send its first message."""
-        conversation = await self._conversations.create_conversation(title=title)
-        (
-            user_message,
-            assistant_message,
-            intent,
-            planning,
-            orchestration,
-        ) = await self.send_message(conversation.id, content)
-        return (
-            conversation, user_message, assistant_message, intent, planning,
-            orchestration,
-        )
-
     # --- Internals ----------------------------------------------------------
     # Orchestration only. Everything below chooses *which* inputs reach the
     # formatter; none of it decides how a message is worded or ordered.
@@ -912,6 +895,7 @@ class ChatService:
         workflow: Optional[WorkflowResult] = None,
         mail: Optional[MailResult] = None,
         calendar: Optional[CalendarResult] = None,
+        monitor: Optional[MonitorResult] = None,
     ) -> Tuple[FormattedPrompt, Dict[str, float]]:
         """Assemble, then format. Never raises.
 
@@ -943,7 +927,8 @@ class ChatService:
         # Stage 5D.1. Built from the layer results this method already
         # receives -- the existing outcome enums, never model output.
         execution_record = record_for_turn(
-            research=research, mail=mail, calendar=calendar, workflow=workflow
+            research=research, mail=mail, calendar=calendar, workflow=workflow,
+            monitor=monitor,
         )
 
         formatter = self._formatter

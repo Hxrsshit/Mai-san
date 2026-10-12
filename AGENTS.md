@@ -190,7 +190,13 @@ a change pass. If a test blocks a change, the test is usually right.
   `MAI_WORKSPACE_ROOT`.
 - **Truthfulness (Stage 5D.1):** replies that claim an action happened are
   written by application code after the action is recorded. Synthesis may not
-  claim an action, or a count, that was not executed and retrieved.
+  claim an action, or a count, that was not executed and retrieved. Since
+  Stage 6P the validator (`app/synthesis/execution_truth.py`) also has a
+  `monitor` channel: a model-written reply may not claim that Gmail
+  monitoring started, is active, checked, matched or notified -- including
+  promises like "I'll let you know when it arrives" -- because monitoring
+  turns are answered by the application and a model turn carries no
+  monitoring evidence.
 
 ### 4.3 Tasks, runner, runtime
 - Only a person creates a task (`TaskService.create_for_user`). Only
@@ -221,6 +227,20 @@ a change pass. If a test blocks a change, the test is usually right.
   Reschedules are clamped to the deadline. Task completion is conditional on
   the task still being active, so a check in flight cannot complete a task
   cancelled meanwhile.
+- **Task state is compare-and-set (Stage 6P, Known defect 8).** Every write
+  to a task's lifecycle is a conditional UPDATE on the state it was decided
+  from: `TaskService.transition` and `authorize_plan`, the runner's
+  `mark_task_running` and check claim, and the runtime's reschedule and
+  failure bookkeeping. A write that loses a race matches nothing, writes
+  nothing and reports `state_changed_concurrently` with the fresh state
+  (`TaskService.refresh`); it never overwrites newer state and never touches
+  an expired ORM copy. The CHECK constraints `cancelled_requires_timestamp`
+  and `completed_requires_timestamp` remain the backstop for terminal states.
+  A proposal is withdrawn only while still planned and unauthorised, so a
+  concurrent confirmation always wins, and a turn that lost the race says
+  what actually happened. A monitor's grant is released on completion,
+  block, cancellation and expiry, in the same transaction, unless another
+  active task still needs the capability.
 - Plans are validated by the one graph validator
   (`app/planning/validator.validate_graph`) before persistence. Capabilities
   are bound (`app/tasks/capabilities.py`) and re-bound at run time.
@@ -424,6 +444,12 @@ Run the suite from `backend/` with the venv: `.venv/bin/python -m pytest`.
 - Expected skips: `tests/security/test_secrets.py` when `backend/.env` is
   absent, and the PostgreSQL migration-chain test unless `TEST_POSTGRES_URL`
   is set.
+- **PostgreSQL race tests (Stage 6P):** `tests/test_monitor_races_pg.py` is
+  skipped unless `TEST_POSTGRES_ADMIN_URL` names a maintenance database on a
+  server where the user may `CREATE DATABASE`. Each test creates and drops
+  its own `mai_pgtest_*` database; the real `mai` database is refused. Run
+  them for any change to task state, confirmation, grants or the runtime --
+  SQLite has one writer and cannot show these races.
 
 For a stage or other substantial change:
 

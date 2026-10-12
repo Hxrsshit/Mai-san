@@ -55,6 +55,7 @@ from typing import Optional
 
 from sqlalchemy import update
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.logging import get_logger
 from app.execution.errors import ExecutionError
@@ -273,6 +274,15 @@ class TaskRunner:
 
         sequence = int(task.check_count or 0) + 1
         if not await self._claim_check(task, sequence):
+            # Stage 6P. Lost to another worker, or the task stopped being
+            # active since it was read. Only the second is a refusal.
+            fresh = await self._tasks.refresh(task.id)
+            if fresh is None or fresh.state not in {TaskState.QUEUED, TaskState.RUNNING}:
+                return RunnerResult(
+                    outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                    state=fresh.state if fresh is not None else None,
+                    reason="task_not_active",
+                )
             return RunnerResult(
                 outcome=RunnerOutcome.BLOCKED, task_id=task.id,
                 state=task.state, reason="check_already_claimed",
@@ -427,6 +437,10 @@ class TaskRunner:
                 Task.id == task.id,
                 Task.owner_id == self._tasks.owner_id,
                 Task.check_count == sequence - 1,
+                # Stage 6P. Only while the task is still active: a
+                # cancellation or expiry that committed after the task was
+                # read wins here, before anything is read from Gmail.
+                Task.state.in_([TaskState.QUEUED, TaskState.RUNNING]),
             )
             .values(check_count=sequence, updated_at=datetime.now(timezone.utc))
             .execution_options(synchronize_session="fetch")
@@ -819,12 +833,31 @@ class TaskRunner:
         Separate from `advance` so the state change is one auditable act
         rather than a side effect of the first step being claimed.
         """
+        from app.tasks.models import Task
+
         task = await self._tasks.get(task_id)
         if task is None or task.state is not TaskState.QUEUED:
             return False
-        task.state = TaskState.RUNNING
-        task.updated_at = datetime.now(timezone.utc)
-        await self._session.flush()
+        now = datetime.now(timezone.utc)
+        # Stage 6P (Known defect 8). Conditional on the row still being
+        # queued. A cancellation that committed after this session read the
+        # task matches nothing here -- and the stale copy is refreshed, so no
+        # caller goes on to treat a cancelled task as running.
+        moved = await self._session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.owner_id == self._tasks.owner_id,
+                Task.state == TaskState.QUEUED,
+            )
+            .values(state=TaskState.RUNNING, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if moved.rowcount != 1:
+            await self._tasks.refresh(task_id)
+            return False
+        set_committed_value(task, "state", TaskState.RUNNING)
+        set_committed_value(task, "updated_at", now)
         await self._record(
             task, TaskEventType.STATE_CHANGED,
             {"from": TaskState.QUEUED.value, "to": TaskState.RUNNING.value},

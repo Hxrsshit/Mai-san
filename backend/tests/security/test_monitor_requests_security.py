@@ -196,14 +196,23 @@ def test_only_confirmation_authorizes_approves_grants_or_schedules() -> None:
 def test_the_propose_path_names_no_authorization_grant_or_schedule() -> None:
     tree = parse(REQUESTS)
     for name in ("_propose", "_from_request", "_proposal_text", "_pending_for",
-                 "_active_duplicate", "_discard", "_discard_by_id"):
+                 "_active_duplicate", "_discard", "_discard_by_id",
+                 "_no_longer_pending", "_earlier_status"):
         body = mentioned(function(tree, name))
         for forbidden in ("authorize_plan", "schedule_background", "GrantService",
                           "authorize_with_grants", "approve", "transition",
                           "record_outcome", "next_run_at", "authorized_at"):
-            if name == "_pending_for" and forbidden == "authorized_at":
-                continue    # it *reads* `authorized_at IS NULL` to find a proposal
+            if name in ("_pending_for", "_discard_by_id") and forbidden == "authorized_at":
+                # They *read* `authorized_at` -- to find a proposal, and
+                # (Changed deliberately in 6P) to withdraw only one still
+                # unauthorised. Neither writes it: pinned below.
+                continue
             assert forbidden not in body, (name, forbidden)
+    for name in ("_pending_for", "_discard_by_id"):
+        for node in ast.walk(function(tree, name)):
+            if isinstance(node, (ast.Assign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                assert not [t for t in targets if "authorized_at" in ast.unparse(t)], name
 
 
 def test_the_confirmation_steps_share_one_savepoint() -> None:
@@ -382,15 +391,19 @@ def test_expiry_is_terminal_and_never_a_failure() -> None:
 
 
 def test_every_reschedule_is_clamped_to_the_deadline() -> None:
+    """Changed deliberately in 6P: schedules are written through the
+    conditional `_schedule_if_active`, so the pin follows the calls."""
     tree = parse(RUNTIME)
-    for name in ("_reschedule", "_record_failure"):
-        body = ast.unparse(function(tree, name))
-        writes = [line for line in body.splitlines() if "task.next_run_at = " in line
-                  and "None" not in line and "now\n" not in line]
-        for line in writes:
-            if "= now" in line and line.strip().endswith("= now"):
-                continue        # due now: never past a deadline still ahead
-            assert "clamp_to_deadline" in line, (name, line)
+    reschedule = function(tree, "_reschedule")
+    calls = [n for n in ast.walk(reschedule) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) == "_schedule_if_active"]
+    assert len(calls) == 3
+    for call in calls:
+        when = ast.unparse(call.args[2])
+        # Due now is never past a deadline still ahead; anything later is clamped.
+        assert when == "now" or when.startswith("clamp_to_deadline(task, "), when
+    record = ast.unparse(function(tree, "_record_failure"))
+    assert "next_run = None if exhausted else clamp_to_deadline(" in record
 
 
 # ============================================================================

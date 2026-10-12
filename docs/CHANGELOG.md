@@ -21,16 +21,16 @@ before substantial work and updates it after completing work (see
 
 ---
 
-## Current state (as of 2026-10-08)
+## Current state (as of 2026-10-12)
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6N: confirmed Gmail monitoring**: the commit titled `Stage 6N: confirmed Gmail monitoring` (the commit that adds `backend/app/tasks/requests.py`; find it with `git log -1 -- backend/app/tasks/requests.py`) |
+| Latest completed stage | **Stage 6P: harden monitoring concurrency and truthfulness**: the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; find it with `git log -1 -- docs/STAGE_6O_AUDIT.md`). Stage 6O was an inspection-only audit (no commit of its own; its report is that file) |
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved) |
-| Previous stages | 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Previous stages | 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
-| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2, 6M.3, 6M.4 and 6N added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
-| Next stage | **None started.** Stage 6N is complete. Do not begin another stage without an explicit request. |
+| Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2, 6M.3, 6M.4, 6N and 6P added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
+| Next stage | **None started.** Stage 6P is complete. Do not begin another stage without an explicit request. |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -140,7 +140,9 @@ not commit them as part of other work, and do not describe them as done.
    deterministically on clean `922dbbd` (the guard test, then that test: 1
    failed) and surfaced in one shuffled full run (seed 1265397829). It is
    offered as a separate test-only fix.
-8. **`TaskService.transition` writes state unconditionally** (found during
+8. ~~**`TaskService.transition` writes state unconditionally**~~ **Resolved in
+   Stage 6P** (compare-and-set on every lifecycle write; see Stage 6P).
+   Original entry: (found during
    6N; pre-existing since 6A). It reads the task, checks the edge, then
    updates by id only, so two concurrent transitions on PostgreSQL can lose
    one (the second overwrites the first). 6N does not change it; for the one
@@ -149,7 +151,8 @@ not commit them as part of other work, and do not describe them as done.
    the runner's completion is conditional, so that race resolves correctly
    (verified on PostgreSQL with two connections, including a control that
    fails without the lock). Other concurrent transitions remain exposed.
-9. **`ChatService.start_conversation_with_message` is broken dead code**
+9. ~~**`ChatService.start_conversation_with_message` is broken dead code**~~
+   **Resolved in Stage 6P** (confirmed unreachable and removed). Original entry:
    (found during 6N; pre-existing). It unpacks five values from
    `send_message`, which has returned nine since 5B (ten since 6N), so it
    would raise `ValueError`. Nothing calls it. Not fixed in 6N.
@@ -252,6 +255,150 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 6P: Harden monitoring concurrency and truthfulness (commit titled `Stage 6P: harden monitoring concurrency and truthfulness`, 2026-10-12)
+
+- **Status:** completed, verified, committed. Parent `94ea032` (6N). It is the
+  commit that adds `docs/STAGE_6O_AUDIT.md`.
+- **Purpose:** fix the three medium findings of the Stage 6O audit
+  (`docs/STAGE_6O_AUDIT.md`, verdict SAFE WITH LIMITATIONS), the related low
+  findings L1/L2, Known defect 8 generally and Known defect 9, and make the
+  critical PostgreSQL races repeatable tests. No new capability.
+- **Root causes:**
+  - **M1 / Known defect 8:** every lifecycle write read the task, then wrote
+    by id alone. A stale copy -- read before another transaction moved the
+    task -- could overwrite newer state. Terminal states were already
+    protected by the CHECK constraints (6O S1-S3), but a non-terminal one was
+    not: a replacement's cancel overwrote a just-confirmed QUEUED monitor
+    after the user was told "Done" (6O S4).
+  - **M2:** `release_monitor_grants` was called only on cancel and expiry.
+  - **M3:** the execution-truth validator had no monitoring channel.
+  - **L1:** a failed transition expired the ORM copy, and the next access
+    lazy-loaded it (`MissingGreenlet`), aborting the pass.
+  - **L2:** the runner's check claim had no state condition.
+- **Fixes:**
+  - **Compare-and-set** (`TaskService`): `transition` and `authorize_plan`
+    write with `UPDATE ... WHERE state = <the state decided from>` (and, for
+    authorisation, `authorized_at IS NULL`). A write that matches nothing
+    raises `_StaleState` inside its savepoint, writes nothing, and returns
+    `state_changed_concurrently` with the fresh state from the new
+    `TaskService.refresh` (`populate_existing`); it is never reported as
+    success. Successful writes set the in-memory copy with
+    `set_committed_value`, and the persistence-failure paths re-read the row,
+    so no caller touches an expired copy (L1).
+  - **Runner:** `mark_task_running` is conditional on `queued` and refreshes
+    the copy when it loses; the check claim (`_claim_check`) is conditional on
+    `queued`/`running`, and a lost claim on an ended task is refused as
+    `task_not_active` rather than read as contention (L2).
+  - **Runtime:** a task that stopped being active after its claim is left as
+    it is (no step, no read, no write, no error log). Reschedules go through
+    `_schedule_if_active` (conditional on an active state); clearing a
+    schedule is unconditional and always safe. `_record_failure` returns for
+    an ended task, writes the count and next run only while the task is
+    active and unchanged, and rolls everything back -- no count, no block, no
+    `monitoring_failed` notification -- if the block loses to a concurrent
+    change. Expiry journals `background_unscheduled` only when it is the
+    transition that ended the task.
+  - **Confirmation vs everything else (M1):** a proposal is withdrawn only
+    while still planned and unauthorised (`_discard_by_id`, then the
+    compare-and-set), so a concurrent confirmation always wins. A turn that
+    lost the race says what happened, application-written: a decline or a
+    changed answer gets "That proposal had already been confirmed, so that
+    monitor is active..." (`already_monitoring`); a replacement keeps the
+    active monitor, proposes the new one and says "Your earlier proposal had
+    just been confirmed, so that monitor is active." instead of claiming a
+    cancellation; a confirmation that lost gets "That proposal is no longer
+    waiting for an answer ... so nothing was started or changed." (new
+    outcome `not_pending`) instead of falling through to the model.
+  - **Grants (M2):** released in the same transaction as the state change
+    on completion (runtime, after `condition_met`) and on block
+    (`_record_failure`, only if the block transition won), as well as on
+    cancel and expiry -- unless another active task still needs the
+    capability. Owner-scoped, capability-wide, unchanged otherwise.
+  - **Truthfulness (M3):** `Channel.MONITOR` in
+    `app/synthesis/execution_truth.py`. Claims that monitoring started, is
+    active, was scheduled, checked Gmail, found a match or sent a
+    notification are detected per clause, including promises ("I'll let you
+    know when it arrives"), which are judged by their own narrower exemption
+    (negations, conditions on the user) rather than the shared offer filter.
+    Only a `scheduled` `MonitorResult` with its task id licenses a claim,
+    which never occurs on a model-written turn, so every such claim on a
+    model reply is refused; the corrective reply is true whatever monitors
+    already exist. The execution note lists Gmail monitoring with the other
+    channels. Web, mail and calendar behave as before.
+  - **Known defect 9:** `start_conversation_with_message` confirmed
+    unreachable and removed (with its now-unused `Conversation` import).
+- **No migration, no schema change, no CHECK constraint touched, no new
+  service, runner, runtime, registry, writer, egress or auth seam, no
+  frontend change.** The 40-check budget, 15-minute default and 7-day
+  maximum are unchanged.
+- **Existing pins changed (deliberately; none loosened):** the execution
+  note now has four channels and `known_claim_channels` includes `MONITOR`;
+  `record_for_turn` takes `monitor` (two pins); a confirmation that loses
+  the race now reports `already_monitoring` instead of falling through; the
+  6N propose-path pin lets `_discard_by_id` *read* `authorized_at` (and now
+  pins that it never writes it) and covers the two new helpers; the 6N
+  reschedule-clamp pin follows the new `_schedule_if_active` calls instead
+  of passing vacuously.
+- **Verification:**
+  - New tests: `tests/test_monitor_hardening.py` 22,
+    `tests/test_monitor_truthfulness.py` 67,
+    `tests/test_monitor_races_pg.py` 17 (PostgreSQL, skipped without
+    `TEST_POSTGRES_ADMIN_URL`), `tests/security/test_task_state_cas_security.py`
+    8.
+  - **PostgreSQL race suite:** 17/17 on the `mai-db` server (throwaway `mai_pgtest_*` databases, all dropped; the real `mai` database untouched). Repeated: 8 consecutive runs of the 551-test 6P set (including these) and 5 runs of this file under heavy CPU load, all green. Against unmodified `94ea032` the
+    same file fails 12 of 17 (the confirmation/replacement and decline races,
+    the stale-transition cases, the cancel-vs-runtime races, grant release),
+    so it discriminates; the 5 that pass there guard guarantees that already
+    held (exactly-once activation and notification, no notification after a
+    cancel, grant retention).
+  - Full suite, isolated worktree (`94ea032` plus the 6P files), with
+    `TEST_POSTGRES_ADMIN_URL` set so the PostgreSQL race tests ran inside it:
+    ordered 6429 passed, 2 skipped (6N: 6315 + the 114 new tests; the two
+    skips are the usual environment-dependent ones). Three shuffled runs,
+    all 6429 passed, 2 skipped: seeds 881268363, 1514827426, 1515442903. A
+    first set of three shuffled runs never started: the scratch shuffle
+    plugin had been removed from the scratchpad, so each failed at plugin
+    import; the plugin was recreated and the three runs above replaced them.
+    No throwaway database was left behind.
+  - Mutation testing: isolated worktree, harness validated (anchors match, the unmutated set
+    of 540/551 tests passes, 3 controls survive), the PostgreSQL race tests
+    included.
+    - run 1: 33 mutations (compare-and-set, runner, runtime, confirmation
+      races, truthfulness), 28 killed. Survivors R4, RT5, RT8 and CS1 led to
+      new tests (the `task_not_active` journal entry; a cancel landing
+      between the failure read and its write; expiry that lost to a cancel
+      journals nothing; the execution note on an abandoned-proposal turn).
+    - run 2: those 5 against the strengthened set (plus the new
+      compare-and-set pins), 3 killed.
+    - 2 survivors are equivalent and documented. RT4: the early return in
+      `_record_failure` is redundant with the state predicate on its write
+      (RT5, killed); with either present a stale write matches nothing. CS1:
+      the record used to *validate* a model reply never licenses a
+      monitoring claim either way; the record that renders the execution
+      note still gets the monitor result (pinned).
+    - **One unexplained failure.** The first attempt at run 2 refused to
+      score: one control (a docstring reword in `runtime.py`) was reported
+      killed. With that control applied the set passed (551/551), and 8
+      further runs plus 5 under CPU load were all green, so the failing test
+      was not identified (the harness then printed only a verdict; it now
+      prints the failing test's name). A plausible cause was fixed:
+      `test_two_replacements_withdraw_the_old_proposal_once` assumed the two
+      turns interleave, and now holds under any order. Whether that was the
+      cause is unknown..
+  - Structural audit: PASS, 0 mismatches: exactly one `AuthorizationService`, one `authorize_with_grants` caller (the runner), one `ExecutionService` and Execution constructor, one `TaskRunner`, one `BackgroundRuntime`, one notification writer, one delivery-record writer, one `SecureHttpClient` (the only `httpx` importer), one owner seam; no scheduler imports in `app/tasks`; latest migration `0019`. The frontend does not read the chat response's `monitor` field, so the new `not_pending` outcome changes no frontend contract.
+- **Remaining limitations:**
+  - The grant is still capability-wide (argument- or task-scoped grants stay
+    deferred; needed before a second creator of `gmail_list_messages` tasks).
+  - Monitoring-claim detection is a deterministic heuristic: per clause, first
+    person or "the monitor", English. A paraphrase it misses still depends on
+    the prompt line; the application remains the only source of monitoring
+    state.
+  - A cancelled task keeps its last `next_run_at` (it is never claimed: the
+    claim requires an active state). Unchanged from before.
+  - Known 6O low findings L3 (TTL may exceed the deadline by under 1 s), L4
+    (in-flight check finishing just after the deadline), L5, L7 and L8 are
+    unchanged and remain documented in the audit.
 
 ### Stage 6N: Confirmed Gmail monitoring (commit titled `Stage 6N: confirmed Gmail monitoring`, 2026-10-08)
 
