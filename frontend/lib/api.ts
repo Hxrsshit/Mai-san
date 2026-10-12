@@ -58,6 +58,8 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   // Stage 6M.4 authentication.
   authentication_required: "Mai needs its API token for this session.",
   invalid_credentials: "That API token was not accepted.",
+  authentication_cancelled:
+    "Mai needs its API token for this session. Choose “Enter API token” to continue.",
   authentication_not_configured:
     "The backend has no API token configured. Set MAI_API_TOKEN_SHA256.",
 };
@@ -67,8 +69,56 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
  * browser session (sessionStorage). It is never part of the build, never in
  * NEXT_PUBLIC_* configuration, a cookie, localStorage or a URL, never logged,
  * and sent only to the Mai backend, as `Authorization: Bearer`.
+ *
+ * Asking for it is shared: however many requests fail at once, one entry is
+ * open at a time and every one of them waits for its answer. A token is
+ * cleared only when the backend rejected that very token and it is still the
+ * stored one, so a late reply to an old request cannot erase a newer token,
+ * and a cancelled or empty entry leaves storage as it was. After a cancel
+ * nothing asks again on its own: requests fail with `authentication_cancelled`
+ * until the person chooses to sign in (`signIn`).
  */
 const TOKEN_KEY = "mai.apiToken";
+
+/** Retries one request may make after authentication failures. */
+const MAX_AUTH_RETRIES = 3;
+
+/** Why the token is asked for: none was accepted yet, or one was rejected. */
+export type TokenRequestReason = "required" | "rejected";
+
+/**
+ * Shows the token entry UI; resolves with what was entered, or null if the
+ * person cancelled. Registered by `AuthDialog`.
+ */
+export type TokenProvider = (reason: TokenRequestReason) => Promise<string | null>;
+
+let tokenProvider: TokenProvider | null = null;
+let pendingEntry: Promise<boolean> | null = null;
+let locked = false;
+const lockListeners = new Set<(locked: boolean) => void>();
+
+/** Register the token entry UI. Returns the function that unregisters it. */
+export function setTokenProvider(provider: TokenProvider): () => void {
+  tokenProvider = provider;
+  return () => {
+    if (tokenProvider === provider) tokenProvider = null;
+  };
+}
+
+/** Follow whether Mai is waiting for the person to choose to sign in. */
+export function subscribeAuthLock(listener: (locked: boolean) => void): () => void {
+  lockListeners.add(listener);
+  listener(locked);
+  return () => {
+    lockListeners.delete(listener);
+  };
+}
+
+function setLocked(next: boolean): void {
+  if (locked === next) return;
+  locked = next;
+  lockListeners.forEach((listener) => listener(next));
+}
 
 function storedToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -79,20 +129,7 @@ function storedToken(): string | null {
   }
 }
 
-function forgetToken(): void {
-  try {
-    window.sessionStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // Storage unavailable: nothing was kept.
-  }
-}
-
-/** Ask once for the token after a 401. True if one was entered and kept. */
-function askForToken(): boolean {
-  if (typeof window === "undefined") return false;
-  const entered = window.prompt("Enter your Mai API token for this browser session:");
-  const token = entered?.trim();
-  if (!token) return false;
+function storeToken(token: string): boolean {
   try {
     window.sessionStorage.setItem(TOKEN_KEY, token);
     return true;
@@ -101,18 +138,71 @@ function askForToken(): boolean {
   }
 }
 
+/** Forget `rejected` -- but only while it is still the stored token. */
+function forgetTokenIf(rejected: string): void {
+  try {
+    if (window.sessionStorage.getItem(TOKEN_KEY) === rejected) {
+      window.sessionStorage.removeItem(TOKEN_KEY);
+    }
+  } catch {
+    // Storage unavailable: nothing was kept.
+  }
+}
+
+async function askForToken(reason: TokenRequestReason): Promise<boolean> {
+  try {
+    const entered = tokenProvider ? await tokenProvider(reason) : null;
+    const token = entered?.trim();
+    // A token never contains whitespace; the backend refuses one that does.
+    if (token && !/\s/.test(token) && storeToken(token)) {
+      setLocked(false);
+      return true;
+    }
+  } catch {
+    // An entry UI that fails counts as a cancel.
+  }
+  setLocked(true);
+  return false;
+}
+
+/** The one token entry in progress, shared by every request that needs it. */
+function enterToken(reason: TokenRequestReason): Promise<boolean> {
+  if (!pendingEntry) {
+    const entry = askForToken(reason);
+    pendingEntry = entry;
+    void entry.finally(() => {
+      if (pendingEntry === entry) pendingEntry = null;
+    });
+  }
+  return pendingEntry;
+}
+
+/**
+ * Ask for the token because the person chose to ("Enter API token"). Lifts
+ * the lock a cancel left. True if a token was entered and kept.
+ */
+export function signIn(): Promise<boolean> {
+  setLocked(false);
+  return enterToken("required");
+}
+
 const AUTH_FAILURES = new Set(["authentication_required", "invalid_credentials"]);
 
-async function request<T>(
-  path: string,
-  init?: RequestInit,
-  retried = false,
-): Promise<T> {
-  let response: Response;
-  const token = storedToken();
+function cancelled(): ApiError {
+  return new ApiError(
+    FRIENDLY_MESSAGES.authentication_cancelled,
+    "authentication_cancelled",
+    401,
+  );
+}
 
+async function send(
+  path: string,
+  init: RequestInit | undefined,
+  token: string | null,
+): Promise<Response> {
   try {
-    response = await fetch(`${API_URL}${path}`, {
+    return await fetch(`${API_URL}${path}`, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -122,37 +212,58 @@ async function request<T>(
       cache: "no-store",
     });
   } catch {
-    // fetch only rejects on network-level failures.
+    // fetch only rejects on network-level failures. The token is kept.
     throw new ApiError(
       "Could not reach the Mai backend. Is it running?",
       "network_error",
       0,
     );
   }
+}
 
-  if (response.status === 204) {
-    return undefined as T;
-  }
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  for (let retries = 0; ; retries += 1) {
+    const sent = storedToken();
+    const response = await send(path, init, sent);
 
-  const body = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    const code = body?.error?.code ?? "unknown_error";
-    // Stage 6M.4: a missing or rejected token. Forget it, ask once, retry once.
-    if (response.status === 401 && AUTH_FAILURES.has(code) && !retried) {
-      forgetToken();
-      if (askForToken()) {
-        return request<T>(path, init, true);
-      }
+    if (response.status === 204) {
+      return undefined as T;
     }
+
+    const body = await response.json().catch(() => null);
+    if (response.ok) {
+      return body as T;
+    }
+
+    const code: string = body?.error?.code ?? "unknown_error";
+    const authFailure = response.status === 401 && AUTH_FAILURES.has(code);
+    // Only the backend's verdict on this very token clears it: a request
+    // sent without one proves nothing about the stored token.
+    if (authFailure && code === "invalid_credentials" && sent !== null) {
+      forgetTokenIf(sent);
+    }
+    if (authFailure && retries < MAX_AUTH_RETRIES) {
+      // Another request already brought a newer token: use it, ask nothing.
+      const current = storedToken();
+      if (current !== null && current !== sent) {
+        continue;
+      }
+      if (locked) {
+        throw cancelled();
+      }
+      const reason = code === "invalid_credentials" ? "rejected" : "required";
+      if (await enterToken(reason)) {
+        continue;
+      }
+      throw cancelled();
+    }
+
     const message =
       FRIENDLY_MESSAGES[code] ??
       body?.error?.message ??
       `Request failed (${response.status}).`;
     throw new ApiError(message, code, response.status);
   }
-
-  return body as T;
 }
 
 export const api = {

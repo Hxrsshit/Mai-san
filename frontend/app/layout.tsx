@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+import { AuthDialog } from "@/components/AuthDialog";
+
 export const metadata: Metadata = {
   title: "MAI — Your Personal AI Assistant",
   description: "A persistent personal AI environment.",
@@ -12,7 +14,10 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body className="h-full antialiased">{children}</body>
+      <body className="h-full antialiased">
+        {children}
+        <AuthDialog />
+      </body>
     </html>
   );
 }

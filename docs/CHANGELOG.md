@@ -21,12 +21,12 @@ before substantial work and updates it after completing work (see
 
 ---
 
-## Current state (as of 2026-10-12)
+## Current state (as of 2026-10-13)
 
 | | |
 | --- | --- |
 | Latest completed stage | **Stage 6P: harden monitoring concurrency and truthfulness**: the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; find it with `git log -1 -- docs/STAGE_6O_AUDIT.md`). Stage 6O was an inspection-only audit (no commit of its own; its report is that file) |
-| Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved) |
+| Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only) |
 | Previous stages | 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main` (no remote push recorded here) |
 | Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2, 6M.3, 6M.4, 6N and 6P added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
@@ -255,6 +255,59 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Fix: frontend authentication token flow (commit titled `Fix frontend authentication token flow`, 2026-10-13)
+
+- **Status:** completed. Not a stage. Frontend, `docker-compose.yml` comment
+  and this file only: no backend, schema or migration change; the 6M.4
+  backend contract is unchanged.
+- **Defect** (found deploying 6M.4 on 2026-10-12): `frontend/lib/api.ts`
+  forgot the token and called `window.prompt` once per failed request, so
+  the ~5 requests a page load makes opened ~5 prompts, any empty or
+  cancelled one erased a token entered in another, and an embedded browser
+  that dismisses `window.prompt` (the Claude desktop browser pane) could
+  never sign in.
+- **Fix**, keeping the `mai.apiToken` sessionStorage key and the
+  `Authorization: Bearer` contract:
+  - one shared token entry: every request that needs a token waits for the
+    same one, through `frontend/components/AuthDialog.tsx` (mounted once in
+    `app/layout.tsx`) instead of `window.prompt`;
+  - a token is cleared only on `invalid_credentials` for that very token,
+    and only while it is still the stored one, so a stale reply cannot erase
+    a newer token; a request that failed for lack of a token retries with
+    one another request stored meanwhile; `authentication_required`,
+    network errors, 503 `authentication_not_configured` and other HTTP
+    errors never clear it, and 503 never prompts;
+  - a cancelled, empty or whitespace entry stores and erases nothing; Mai
+    then stays locked, with no dialog reopening by itself, until the person
+    chooses "Enter API token"; retries per request are bounded (3).
+  - The stale `docker-compose.yml` comment saying the API has no
+    authentication is corrected.
+- **Tests:** `frontend/tests/api-auth.test.ts`, 21 tests on Node's built-in
+  runner (`npm test`; no new dependency; `tsconfig.json` gains
+  `allowImportingTsExtensions` for its import), driving the real client
+  against a fake backend that follows the 6M.4 contract. Nine deliberate
+  mutations of `lib/api.ts` (no sharing, unconditional clear, no lock check,
+  clear on any 401, no newer-token reuse, cancel not locking, whitespace
+  accepted, clear on network error, retry bound 50) were each caught.
+- **Verification** (2026-10-13): `npm test` 21/21, `npm run typecheck`
+  clean, one `docker compose build frontend` (passed; the image holds no
+  token or digest and no `prompt(` call). Deployed with
+  `docker compose up -d --no-deps frontend`; the backend was not restarted;
+  rollback image `mai-frontend:pre-authfix-20261013`. Live: in the built-in
+  browser pane with fake tokens, one dialog per page load and the empty,
+  cancel, Escape, "Enter API token" and wrong-token paths as above; in
+  Chrome, the owner's reloaded tab kept its session token, and a new tab
+  asked once and loaded conversations, integrations and history after the
+  real token. Backend still answered 401 without a token and
+  `invalid_credentials` for a wrong one. Database unchanged (still `0019`;
+  the only new rows are the owner's own chats). Backend tests were not
+  re-run: no backend change.
+- **Limitations:** Chrome may offer to save the token in its password
+  manager (the field is a password field); declining keeps it session-only.
+  While Mai is locked the Integrations panel stays on "Checking…" (it
+  ignores errors; unchanged). `npm test` prints a harmless Node module-type
+  warning.
 
 ### Stage 6P: Harden monitoring concurrency and truthfulness (commit titled `Stage 6P: harden monitoring concurrency and truthfulness`, 2026-10-12)
 

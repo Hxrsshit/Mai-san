@@ -107,9 +107,11 @@ services:
       APP_ENV: development
       CORS_ORIGINS: http://localhost:3000
     ports:
-      # Loopback only. The API has no authentication: every endpoint,
-      # including the DELETE routes, is open to whoever can reach the port.
-      # Until an auth stage exists, that must not be the local network.
+      # Loopback only. Since Stage 6M.4 the API routes require
+      # `Authorization: Bearer <token>`, checked against MAI_API_TOKEN_SHA256
+      # above (unset or empty: they refuse with 503). /health and the
+      # provider callbacks (OAuth, Telegram webhook) answer without it, so
+      # the port still stays off the local network.
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
       # Source is mounted so host edits apply on container restart
