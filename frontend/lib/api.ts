@@ -140,10 +140,12 @@ function storeToken(token: string): boolean {
 
 /** Forget `rejected` -- but only while it is still the stored token. */
 function forgetTokenIf(rejected: string): void {
+  // Through `storedToken`, the one read of the token, so storage keeps
+  // exactly one call site per operation (pinned by the backend structure
+  // tests). Read, compare and remove run without an await in between.
+  if (storedToken() !== rejected) return;
   try {
-    if (window.sessionStorage.getItem(TOKEN_KEY) === rejected) {
-      window.sessionStorage.removeItem(TOKEN_KEY);
-    }
+    window.sessionStorage.removeItem(TOKEN_KEY);
   } catch {
     // Storage unavailable: nothing was kept.
   }
