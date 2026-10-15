@@ -2,11 +2,25 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { InboxView } from "@/components/InboxView";
 import { MessageInput } from "@/components/MessageInput";
 import { MessageList } from "@/components/MessageList";
+import { MonitorsView } from "@/components/MonitorsView";
+import { ProviderStatus } from "@/components/ProviderStatus";
 import { Sidebar } from "@/components/Sidebar";
+import { TaskActivity } from "@/components/TaskActivity";
+import { Tabs, panelId, tabId } from "@/components/Tabs";
 import { ApiError, api } from "@/lib/api";
+import { useInboxBadge } from "@/lib/useInboxBadge";
 import type { Conversation, Message } from "@/lib/types";
+
+type View = "chat" | "tasks" | "monitors" | "inbox";
+
+const VIEW_TITLES: Record<Exclude<View, "chat">, string> = {
+  tasks: "Tasks and background activity",
+  monitors: "Monitors",
+  inbox: "Alerts and reminders",
+};
 
 export default function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -14,6 +28,20 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<View>("chat");
+  // Bumped after each chat turn: the provider's observed outcome may have changed.
+  const [providerCheck, setProviderCheck] = useState(0);
+  const inbox = useInboxBadge(true);
+  const refreshBadge = inbox.refresh;
+  const firstView = useRef(true);
+  // Marking things read happens in the Inbox; re-count when the person moves on.
+  useEffect(() => {
+    if (firstView.current) {
+      firstView.current = false;
+      return;
+    }
+    void refreshBadge();
+  }, [view, refreshBadge]);
 
   // Mirrors activeId so an in-flight request can tell whether the user has
   // since switched conversations. State captured in the closure would be stale.
@@ -85,6 +113,21 @@ export default function ChatPage() {
     }
   }
 
+  /** Resolves with an error message, or null once the backend returned the new title. */
+  async function renameConversation(id: string, title: string): Promise<string | null> {
+    try {
+      const renamed = await api.renameConversation(id, title);
+      setConversations((current) =>
+        current.map((item) => (item.id === id ? { ...item, title: renamed.title } : item)),
+      );
+      return null;
+    } catch (caught) {
+      return caught instanceof ApiError
+        ? caught.message
+        : "The conversation could not be renamed. Please try again.";
+    }
+  }
+
   async function sendMessage(content: string) {
     // Claim the send slot BEFORE any await. Doing this after the
     // createConversation() call left a window in which a second Enter press
@@ -147,6 +190,7 @@ export default function ChatPage() {
       }
     } finally {
       setIsSending(false);
+      setProviderCheck((count) => count + 1);
     }
   }
 
@@ -158,40 +202,81 @@ export default function ChatPage() {
         onSelect={selectConversation}
         onCreate={createConversation}
         onDelete={deleteConversation}
+        onRename={renameConversation}
         disabled={isSending}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-canvas)]/65 px-5 py-4 backdrop-blur-xl sm:px-7">
+        <header className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-canvas)]/65 px-5 py-4 backdrop-blur-xl sm:px-7">
           <div className="min-w-0">
-            <p className="mb-1 text-[10px] font-medium tracking-[0.2em] text-[var(--color-muted)]">CONVERSATION</p>
+            <p className="mb-1 text-[10px] font-medium tracking-[0.2em] text-[var(--color-muted)]">
+              {view === "chat" ? "CONVERSATION" : "ACTIVITY"}
+            </p>
             <h1 className="truncate text-sm font-medium">
-              {conversations.find((item) => item.id === activeId)?.title ?? "A space to think"}
+              {view === "chat"
+                ? (conversations.find((item) => item.id === activeId)?.title ?? "A space to think")
+                : VIEW_TITLES[view]}
             </h1>
           </div>
-          <div className="flex items-center gap-2 text-xs text-[var(--color-muted)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--color-success)] shadow-[0_0_8px_var(--color-success)]" />Present</div>
+          <ProviderStatus refreshKey={providerCheck} />
         </header>
 
-        {error && (
+        <div className="border-b border-[var(--color-border)] px-5 py-2 sm:px-7">
+          <Tabs
+            label="Workspace"
+            selected={view}
+            onSelect={(id) => setView(id as View)}
+            items={[
+              { id: "chat", label: "Chat" },
+              { id: "tasks", label: "Tasks" },
+              { id: "monitors", label: "Monitors" },
+              { id: "inbox", label: "Inbox", badge: inbox.badge },
+            ]}
+          />
+        </div>
+
+        {view === "chat" ? (
           <div
-            role="alert"
-            className="flex items-start justify-between gap-4 border-b
-                       border-[color:rgba(255,107,124,.35)] bg-[color:rgba(255,107,124,.1)] px-6 py-3 text-sm text-[var(--color-error)]"
+            role="tabpanel"
+            id={panelId("chat")}
+            aria-labelledby={tabId("chat")}
+            className="flex min-h-0 flex-1 flex-col"
           >
-            <span>{error}</span>
-            <button
-              type="button"
-              onClick={() => setError(null)}
-              aria-label="Dismiss error"
-              className="shrink-0 opacity-70 hover:opacity-100"
-            >
-              ✕
-            </button>
+            {error && (
+              <div
+                role="alert"
+                className="flex items-start justify-between gap-4 border-b
+                           border-[color:rgba(255,107,124,.35)] bg-[color:rgba(255,107,124,.1)] px-6 py-3 text-sm text-[var(--color-error)]"
+              >
+                <span>{error}</span>
+                <button
+                  type="button"
+                  onClick={() => setError(null)}
+                  aria-label="Dismiss error"
+                  className="shrink-0 opacity-70 hover:opacity-100"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            <MessageList messages={messages} isLoading={isSending} />
+            <MessageInput onSend={sendMessage} disabled={isSending} />
+          </div>
+        ) : (
+          <div
+            role="tabpanel"
+            id={panelId(view)}
+            aria-labelledby={tabId(view)}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="mx-auto w-full max-w-3xl px-5 py-6 sm:px-8">
+              {view === "tasks" ? <TaskActivity /> : null}
+              {view === "monitors" ? <MonitorsView /> : null}
+              {view === "inbox" ? <InboxView onChanged={() => void refreshBadge()} /> : null}
+            </div>
           </div>
         )}
-
-        <MessageList messages={messages} isLoading={isSending} />
-        <MessageInput onSend={sendMessage} disabled={isSending} />
       </main>
     </div>
   );

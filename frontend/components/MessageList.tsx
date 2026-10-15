@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { Markdown } from "@/components/Markdown";
 import type { Message } from "@/lib/types";
 
 interface Props {
@@ -50,13 +51,15 @@ function MessageBubble({ message }: { message: Message }) {
       <div
         className={[
           "max-w-[82%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed shadow-sm",
-          "whitespace-pre-wrap break-words",
+          "break-words",
+          isUser ? "whitespace-pre-wrap" : "",
           isUser
             ? "bg-[var(--color-accent)] text-white shadow-[0_8px_22px_rgba(100,88,255,.22)]"
             : "mai-surface border border-[var(--color-border)] text-[var(--color-ink)]",
         ].join(" ")}
       >
-        {message.content}
+        {/* Only Mai's replies are Markdown; what the person typed stays literal. */}
+        {isUser ? message.content : <Markdown source={message.content} />}
       </div>
     </div>
   );

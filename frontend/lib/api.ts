@@ -14,7 +14,16 @@ import type {
   ImportRun,
   ImportRunList,
   ImportSourceList,
+  Health,
   IntegrationStatus,
+  ReminderList,
+  ReminderNotificationList,
+  Task,
+  TaskDetail,
+  TaskList,
+  TaskNotification,
+  TaskNotificationList,
+  TaskState,
 } from "./types";
 
 const API_URL =
@@ -38,12 +47,24 @@ const FRIENDLY_MESSAGES: Record<string, string> = {
   llm_timeout: "Mai took too long to respond. Please try again.",
   llm_rate_limited: "Mai is handling too many requests right now. Try again shortly.",
   llm_not_configured:
-    "Mai has no API key configured. Set GROQ_API_KEY on the backend.",
-  llm_auth_error: "The configured API key was rejected. Check GROQ_API_KEY.",
+    "Mai has no API key configured for its language-model provider. Check the backend configuration.",
+  llm_auth_error:
+    "The language-model provider rejected Mai's API key. Check the backend configuration.",
   llm_error: "Mai could not reach the language model. Please try again.",
   llm_invalid_response: "Mai returned an unusable response. Please try again.",
   database_error: "The database is unavailable. Please try again shortly.",
   conversation_not_found: "That conversation no longer exists.",
+  // FastAPI HTTPException reasons. The backend wraps these as `http_error` or
+  // `not_found` with the reason in `message`, so they are looked up by message.
+  task_not_found: "That task no longer exists.",
+  task_is_terminal: "That task has already finished, so it can no longer be changed.",
+  task_not_cancelled:
+    "The task was not cancelled: the server could not save the change. It may still be running.",
+  notification_not_found: "That notification no longer exists.",
+  reminder_not_found: "That reminder no longer exists.",
+  invalid_cursor: "The list position is no longer valid. Refresh the list.",
+  "Not Found": "That feature is not available on this server.",
+  internal_error: "The server hit an unexpected error. Please try again.",
   // Stage 5C import refusals, in words that say what to do next.
   source_not_found: "That file is no longer in the import folder.",
   invalid_filename: "That file name cannot be used.",
@@ -260,9 +281,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       throw cancelled();
     }
 
+    const detail: string | undefined = body?.error?.message;
+    // `http_error` and `not_found` carry the real reason in `message`.
+    const generic = code === "http_error" || code === "not_found";
     const message =
       FRIENDLY_MESSAGES[code] ??
-      body?.error?.message ??
+      (generic && detail ? FRIENDLY_MESSAGES[detail] : undefined) ??
+      (generic ? undefined : detail) ??
       `Request failed (${response.status}).`;
     throw new ApiError(message, code, response.status);
   }
@@ -279,6 +304,12 @@ export const api = {
 
   getConversation: (id: string) =>
     request<ConversationDetail>(`/api/conversations/${id}`),
+
+  renameConversation: (id: string, title: string) =>
+    request<Conversation>(`/api/conversations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
 
   deleteConversation: (id: string) =>
     request<void>(`/api/conversations/${id}`, { method: "DELETE" }),
@@ -350,3 +381,55 @@ export async function disconnectIntegration(
     method: "POST",
   });
 }
+
+/**
+ * Tasks, background activity and monitoring.
+ *
+ * Reads, plus the one write the backend offers: cancel (Stage 6N). Nothing
+ * here creates, schedules, approves or runs a task.
+ */
+export const tasks = {
+  list: (states?: TaskState[], limit = 20) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    for (const state of states ?? []) query.append("state", state);
+    return request<TaskList>(`/api/tasks?${query.toString()}`);
+  },
+
+  get: (id: string) => request<TaskDetail>(`/api/tasks/${id}`),
+
+  /** The body must be exactly `{}`; the backend refuses anything else. */
+  cancel: (id: string) =>
+    request<Task>(`/api/tasks/${id}/cancel`, { method: "POST", body: "{}" }),
+};
+
+/** Monitoring alerts (Stage 6M.2). Marking read writes `read_at` only. */
+export const taskNotifications = {
+  list: (options: { before?: string | null; unreadOnly?: boolean; limit?: number } = {}) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 20) });
+    if (options.before) query.set("before", options.before);
+    if (options.unreadOnly) query.set("unread_only", "true");
+    return request<TaskNotificationList>(`/api/task-notifications?${query.toString()}`);
+  },
+
+  get: (id: string) => request<TaskNotification>(`/api/task-notifications/${id}`),
+
+  markRead: (id: string) =>
+    request<void>(`/api/task-notifications/${id}/read`, { method: "POST", body: "{}" }),
+};
+
+/**
+ * Reminders (Stage 5F.1). The list endpoints return scheduled reminders and
+ * unseen fired occurrences only; there is no history endpoint.
+ */
+export const reminders = {
+  scheduled: (limit = 20) => request<ReminderList>(`/api/reminders?limit=${limit}`),
+
+  fired: (limit = 20) =>
+    request<ReminderNotificationList>(`/api/reminders/notifications?limit=${limit}`),
+
+  markSeen: (id: string) =>
+    request<void>(`/api/reminders/notifications/${id}/read`, { method: "POST" }),
+};
+
+/** Service health, including the LLM provider's last observed outcome. */
+export const getHealth = () => request<Health>("/health");
