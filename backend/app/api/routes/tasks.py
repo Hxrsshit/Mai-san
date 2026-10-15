@@ -35,6 +35,7 @@ from app.tasks.schemas import (
     TaskRead,
     TaskOutcome,
     TaskStepRead,
+    monitoring_fields,
 )
 from app.tasks.states import TaskState
 
@@ -79,6 +80,7 @@ def _task(task: Task, step_count: int = 0) -> TaskRead:
         created_at=task.created_at,
         updated_at=task.updated_at,
         step_count=step_count,
+        **monitoring_fields(task),
     )
 
 
