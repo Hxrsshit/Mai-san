@@ -35,6 +35,10 @@ logger = get_logger(__name__)
 # Models sometimes wrap JSON in a markdown fence despite instructions.
 _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
+#: `finish_reason` values meaning the reply stopped at the output limit:
+#: "length" (OpenAI-compatible APIs) and "max_tokens" (Anthropic).
+_TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
 #: Upper bound on the message text handed to the classifier. Intent is visible
 #: in the opening of a request; sending 32,000 characters would cost tokens
 #: without improving the label, and would let one message dominate the budget.
@@ -107,6 +111,23 @@ class IntentClassifier:
                 exc_info=exc,
             )
             raise IntentClassificationError("provider_error") from exc
+
+        if response.finish_reason in _TRUNCATED_FINISH_REASONS:
+            # The model ran out of output budget. Reasoning models spend part
+            # of `max_tokens` on hidden reasoning, so the visible JSON can be
+            # cut off at any point. Half an answer is not a weaker answer
+            # but a different one, so it is never parsed -- and it is named
+            # for what it is rather than as unparsable text.
+            logger.warning(
+                "Intent classification was truncated by the output limit",
+                extra={
+                    "provider": self._provider.name,
+                    "model": response.model,
+                    "finish_reason": response.finish_reason,
+                    "max_tokens": self._settings.INTENT_CLASSIFICATION_MAX_TOKENS,
+                },
+            )
+            raise IntentClassificationError("truncated_response")
 
         return self._parse(response.content)
 

@@ -278,7 +278,9 @@ class RetrievalService:
             entity_ids=entity_ids,
             relationship_ids=relationship_ids,
         )
-        pool = list(candidates.values())
+        # The same bound, in the same order, as `retrieve`: the debug view
+        # shows the pool chat ranks, never the larger union of its sources.
+        pool = list(candidates.values())[: self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE]
         return matches, entity_strength, relationship_candidates, evidence, pool
 
 

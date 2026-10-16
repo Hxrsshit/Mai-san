@@ -79,6 +79,14 @@ class ContextService:
 
         recent = await self._safe_recent(conversation_id, degraded)
         retrieval = await self._safe_retrieval(current_message, degraded)
+        if retrieval is not None:
+            # A source that failed *inside* retrieval used to stop here: the
+            # package looked exactly like one where nothing matched, and the
+            # prompt could not tell "no memories" from "memory unavailable".
+            degraded.extend(
+                f"retrieval:{source}"
+                for source in retrieval.metadata.degraded_sources
+            )
 
         package = self._assembler.assemble(
             current_message=current_message,

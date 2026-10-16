@@ -20,6 +20,9 @@ class ErrorResponse(BaseModel):
 class ComponentHealth(BaseModel):
     healthy: bool
     detail: Optional[str] = None
+    #: LLM only. Observed from real requests, never probed:
+    #: "unverified" (no request yet), "reachable" or "failing".
+    reachability: Optional[str] = None
 
 
 class HealthResponse(BaseModel):

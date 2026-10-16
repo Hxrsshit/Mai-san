@@ -351,6 +351,7 @@ def test_no_new_llm_message_construction_site_was_added() -> None:
         "llm/providers/openai_compatible.py",
         # Stage 4F-F: the same one-token health probe, in the second provider.
         "llm/providers/anthropic.py",
+        "llm/smoke.py",  # operator smoke test: one fixed constant prompt, no user data or knowledge
     }
 
     found = set()

@@ -15,17 +15,27 @@ include SUPERSEDED, which is the only way retired knowledge ever reaches a
 prompt. ARCHIVED is never included by either path.
 """
 
+import operator
 import uuid
 from dataclasses import dataclass, field
+from functools import reduce
 from typing import Dict, List, Sequence, Set, Tuple
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload
 
 from app.core.logging import get_logger
 from app.entities.models import Entity, MemoryEntity
 from app.memory.models import Memory, MemoryStatus
+from app.retrieval.query_normalizer import (
+    PREFERENCE_TERMS,
+    candidate_forms,
+    keyword_form_groups,
+    keyword_matches,
+    query_keywords,
+    term_kind,
+)
 from app.relationships.models import (
     Relationship,
     RelationshipEvidence,
@@ -154,30 +164,80 @@ class MemoryRetriever:
     async def _collect_by_keyword(
         self, candidates: Dict[uuid.UUID, MemoryCandidate], keywords: Sequence[str]
     ) -> None:
-        """Memories whose text contains a query keyword.
+        """Memories that contain a query keyword as a whole word.
 
         A single OR'd query rather than one per keyword, so the number of
         round trips does not grow with query length. Matching runs against
-        `normalized_content`, which is already lowercased and punctuation-free.
+        `normalized_content`, which is already lowercased and punctuation-free,
+        padded with spaces so a pattern matches whole words only: "tea" no
+        longer finds "team", "steady" or "instead".
+
+        Only the question's *subject* words make a memory a candidate (see
+        `candidate_forms`): a memory sharing nothing but "prefer" with "which
+        tea do I prefer?" does not enter the pool. Which keywords a candidate
+        then matches is decided in Python by `keyword_matches`, and a memory
+        that matches none -- a concept-group word with no preference beside
+        it -- is not kept.
+
+        At most `MAX_QUERY_KEYWORDS` keywords are used (`query_keywords`), so
+        the statement's size and the work to build it do not grow with the
+        message.
         """
+        keywords = query_keywords(keywords)
         if not keywords:
             return
+        forms = candidate_forms(keywords)
+        if not forms:
+            return
 
-        conditions = [
-            Memory.normalized_content.like(f"%{keyword}%") for keyword in keywords
-        ]
+        padded = literal(" ") + Memory.normalized_content + literal(" ")
+        per_keyword = keyword_form_groups(keywords, forms)
+        conditions = [padded.like(f"% {form} %") for form in forms]
+        # How many of the query's keywords a memory contains. The pool is
+        # bounded, so *which* matches fill it matters: ordered by importance
+        # alone, fifty important memories sharing one common word pushed out
+        # the one memory that matched every word of the question before
+        # ranking ever saw it. Most keywords matched first; importance,
+        # recency and finally the id break ties, so the order is total.
+        matched_keywords = reduce(
+            operator.add,
+            [
+                case((or_(*(padded.like(f"% {form} %") for form in group)), 1), else_=0)
+                for group in per_keyword
+                if group
+            ],
+            literal(0),
+        )
+        # When the question asks about a preference, a memory that expresses
+        # one outranks a memory that merely shares the subject: fifty
+        # important "drinks green tea" memories must not crowd "favourite tea
+        # is jasmine" out of the pool before ranking sees it.
+        if any(term_kind(k) == "preference" for k in keywords):
+            prefers = case(
+                (or_(*(padded.like(f"% {form} %") for form in sorted(PREFERENCE_TERMS))), 1),
+                else_=0,
+            )
+        else:
+            prefers = literal(0)
         statement = (
             select(Memory)
             .where(Memory.status.in_(self._statuses), or_(*conditions))
-            .order_by(Memory.importance_score.desc(), Memory.created_at.desc())
+            .order_by(
+                matched_keywords.desc(),
+                prefers.desc(),
+                Memory.importance_score.desc(),
+                Memory.created_at.desc(),
+                Memory.id,
+            )
             .limit(self._pool_size)
         )
         for memory in (await self._session.execute(statement)).scalars().all():
+            words = set((memory.normalized_content or "").split())
+            hits = {keyword for keyword in keywords if keyword_matches(keyword, words)}
+            if not hits and memory.id not in candidates:
+                continue
             candidate = candidates.setdefault(memory.id, MemoryCandidate(memory=memory))
-            normalized = memory.normalized_content or ""
-            for keyword in keywords:
-                if keyword in normalized:
-                    candidate.keyword_hits.add(keyword)
+            candidate.keyword_hits.update(hits)
 
 
 @dataclass

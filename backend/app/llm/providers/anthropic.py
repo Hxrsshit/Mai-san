@@ -23,6 +23,7 @@ from app.core.config import Settings
 from app.core.errors import (
     LLMAuthError,
     LLMError,
+    LLMNotConfiguredError,
     LLMRateLimitError,
     LLMResponseError,
     LLMTimeoutError,
@@ -50,8 +51,10 @@ ANTHROPIC_VERSION = "2023-06-01"
 AUTH_HEADER = "x-api-key"
 
 #: Statuses worth trying again. Identical reasoning to the Groq provider:
-#: a caller error cannot be fixed by repeating it.
-_RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
+#: a caller error cannot be fixed by repeating it. 529 is Anthropic's
+#: `overloaded_error` ("the API is temporarily overloaded"), which its own
+#: SDK retries; without it an overload failed on the first attempt.
+_RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
 
 
 class AnthropicProvider(LLMProvider):
@@ -105,8 +108,33 @@ class AnthropicProvider(LLMProvider):
         max_tokens: Optional[int] = None,
         json_mode: bool = False,
     ) -> LLMResponse:
+        try:
+            response = await self._generate(
+                messages, temperature, max_tokens, json_mode
+            )
+        except LLMError as exc:
+            self._record_failure(exc)
+            raise
+        self._record_success()
+        return response
+
+    async def _generate(
+        self,
+        messages: List[LLMMessage],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        json_mode: bool,
+    ) -> LLMResponse:
         if not self._api_key:
-            raise LLMAuthError("No API key configured for the anthropic_api provider.")
+            # Not configured, not rejected: no request was made, so this must
+            # not read as "the provider refused the key" (`llm_auth_error`).
+            raise LLMNotConfiguredError(
+                "No API key configured for the anthropic_api provider."
+            )
+        if not (self._model or "").strip():
+            raise LLMNotConfiguredError(
+                "No model configured for the anthropic_api provider."
+            )
 
         system, turns = self._split_system(messages)
 
@@ -209,29 +237,43 @@ class AnthropicProvider(LLMProvider):
                     auth_header=(AUTH_HEADER, self._api_key),
                     headers={"anthropic-version": ANTHROPIC_VERSION},
                 )
-            except ProviderTimeout:
+            except ProviderTimeout as exc:
                 last_error = LLMTimeoutError(
                     f"{self.name} request timed out after {self._timeout:.0f}s."
                 )
+                self._log_attempt_failure(attempt, "timeout", exc.reason)
             except NetworkPolicyViolation as exc:
+                self._log_attempt_failure(
+                    attempt, "policy_refused", exc.reason, final=True
+                )
                 raise LLMError(
                     f"The configured {self.name} endpoint is not permitted."
                 ) from exc
             except ResponseTooLarge as exc:
+                self._log_attempt_failure(
+                    attempt, "oversized_response", exc.reason, final=True
+                )
                 raise LLMError(
                     f"{self.name} returned an unexpectedly large response."
                 ) from exc
-            except IntegrationError:
+            except IntegrationError as exc:
                 last_error = LLMError(f"Could not reach {self.name}.")
+                self._log_attempt_failure(attempt, "transport_error", exc.reason)
             else:
                 if response.status_code == 200:
                     return self._decode(response)
 
                 error = self._error_for_status(response)
                 if response.status_code not in _RETRYABLE_STATUS:
+                    self._log_attempt_failure(
+                        attempt, "http_error", error.message, final=True
+                    )
                     raise error
                 last_error = error
                 retry_after = self._retry_after_seconds(response)
+                self._log_attempt_failure(
+                    attempt, "http_error", error.message, retry_after=retry_after
+                )
 
             if attempt < self._max_retries:
                 await asyncio.sleep(
@@ -240,6 +282,32 @@ class AnthropicProvider(LLMProvider):
                 )
 
         raise last_error or LLMError(f"Could not reach {self.name}.")
+
+    def _log_attempt_failure(
+        self,
+        attempt: int,
+        reason: str,
+        detail: str,
+        final: bool = False,
+        retry_after: Optional[float] = None,
+    ) -> None:
+        """The same structured line the OpenAI-compatible providers write, so
+        a failing provider is visible in the logs whichever one it is.
+        `detail` is a transport reason constant or the scrubbed error message,
+        never the key."""
+        logger.warning(
+            "LLM request failed",
+            extra={
+                "provider": self.name,
+                "model": self._model,
+                "attempt": attempt + 1,
+                "max_attempts": self._max_retries + 1,
+                "reason": reason,
+                "retry_after": retry_after,
+                "detail": detail,
+                "will_retry": not final and attempt < self._max_retries,
+            },
+        )
 
     @staticmethod
     def _retry_after_seconds(response) -> Optional[float]:

@@ -11,7 +11,7 @@ exactly as typed.
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Set, Tuple
+from typing import List, Sequence, Set, Tuple
 
 # Words that carry no retrieval signal. Kept deliberately small: an
 # over-eager stopword list silently drops meaningful terms.
@@ -105,6 +105,193 @@ def extract_keywords(normalized: str) -> List[str]:
         seen.add(token)
         keywords.append(token)
     return keywords
+
+
+#: Irregular plurals, both directions. Substring matching already lets a
+#: singular keyword find its regular plural ("partner" in "partners"); these
+#: are the forms it cannot reach that way ("woman" is not in "women").
+#: "man"/"men" are left out: `%man%` would also match "human", "manage" and
+#: "woman", flooding the candidate pool for a gain substring matching on
+#: "men" mostly already has.
+_IRREGULAR_FORMS = {
+    "woman": "women", "child": "children", "person": "people",
+    "wife": "wives", "life": "lives", "foot": "feet", "tooth": "teeth",
+    "mouse": "mice", "knife": "knives",
+}
+_IRREGULAR = {**_IRREGULAR_FORMS, **{v: k for k, v in _IRREGULAR_FORMS.items()}}
+
+
+def keyword_variants(keyword: str) -> Tuple[str, ...]:
+    """The keyword plus the inflected forms a substring match would miss.
+
+    Deterministic and small on purpose: irregular plurals in both directions,
+    and a plural keyword reduced to its singular (which then also matches the
+    plural by substring). No stemming library and no synonyms -- a question
+    worded entirely differently from the stored memory is still a miss, which
+    is the documented limit of lexical retrieval.
+    """
+    forms = [keyword]
+    if keyword in _IRREGULAR:
+        forms.append(_IRREGULAR[keyword])
+    elif len(keyword) > 4 and keyword.endswith("ies"):
+        forms.append(keyword[:-3] + "y")
+    elif len(keyword) > 4 and keyword.endswith(("ches", "shes", "sses", "xes", "zes")):
+        forms.append(keyword[:-2])
+    elif len(keyword) > 3 and keyword.endswith("s") and not keyword.endswith(("ss", "us", "is")):
+        forms.append(keyword[:-1])
+    return tuple(dict.fromkeys(form for form in forms if len(form) >= MIN_KEYWORD_LENGTH))
+
+
+#: Words that say *that* the user likes something, not *what*. One explicit
+#: family, matched as equivalents ("prefer" finds "favourite" and "liked"),
+#: and weighted low: a memory sharing only this word with the question shares
+#: nothing about its subject. Deliberately small -- not a thesaurus.
+PREFERENCE_TERMS = frozenset({
+    "prefer", "prefers", "preferred", "preferring", "preference", "preferences",
+    "favourite", "favourites", "favorite", "favorites",
+    "like", "likes", "liked", "liking", "enjoy", "enjoys", "enjoyed", "enjoying",
+    "love", "loves", "loved", "loving", "ideal", "attracted", "attraction",
+})
+
+#: Words that frame a question ("what *kind* of tea") without naming its
+#: subject. Weighted lowest, and never enough on their own to make a memory
+#: a candidate.
+FRAME_TERMS = frozenset({"kind", "kinds", "type", "types", "sort", "sorts"})
+
+#: Concept groups for subjects that people name with different words. A
+#: different word from the same group counts as a match only when the memory
+#: also expresses a preference, so "my sister is a woman engineer" does not
+#: answer "what kind of partner do I prefer?". One group today, explicitly.
+CONCEPT_GROUPS = (
+    frozenset({
+        "partner", "partners", "woman", "women", "girlfriend", "girlfriends",
+        "boyfriend", "boyfriends", "spouse", "spouses", "wife", "wives",
+        "husband", "husbands",
+    }),
+)
+
+#: Relative weight of a matched keyword in text relevance, by kind.
+TERM_WEIGHTS = {"subject": 1.0, "preference": 0.35, "frame": 0.2}
+
+#: The most keywords one memory search uses. Each keyword becomes up to 22
+#: whole-word patterns, and every pattern is a bound SQL parameter (three, with
+#: its padding), so the query must be bounded independently of how long the
+#: message is: uncapped, a 32,000-character message of distinct words built
+#: a query of over 43,000 parameters -- above the 32,767 that asyncpg accepts
+#: -- and 1,000 distinct words took over ten seconds just to build it. 24
+#: bounds any query below 3,400 parameters (adversarial 32,000-character
+#: messages measure under 600) and covers any ordinary question several
+#: times over. The first keywords are kept, in message
+#: order: deterministic, and, as for intent classification, a request's
+#: opening is where it says what it wants.
+MAX_QUERY_KEYWORDS = 24
+
+
+def word_forms(keyword: str) -> frozenset:
+    """The word forms a keyword matches, as whole words.
+
+    Matching is by whole word, never substring, so "tea" no longer matches
+    "team", "steady" or "instead". To keep reasonable inflections, a keyword
+    also matches its plural, past and -ing forms and, for an inflected
+    keyword, its base ("liked" matches "like", "explaining" matches
+    "explain"). Over-generated forms are harmless: only words actually in the
+    memory can match.
+    """
+    forms = set(keyword_variants(keyword))
+    if len(keyword) > 5 and keyword.endswith("ing"):
+        forms.update({keyword[:-3], keyword[:-3] + "e"})
+    elif len(keyword) > 4 and keyword.endswith("ed"):
+        forms.update({keyword[:-2], keyword[:-1]})
+    for base in list(forms):
+        forms.update({base + "s", base + "es"})
+        if base.endswith("e"):
+            forms.update({base + "d", base[:-1] + "ing"})
+        else:
+            forms.update({base + "ed", base + "ing"})
+    return frozenset(form for form in forms if len(form) >= MIN_KEYWORD_LENGTH)
+
+
+def term_kind(keyword: str) -> str:
+    """"subject", "preference" or "frame" -- see `TERM_WEIGHTS`."""
+    if keyword in PREFERENCE_TERMS:
+        return "preference"
+    if keyword in FRAME_TERMS:
+        return "frame"
+    return "subject"
+
+
+def term_weight(keyword: str) -> float:
+    return TERM_WEIGHTS[term_kind(keyword)]
+
+
+def concept_group(keyword: str) -> frozenset:
+    """The concept group a keyword belongs to, or an empty set."""
+    for group in CONCEPT_GROUPS:
+        if keyword in group:
+            return group
+    return frozenset()
+
+
+def keyword_matches(keyword: str, memory_words: Set[str]) -> bool:
+    """Whether one query keyword matches a memory, given its set of words.
+
+    Exact word forms always match. A preference word matches any preference
+    word. A different member of the keyword's concept group matches only when
+    the memory also expresses a preference.
+    """
+    if word_forms(keyword) & memory_words:
+        return True
+    kind = term_kind(keyword)
+    if kind == "preference":
+        return bool(PREFERENCE_TERMS & memory_words)
+    group = concept_group(keyword)
+    if group and group & memory_words and PREFERENCE_TERMS & memory_words:
+        return True
+    return False
+
+
+def candidate_forms(keywords: Sequence[str]) -> List[str]:
+    """The word forms that may make a memory a keyword candidate.
+
+    Subject keywords only, whenever the question has one: a memory that shares
+    nothing but "prefer" with "which tea do I prefer?" is not a candidate. A
+    question with no subject ("what do I like?") falls back to its other
+    keywords. Concept-group members are included; `keyword_matches` decides
+    whether they count.
+    """
+    subjects = [k for k in keywords if term_kind(k) == "subject"]
+    chosen = subjects or list(keywords)
+    forms: Set[str] = set()
+    for keyword in chosen:
+        forms |= word_forms(keyword)
+        forms |= concept_group(keyword)
+        if term_kind(keyword) == "preference":
+            forms |= PREFERENCE_TERMS
+    return sorted(forms)
+
+
+def query_keywords(keywords: Sequence[str]) -> Tuple[str, ...]:
+    """The keywords a memory search uses: the first `MAX_QUERY_KEYWORDS`
+    distinct ones, in message order. The same input always gives the same
+    result, and a question with no more keywords than that is unchanged."""
+    return tuple(dict.fromkeys(keywords))[:MAX_QUERY_KEYWORDS]
+
+
+def keyword_form_groups(keywords: Sequence[str], forms: Sequence[str]) -> List[List[str]]:
+    """For each keyword, the candidate `forms` it accounts for, in the order
+    of `forms`.
+
+    Each keyword's own forms are computed once and intersected with the
+    candidate set. Scanning every candidate form for every keyword instead,
+    as this first did, recomputed `word_forms` once per pair: quadratic in a
+    message's distinct words.
+    """
+    order = {form: index for index, form in enumerate(forms)}
+    candidates = frozenset(order)
+    return [
+        sorted((word_forms(keyword) | concept_group(keyword)) & candidates, key=order.__getitem__)
+        for keyword in keywords
+    ]
 
 
 def extract_phrases(normalized: str) -> List[str]:

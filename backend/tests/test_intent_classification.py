@@ -9,7 +9,12 @@ import json
 
 import pytest
 
-from app.core.errors import LLMAuthError, LLMRateLimitError, LLMTimeoutError
+from app.core.errors import (
+    LLMAuthError,
+    LLMRateLimitError,
+    LLMResponseError,
+    LLMTimeoutError,
+)
 from app.intent.classifier import (
     MAX_CLASSIFIED_CHARS,
     MAX_CONTEXT_LINES,
@@ -18,6 +23,7 @@ from app.intent.classifier import (
 )
 from app.intent.schemas import Ambiguity, IntentType
 from app.intent.service import DISABLED_REASON, IntentService
+from app.llm.base import LLMResponse
 
 from tests.conftest import FakeLLMProvider
 
@@ -473,3 +479,145 @@ async def test_classification_runs_at_zero_temperature(settings) -> None:
 
     assert captured["temperature"] == 0.0
     assert captured["max_tokens"] == settings.INTENT_CLASSIFICATION_MAX_TOKENS
+
+
+# --- Truncated and malformed replies (live Gemini finding, 2026-10-13) ------
+#
+# gemini-3.5-flash spends part of `max_tokens` on hidden reasoning, so with a
+# 512 budget a reply could stop at the limit mid-JSON: `finish_reason=length`
+# and a body that ends at `"confidence": `. These tests pin how every kind of
+# bad reply is handled, and that a truncated one is named as such, is never
+# parsed, and cannot carry authority.
+
+#: The real truncated body observed live (a fixed, harmless probe message).
+LIVE_TRUNCATED_BODY = '{\n  "intent_type": "task",\n  "confidence": '
+
+
+class ScriptedFinishProvider(FakeLLMProvider):
+    """A fake whose classification reply carries a chosen `finish_reason`."""
+
+    def __init__(self, finish_reason, body) -> None:
+        super().__init__()
+        self.intent_reply = body
+        self._finish = finish_reason
+
+    async def generate_response(self, messages, temperature=None,
+                                max_tokens=None, json_mode=False):
+        response = await super().generate_response(
+            messages, temperature, max_tokens, json_mode
+        )
+        return LLMResponse(
+            content=response.content,
+            model=response.model,
+            finish_reason=self._finish,
+            usage={},
+        )
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "max_tokens"])
+async def test_a_reply_cut_off_by_the_output_limit_is_named_as_truncated(
+    settings, finish_reason
+) -> None:
+    provider = ScriptedFinishProvider(finish_reason, LIVE_TRUNCATED_BODY)
+
+    result = await IntentService(provider=provider, settings=settings).understand(
+        "Say hello in five words."
+    )
+
+    assert result.degraded_reason == "truncated_response"
+    assert result.intent_type is IntentType.UNKNOWN
+    assert result.classified is False
+    assert result.requires_execution is False
+    assert result.requires_user_approval is False
+    assert len(provider.intent_calls) == 1  # no retry, no repair pass
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "max_tokens"])
+async def test_a_truncated_reply_is_never_parsed_even_when_it_looks_complete(
+    settings, finish_reason
+) -> None:
+    """Valid-looking JSON at the limit is still not trusted: half an answer is
+    a different answer, and an `action` here would be model output the
+    application chose to believe."""
+    provider = ScriptedFinishProvider(finish_reason, answer("action", confidence=1.0))
+
+    result = await IntentService(provider=provider, settings=settings).understand(
+        "Delete that conversation."
+    )
+
+    assert result.degraded_reason == "truncated_response"
+    assert result.intent_type is IntentType.UNKNOWN
+    assert result.requires_execution is False
+
+
+async def test_the_same_bad_body_without_truncation_is_an_unparsable_reply(
+    settings,
+) -> None:
+    """The two causes stay distinguishable: truncation vs. garbage."""
+    provider = ScriptedFinishProvider("stop", LIVE_TRUNCATED_BODY)
+
+    result = await IntentService(provider=provider, settings=settings).understand(
+        "Say hello in five words."
+    )
+
+    assert result.degraded_reason == "unparsable_response"
+
+
+async def test_a_normal_stop_is_classified_as_before(settings) -> None:
+    provider = ScriptedFinishProvider("stop", answer("task"))
+
+    result = await IntentService(provider=provider, settings=settings).understand(
+        "Create a roadmap."
+    )
+
+    assert result.classified is True
+    assert result.intent_type is IntentType.TASK
+
+
+async def test_json_with_surrounding_whitespace_is_accepted(service, provider) -> None:
+    provider.intent_reply = f"\n\n   {answer('question')}  \n\t"
+
+    result = await service.understand("What is Redis?")
+
+    assert result.classified is True
+    assert result.intent_type is IntentType.QUESTION
+
+
+async def test_a_provider_response_error_is_a_provider_error_not_a_parse_error(
+    service, provider
+) -> None:
+    """An empty or refused reply raised by the provider layer must stay
+    distinguishable from the classifier's own parsing reasons."""
+    provider.intent_error = LLMResponseError("The model returned an empty message.")
+
+    result = await service.understand("What is Redis?")
+
+    assert result.degraded_reason == "provider_error"
+    assert result.intent_type is IntentType.UNKNOWN
+    assert result.requires_execution is False
+
+
+async def test_truncation_logs_codes_and_never_content(settings, caplog) -> None:
+    sentinel = "SENTINEL-USER-TEXT-7731"
+    provider = ScriptedFinishProvider("length", LIVE_TRUNCATED_BODY + sentinel)
+
+    with caplog.at_level("INFO"):
+        await IntentService(provider=provider, settings=settings).understand(
+            f"Please remember {sentinel}"
+        )
+
+    logged = "\n".join(
+        record.getMessage() + " " + str(sorted(record.__dict__.items()))
+        for record in caplog.records
+    )
+    assert "truncated by the output limit" in logged
+    assert sentinel not in logged
+    assert "intent_type" not in logged  # no part of the reply body
+
+
+def test_the_classification_budget_leaves_room_for_hidden_reasoning() -> None:
+    """Observed live: ~120 visible tokens plus 250-500 hidden ones. A budget
+    near 512 cut the JSON off mid-field. This pins a floor, not the value."""
+    from app.core.config import Settings
+
+    assert Settings(_env_file=None).INTENT_CLASSIFICATION_MAX_TOKENS >= 1500

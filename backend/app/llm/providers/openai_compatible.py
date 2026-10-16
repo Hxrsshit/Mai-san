@@ -134,10 +134,33 @@ class OpenAICompatibleProvider(LLMProvider):
         max_tokens: Optional[int] = None,
         json_mode: bool = False,
     ) -> LLMResponse:
+        try:
+            response = await self._generate(
+                messages, temperature, max_tokens, json_mode
+            )
+        except LLMError as exc:
+            self._record_failure(exc)
+            raise
+        self._record_success()
+        return response
+
+    async def _generate(
+        self,
+        messages: List[LLMMessage],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        json_mode: bool,
+    ) -> LLMResponse:
         if not self._api_key:
             raise LLMNotConfiguredError(
                 f"No API key configured for provider {self.name!r}. "
                 "Set it in your .env file."
+            )
+        if not (self._model or "").strip():
+            # Fail closed before any request: an empty model would reach the
+            # provider and come back as an opaque 400.
+            raise LLMNotConfiguredError(
+                f"No model configured for provider {self.name!r}."
             )
         if not messages:
             raise LLMResponseError("Cannot call the model with no messages.")

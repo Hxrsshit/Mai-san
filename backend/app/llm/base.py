@@ -8,6 +8,7 @@ local model later.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -38,6 +39,21 @@ class LLMResponse:
 
 
 @dataclass(frozen=True)
+class ProviderOutcome:
+    """How the provider's most recent real request ended.
+
+    Observed from requests the application made anyway, so reporting it costs
+    no model call. Holds an error *code* (`app.core.errors`), never a message,
+    a prompt, a response or a credential: it is safe to show on `/health`.
+    """
+
+    ok: bool
+    #: None on success; otherwise the `LLMError.code`, e.g. "llm_timeout".
+    error_code: Optional[str]
+    at: datetime
+
+
+@dataclass(frozen=True)
 class ProviderHealth:
     """Result of a provider health probe."""
 
@@ -52,6 +68,11 @@ class LLMProvider(ABC):
 
     #: Short identifier used in logs and the health endpoint, e.g. "groq".
     name: str = "base"
+
+    #: The most recent real request's outcome, or None before the first.
+    #: Written by `_record_success` / `_record_failure`, which every
+    #: implementation calls around its request; read by `/health`.
+    last_outcome: Optional[ProviderOutcome] = None
 
     @property
     @abstractmethod
@@ -86,3 +107,19 @@ class LLMProvider(ABC):
     async def close(self) -> None:
         """Release any held resources. Default is a no-op."""
         return None
+
+    # --- Observed reachability ---------------------------------------------
+    # One assignment each, so concurrent requests cannot interleave a partial
+    # record: the last request to finish is what `/health` reports.
+
+    def _record_success(self) -> None:
+        self.last_outcome = ProviderOutcome(
+            ok=True, error_code=None, at=datetime.now(timezone.utc)
+        )
+
+    def _record_failure(self, error: Exception) -> None:
+        self.last_outcome = ProviderOutcome(
+            ok=False,
+            error_code=str(getattr(error, "code", "llm_error")),
+            at=datetime.now(timezone.utc),
+        )

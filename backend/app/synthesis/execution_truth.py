@@ -91,6 +91,10 @@ class Channel(str, enum.Enum):
     CALENDAR = "calendar"
     #: Stage 6P. Gmail monitoring: set up, active, checked, matched, notified.
     MONITOR = "monitor"
+    #: Saving to long-term memory. Never claimable on a model-written reply:
+    #: extraction runs *after* the reply and can fail, so "I've saved that"
+    #: is never established when it is said.
+    MEMORY = "memory"
 
 
 #: The one state that licenses a claim.
@@ -127,6 +131,9 @@ class ExecutionRecord(NamedTuple):
     #: answered by the application, so on any model-written reply this is not
     #: claimable and every monitoring claim is unsupported.
     monitor: ExecutionState = ExecutionState.NOT_REQUESTED
+    #: Always UNKNOWN when a reply is judged: memory extraction has not run
+    #: yet, and may store nothing. Nothing on the reply path may change it.
+    memory: ExecutionState = ExecutionState.UNKNOWN
 
     def state_for(self, channel: Channel) -> ExecutionState:
         return {
@@ -134,6 +141,7 @@ class ExecutionRecord(NamedTuple):
             Channel.MAIL: self.mail,
             Channel.CALENDAR: self.calendar,
             Channel.MONITOR: self.monitor,
+            Channel.MEMORY: self.memory,
         }[channel]
 
     def may_claim(self, channel: Channel) -> bool:
@@ -419,6 +427,26 @@ _MONITOR_PROMISE = re.compile(
 #: What stops a monitoring sentence being a claim: a negation, or a
 #: condition on the user ("once you confirm"). Narrower than the shared
 #: offer filter on purpose -- see `_MONITOR_PROMISE`.
+#: Claims that something was saved to (or will be kept in) long-term memory.
+#: Narrow on purpose: first person with an object ("I've saved that", "I'll
+#: remember your preference") or an explicit memory destination ("saved it to
+#: my memory"). Recall -- "I remember you said" -- is not a claim of saving,
+#: and a file the application writes is not a memory.
+_MEMORY_OBJECT = (
+    r"(?:that|this|it|those|these|your\b|all\s+of\s+(?:that|this)|"
+    r"the\s+(?:details?|description|info(?:rmation)?|preferences?|facts?))"
+)
+_MEMORY_CLAIM = re.compile(
+    "(?:"
+    + _I_DID + r"(?:saved|stored|recorded|noted|memori[sz]ed|remembered)\s+" + _MEMORY_OBJECT
+    + r"|\b(?:saved|stored|added|committed|written|recorded)\s+(?:it\s+|that\s+|this\s+)?"
+    r"(?:to|in|into)\s+(?:my\s+|mai'?s\s+)?(?:long[- ]term\s+)?(?:memory|memories)\b"
+    r"|\b(?:i'?ll|i\s+will|i'?m\s+going\s+to)\s+(?:always\s+|definitely\s+)?"
+    r"(?:remember\s+" + _MEMORY_OBJECT + r"|keep\s+(?:that|this|it)\s+in\s+mind)"
+    ")",
+    re.IGNORECASE,
+)
+
 _MONITOR_EXEMPT = re.compile(
     # Contractions need their apostrophe: "\w+nt" alone would exempt "sent".
     r"\b(?:not|never|no|cannot|unable|without)\b|\b\w+n['\u2019]t\b"
@@ -468,6 +496,10 @@ def claims(text: str) -> FrozenSet[Channel]:
             _MONITOR_PROMISE.search(clause) or _MONITOR_CLAIM.search(clause)
         ):
             found.add(Channel.MONITOR)
+        # Memory, like monitoring, is judged before the shared offer filter:
+        # "I'll remember that" is a promise the application cannot keep.
+        if not _MONITOR_EXEMPT.search(clause) and _MEMORY_CLAIM.search(clause):
+            found.add(Channel.MEMORY)
         if _NOT_AN_ASSERTION.search(clause):
             continue
         for channel, pattern in _CLAIMS.items():
@@ -600,6 +632,10 @@ _CHANNEL_NOUNS = {
     Channel.MAIL: "email read",
     Channel.CALENDAR: "calendar read",
     Channel.MONITOR: "Gmail monitoring setup",
+    Channel.MEMORY: (
+        "saving anything to long-term memory (Mai does this automatically "
+        "after your reply, and it can fail)"
+    ),
 }
 
 _STATE_PHRASES = {
@@ -647,6 +683,11 @@ def truthful_reply(record: ExecutionRecord, violations: Tuple[Channel, ...]) -> 
     Written here, from the record, so it is true by construction -- there is
     no model in the loop to rephrase "I have not searched" into "I searched".
     """
+    if Channel.MEMORY in violations:
+        others = tuple(c for c in violations if c is not Channel.MEMORY)
+        if not others:
+            return _MEMORY_TRUTH
+        return f"{truthful_reply(record, others)} {_MEMORY_TRUTH}"
     if Channel.MONITOR in violations:
         # Stage 6P. True whatever monitors already exist: it says only that
         # this reply could not report or start one, and how one is started.
@@ -716,6 +757,14 @@ _MONITOR_TRUTH = (
     "monitoring proposals -- for example, say \u201cwatch my Gmail for an email "
     "from apple.com and tell me when it arrives\u201d and I'll show you exactly "
     "what I'd watch before anything starts."
+)
+
+
+#: What the application says instead of a claim that something was saved.
+_MEMORY_TRUTH = (
+    "I can't confirm that I've saved that. Mai records what you tell it "
+    "automatically after it replies, and that step can fail -- ask me about it "
+    "later and I'll answer from what was actually recorded."
 )
 
 

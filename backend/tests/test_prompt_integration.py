@@ -156,6 +156,7 @@ def test_only_the_formatter_builds_prompt_messages() -> None:
         "planning/planner.py",  # Stage 4B: plan generation, not the chat prompt
         "llm/providers/openai_compatible.py",  # health probe ping
         "llm/providers/anthropic.py",  # Stage 4F-F: the same health probe ping
+        "llm/smoke.py",  # operator smoke test: one fixed constant prompt, no user data or knowledge
     }
 
     found = set()

@@ -20,6 +20,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import DatabaseError, MemoryNotFoundError
 from app.core.logging import get_logger
 from app.database.models.base import utcnow
+from app.database.models.message import Message
 from app.llm.base import LLMProvider
 from app.memory.deduplication import DuplicateMatch, find_duplicate, normalize
 from app.memory.extractor import MemoryExtractor
@@ -115,14 +116,22 @@ class MemoryService:
             logger.warning("Memory extraction skipped: no provider configured")
             return []
 
+        recent_context = await self._earlier_context(
+            conversation_id, source_message_id
+        )
         logger.info(
             "Memory extraction started",
-            extra={"conversation_id": str(conversation_id)},
+            extra={
+                "conversation_id": str(conversation_id),
+                "context_messages": len(recent_context),
+            },
         )
 
         try:
             candidates = await self._extractor.extract(
-                user_message=user_message, assistant_message=assistant_message
+                user_message=user_message,
+                assistant_message=assistant_message,
+                recent_context=recent_context,
             )
         except Exception as exc:  # noqa: BLE001 - belt and braces
             logger.error(
@@ -237,6 +246,59 @@ class MemoryService:
             if memory is not None:
                 stored.append(memory)
         return stored
+
+    async def _earlier_context(
+        self, conversation_id: uuid.UUID, source_message_id: Optional[uuid.UUID]
+    ) -> List[str]:
+        """The turns before the analysed message, oldest first, bounded.
+
+        Without them the extractor saw a reply in isolation: "tall, wears
+        glasses" answering "what is your ideal partner like?" was stored as a
+        description of the *user*. Context for interpretation only -- the
+        prompt still names the user's own message as the sole source of
+        memories. Never raises: no context is a degraded extraction, not a
+        failed one.
+        """
+        limit = max(0, self._settings.MEMORY_EXTRACTION_CONTEXT_MESSAGES)
+        if not limit or source_message_id is None:
+            return []
+        try:
+            source_at = (
+                await self._session.execute(
+                    select(Message.created_at).where(
+                        Message.id == source_message_id,
+                        Message.conversation_id == conversation_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if source_at is None:
+                return []
+            rows = (
+                await self._session.execute(
+                    select(Message.role, Message.content)
+                    .where(
+                        Message.conversation_id == conversation_id,
+                        Message.created_at < source_at,
+                    )
+                    .order_by(Message.created_at.desc(), Message.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "Earlier context unavailable for memory extraction",
+                extra={"conversation_id": str(conversation_id), "error": str(exc)},
+            )
+            return []
+        cap = max(1, self._settings.MEMORY_EXTRACTION_CONTEXT_CHARS)
+        lines = []
+        for role, content in reversed(rows):
+            role = getattr(role, "value", role)
+            text = " ".join((content or "").split())
+            if len(text) > cap:
+                text = text[: cap - 1].rstrip() + "…"
+            lines.append(f"{role}: {text}")
+        return lines
 
     def _filter_by_thresholds(
         self, candidates: Sequence[MemoryCandidate]

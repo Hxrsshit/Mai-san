@@ -401,7 +401,10 @@ def test_the_truthful_reply_distinguishes_failure_from_never_ran() -> None:
 def test_the_adjudicated_channels_are_pinned() -> None:
     """A capability added later is not adjudicated until someone adds it."""
     # Changed deliberately in 6P: monitoring claims are adjudicated too.
+    # Changed deliberately again (memory recall fix, 2026-10-14): claims of
+    # having saved something to memory are adjudicated -- never licensed on a
+    # reply, because extraction runs after it.
     assert known_claim_channels() == (
-        Channel.WEB, Channel.MAIL, Channel.CALENDAR, Channel.MONITOR,
+        Channel.WEB, Channel.MAIL, Channel.CALENDAR, Channel.MONITOR, Channel.MEMORY,
     )
-    assert len(list(Channel)) == 4
+    assert len(list(Channel)) == 5
