@@ -21,16 +21,17 @@ before substantial work and updates it after completing work (see
 
 ---
 
-## Current state (as of 2026-10-13)
+## Current state (as of 2026-10-16)
 
 | | |
 | --- | --- |
 | Latest completed stage | **Stage 6P: harden monitoring concurrency and truthfulness**: the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; find it with `git log -1 -- docs/STAGE_6O_AUDIT.md`). Stage 6O was an inspection-only audit (no commit of its own; its report is that file) |
-| Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only) |
+| Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only); then the Stage 0 consolidation checkpoints (not stages), each committing work that had been uncommitted: C1 `fc80592`, C2 `30a1342`, C3 `7ac52b4`, C4 `4b8d407` |
 | Previous stages | 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
-| Branch | `main` (no remote push recorded here) |
+| Branch | `main`. Nothing is pushed: on 2026-10-16 local `main` was 12 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch). |
 | Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2, 6M.3, 6M.4, 6N and 6P added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
-| Next stage | **None started.** Stage 6P is complete. Do not begin another stage without an explicit request. |
+| Next stage | **None started.** Stage 0 consolidation: C1 to C4 are committed; C5 (this file and the documentation corrections) is awaiting review. Do not begin another stage without an explicit request. |
+| Uncommitted work (2026-10-16) | Only the C5 documentation update and the untracked `MAi branding .png`. The six 2026-10-13 workstreams and the 2026-10-14 memory work are committed as Stage 0 C1 to C4 (see Completed). None of it was verified on PostgreSQL (its gated tests are unrun). **What is running (checked 2026-10-16, read-only):** the backend container last started 2026-10-14 09:48 UTC (Docker `StartedAt`), and a public `GET /health` returned `llm.reachability`, so it runs C4's health code. That it lacks C4's 2026-10-16 query bound and debug-pool cap is inferred, not tested: those files changed after it started, and uvicorn runs without reload. The frontend container is the 2026-10-12 image; its served bundle contained the token dialog but none of C3's UI strings, so C3 is not deployed. That C1 is not deployed is inferred from the image date (C1 changes no visible text). The migration head is unchanged (`0019`); the real `mai` database gained owner-approved test and correction records (see Stage 0 C4). |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -38,6 +39,13 @@ These are in the working tree and are **not** part of any completed stage. Do
 not commit them as part of other work, and do not describe them as done.
 
 - **`MAi branding .png`** at the repository root: untracked.
+- *(Resolved, 2026-10-16)* The workstreams listed here on 2026-10-13 and
+  2026-10-14 (frontend token-storage fix, LLM provider reliability,
+  intent-classifier truncation, the UI usability phase, monitor metadata on
+  `TaskRead`, the monitor journal patch, the pre-commit cleanup, memory recall
+  reliability and memory retrieval quality) are committed as Stage 0 C1 to C4.
+  Their entries moved to Completed, corrected where later evidence changed
+  them.
 - *(Resolved)* The uncommitted Stage 6M.4 work noted here on 2026-10-07 was
   this stage in progress; it is now committed (see Stage 6M.4). The four AST
   failures seen in one shuffled run (seed 1703306132) during the `7e7b978` fix
@@ -199,8 +207,9 @@ not commit them as part of other work, and do not describe them as done.
   - **Per-device or revocable tokens:** one token today; rotating it means a
     new hash and a restart. An `api_tokens` table was considered and
     declined for 6M.4.
-  - **A masked token prompt:** the browser uses `window.prompt`, which shows
-    what is typed.
+  - ~~**A masked token prompt:** the browser uses `window.prompt`, which shows
+    what is typed.~~ Built in the commit titled `Fix frontend authentication
+    token flow`: `frontend/components/AuthDialog.tsx` uses a password field.
   - **No rate limit on failed authentication:** a 256-bit token cannot be
     guessed, but repeated 401s are only logged, not throttled.
   - **`TaskService` and the 6K composition keep their defaults:** the
@@ -231,8 +240,9 @@ not commit them as part of other work, and do not describe them as done.
   `TaskService.configure_monitoring` or standing-grant creation. Since 6N
   they are reachable from a person in exactly one way: a confirmed Gmail
   monitoring proposal in an authenticated chat turn (see Stage 6N). Still
-  deferred from 6N: a frontend view of monitors and notifications with a
-  cancel button; other monitorable sources; monitoring requested from
+  deferred from 6N: ~~a frontend view of monitors and notifications with a
+  cancel button~~ (built in Stage 0 C3, `7ac52b4`; not yet deployed); other
+  monitorable sources; monitoring requested from
   Telegram; per-argument (rather than capability-wide) grants; amending a
   proposal in place; recurring monitors after a match.
 - `max_model_calls` and `max_seconds` task budgets are recorded but
@@ -247,14 +257,300 @@ not commit them as part of other work, and do not describe them as done.
 - Revoke the Groq key, both OpenRouter keys, the GitHub PAT, and the first
   Tavily key.
 - Legacy tool-call blobs remain in stored data.
-- Dependency advisories: `starlette 0.52.1`; `next@15.5.4` (CVE-2025-66478);
-  the Debian image layer has not been scanned.
+- Dependency advisories, **none resolved, and not a complete inventory**:
+  `starlette 0.52.1` (the version `backend/constraints.txt` pins; the local
+  test venv has 0.49.3, so local tests run against an older Starlette than
+  the pin); `next@15.5.4` (CVE-2025-66478). `npm audit` on 2026-10-14
+  reported three vulnerable frontend packages: `next` (critical, several
+  advisories), `postcss` (high, a copy at or below 8.5.22) and `sharp`
+  (high, inherited from libvips, librsvg and libheif). The Debian image layer
+  has not been scanned. Remediation is a separate task needing its own plan
+  and approval.
 - Google Calendar reports `reauthorisation_required`.
 - Groq `SSLV3_ALERT_BAD_RECORD_MAC` TLS errors are not investigated.
 
 ---
 
 ## Completed (newest first)
+
+### Stage 0 C4: backend reliability, memory recall and retrieval (`4b8d407`, 2026-10-16)
+
+- **Status:** committed locally, not pushed. Not a numbered stage: the fourth
+  Stage 0 consolidation checkpoint (subject `fix: optimize and bound memory
+  retrieval`, 29 files). It commits the 2026-10-13/14 provider, intent, memory
+  and retrieval work, plus two fixes found while validating it on 2026-10-16.
+  No migration (head still `0019`), dependency, authentication or approval
+  change.
+- **LLM provider reliability (2026-10-13).**
+  - *Gemini timeout, root cause:* provider-side capacity for the configured
+    model `gemini-3.8-flash`, not Mai. Evidence (one request each, policed
+    client, no data written): listing models with the key returned 200 in
+    0.34 s and included the id (key, DNS, TLS, host policy and model id all
+    fine); generation returned HTTP 503 in 2.6 s and 6.2 s, and one 200 only
+    after 63.7 s for a 1-token answer (just over the 60 s read timeout);
+    `gemini-3.5-flash` on the same key answered in 2.2 s. Mai classified
+    each case correctly. No Mai change fixes it; a model change is the
+    owner's decision. Live smoke after this work: 3 x HTTP 503, failed.
+  - *Contract fixes found by a shared contract matrix:* Anthropic now
+    retries its documented 529 `overloaded_error`, logs every failed attempt
+    in the shared shape, and reports a missing key as `llm_not_configured`
+    (was `llm_auth_error`, shown to the user as "the key was rejected"). An
+    empty model fails closed before any request (all providers) and makes
+    `Settings.is_llm_configured` false.
+  - *Smoke test:* `python -m app.llm.smoke` -- one fixed prompt through the
+    configured provider, sanitised log line, exit 0/1, no data written
+    (added to the two `LLMMessage` allow-lists as a reviewed site).
+  - *Tests:* `tests/test_provider_contract.py` (126 cases over groq, gemini,
+    anthropic_api; 9 deliberate defects each caught), 8 new health tests
+    (`tests/test_health.py`, 11 in all) and 4 smoke tests. OpenAI is not
+    implemented and fails closed.
+  - *Checklist:* `docs/provider_integration_checklist.md`.
+- **Health semantics changed (visible to operators).** `/health` never calls
+  the model. Providers record the outcome of their last *real* request (an
+  error code and a time, never text), and `/health` adds `llm.reachability`
+  (`unverified` / `reachable` / `failing`). `llm.healthy` is true only after
+  an observed success, so the top-level `status` is `degraded` after every
+  start until the first model request succeeds, and again after any failed
+  request (a 429 that exhausted its retries included) until the next success.
+  The HTTP status stays 200, and nothing in the repository acts on `status`
+  (no compose health check). The existing test
+  `test_health_reports_ok_when_dependencies_are_configured` was changed
+  deliberately to set an observed success first. A backend with no key also
+  reports `unverified`, so "not configured" and "not yet used" are told apart
+  only by `detail`. Documented in the provider checklist (step 7.3) and
+  `docs/setup.md`.
+- **Intent-classifier truncation handling (2026-10-13).** Found live with a
+  reasoning model (`gemini-3.5-flash`).
+  - *Defect:* `INTENT_CLASSIFICATION_MAX_TOKENS` was 512, and the output cap
+    includes a reasoning model's hidden reasoning tokens. About 110 visible
+    tokens of JSON plus roughly 250 to 650 hidden ones meant the reply stopped
+    at the limit mid-field (`finish_reason=length`, a body ending at
+    `"confidence": `) in 4 of 4 probes, and the cut-off text was reported as
+    an unparsable reply.
+  - *Change 1, the budget:* the default is now **2048** (`app/core/config.py`,
+    was 512). It is a ceiling, not a target: a model that stops early costs no
+    more. A test pins a floor of 1500 rather than the exact value.
+  - *Change 2, truncation is detected and named:* `app/intent/classifier.py`
+    checks `finish_reason` against `{"length", "max_tokens"}` (OpenAI-compatible
+    APIs and Anthropic respectively) and raises
+    `IntentClassificationError("truncated_response")` **before any parsing**,
+    so a truncated body is never interpreted, even one that happens to look
+    complete. Its warning log carries the provider, model, `finish_reason` and
+    `max_tokens` only, never message or reply text (tested).
+  - *Safe fallback:* `IntentService` catches that error
+    (`app/intent/service.py:89-92`) and returns `policy.fallback(
+    "truncated_response")`: intent `unknown`, confidence 0, ambiguity high,
+    every `requires_*` flag false, `classified` false, and the reason as an
+    application constant. A truncated classification therefore authorises
+    nothing and cannot select planning, research or execution; the chat turn
+    continues.
+  - *Tests:* eight in `backend/tests/test_intent_classification.py` (a reply
+    cut off by the limit is named as truncated; a truncated reply is never
+    parsed even when it looks complete; the same bad body without truncation
+    is an unparsable reply; a normal stop classifies as before; surrounding
+    whitespace is accepted; a provider error is a provider error, not a parse
+    error; truncation logs codes and never content; the budget floor).
+- **Memory recall reliability (2026-10-13).**
+  - *Failure:* asked "what is my ideal type of woman?" in a new
+    conversation, Mai said it had no information, after earlier saying it
+    had saved it. Traced on real data with ids, counts and masked text only:
+    the description had been given as a short *answer* to the assistant's
+    question; extraction saw the answer without the question and stored the
+    traits as a description **of the user**. Retrieval found that memory and
+    the prompt carried it; the model correctly found no preference in it.
+    The "saved" replies were model text, written before extraction ran.
+  - *Root cause:* `MemoryService.extract_and_store` never passed the
+    extractor's existing `recent_context`. It now passes the turns before
+    the analysed message (`MEMORY_EXTRACTION_CONTEXT_MESSAGES`, each capped
+    at `MEMORY_EXTRACTION_CONTEXT_CHARS=500`), and the extraction prompt says
+    an answer describes what the question was about. **Enabled at 4 by the
+    owner's approval (2026-10-14)**, bounded 0-10 messages x 50-2000 chars
+    (out-of-range values are refused at settings load). Stage 3D policy
+    changed deliberately: `tests/security/test_provider_disclosure.py` now
+    pins the bounded same-conversation window, the per-message cap, that no
+    other conversation's turns and no retrieved knowledge reach extraction;
+    a source message from another conversation yields no window.
+  - *Contributing, fixed:* keyword retrieval missed inflections ("woman"
+    vs "women") -- small deterministic variants in `query_normalizer`; the
+    bounded candidate pool was filled by importance, so a memory matching
+    every query word could be cut before ranking -- now ordered by matched
+    keywords first; a retrieval failure looked exactly like "no memories"
+    -- inner failures now reach the package as `retrieval:<source>` and the
+    prompt says memory was unavailable; "I've saved that" was never true
+    when said -- new `Channel.MEMORY` in the execution-truth validator
+    (never licensed on a reply; one retry, then a truthful line).
+  - *Tests:* `backend/tests/test_memory_recall.py` (40, one of them a strict
+    xfail documenting the lexical-retrieval limit) and 4 Stage 3D disclosure
+    tests; each of the six fixes and each of the four context bounds was
+    removed in turn and a test failed. Channel pin updated deliberately.
+- **Memory retrieval quality (2026-10-14).**
+  - *Measured (synthetic baseline, isolated SQLite):* "Which tea do I
+    prefer?" ranked the tea memory 9th of 9; three phrasings ranked it 4th-7th.
+    Causes: substring matching ("tea" in "team", "steady", "instead");
+    generic preference words weighted like the subject, so every "User
+    prefers ..." memory tied and importance decided; no equivalence between
+    prefer / favourite / liked; and importance (0.15) able to overturn a
+    partial-relevance gap.
+  - *Changes (`app/retrieval/query_normalizer.py`, `retrievers.py`,
+    `ranker.py`):* whole-word matching with bounded word forms; query terms
+    classed subject (1.0) / preference (0.35, one explicit family) / frame
+    (0.2); only subject words generate candidates when the question has one;
+    one concept group (partner ~ woman, wife, ...) that counts only beside a
+    preference word; the pool prefers preference-expressing memories for a
+    preference question; metadata is gated by relevance in the final score.
+    Budgets, pool size and weights unchanged.
+  - *Result:* all 7 benchmark phrasings rank the target first (synthetic, and
+    read-only against the real database with the new code); 7 mechanisms
+    each removed in turn and a test failed. `tests/test_retrieval_quality.py`
+    (29). The lexical-retrieval xfail stays: "explaining" vs "explanations".
+- **Found and fixed while validating C4 (2026-10-16), never committed broken.**
+  - *Unbounded keyword query:* building the keyword query recomputed every
+    keyword's word forms once per candidate form, quadratic in a message's
+    distinct words (1,000 distinct words: 10.5 s to build, on the request
+    path), and a 32,000-character message produced over 43,000 bound
+    parameters, above asyncpg's 32,767. Now each keyword's forms are computed
+    once (`keyword_form_groups`) and at most `MAX_QUERY_KEYWORDS = 24`
+    keywords, the first distinct ones in message order, reach a query
+    (`query_keywords`); the ranker scores against the same keywords. A
+    question within the cap builds the identical statement. Measured after the
+    fix: 308 parameters and about 11 ms to build and compile at every size up
+    to 32,000 characters; adversarial maximum-length messages 215 to 546
+    parameters (bound under 3,400).
+  - *Debug candidate pool unbounded:* `RetrievalService.candidates_for_debug`
+    returned the union of the three candidate sources (each capped at 50)
+    without the overall cap that chat applies; at `7ac52b4` a probe reached
+    100 candidates. One line applies the same bound in the same order, so
+    `/api/retrieval/debug` shows the pool chat ranks. The existing security
+    test `test_retrieval_stays_bounded_with_many_entities` is unchanged and
+    passes.
+  - *Tests:* `backend/tests/test_retrieval_query_bounds.py` (16). Five
+    deliberate defects (the per-pair scan restored, the cap removed, the
+    ranker uncapped, the cap keeping the last keywords, the debug cap
+    reverted) were each caught.
+- **Verification (automated, isolated worktree, final content):** full backend
+  suite 6662 passed, 19 skipped, 1 strict xfail, 0 failed. Skipped: 16
+  PostgreSQL race tests (`TEST_POSTGRES_ADMIN_URL` unset), 1 migration test
+  (`TEST_POSTGRES_URL` unset) and `test_secrets` (no `backend/.env` in the
+  worktree). After the files were written to the main working tree: query
+  bounds 16, knowledge attacks 29, retrieval/memory/context 246 + 1 strict
+  xfail, disclosure/injection/prompt/logging/integrity 108, all passed. The
+  committed diff equals the reviewed patch byte for byte.
+- **Live (recorded at the time in the session's command output, with the
+  owner's approval each time; not re-run on 2026-10-16):**
+  - 2026-10-13, about 20:00 to 21:05 UTC: memory `8cf36676` (the
+    mis-attributed record) archived; backend restarted; one re-extraction
+    stored the corrected memory `9360eae1`; synthetic cross-conversation
+    recall passed with the real Groq model (`15ed39bb`, "favourite tea is
+    jasmine tea").
+  - 2026-10-14 09:48 UTC: backend restarted (`docker compose restart
+    backend`; no migration ran). Two tea questions, each in a new
+    conversation, answered from `15ed39bb` via Groq `openai/gpt-oss-120b`;
+    the first attempt of one hit HTTP 429 on every retry, failed honestly,
+    saved nothing, and passed about a minute later. `/health` read
+    `degraded` / `unverified` until that first request.
+  - 2026-10-16 (read-only, direct): `GET /health` returned `status: ok`,
+    `reachability: reachable`, so a real model request had succeeded since
+    the last restart.
+- **Not live, not verified:**
+  - The 2026-10-16 query bound and debug-pool cap are **not running**
+    (inferred, not tested: the backend started before those files were
+    written, has not been restarted, and runs without reload), so it is
+    expected to still build the unbounded query.
+  - PostgreSQL-gated tests have not run; Anthropic has never been tested
+    against the real service; the ideal-partner phrasings were checked only
+    read-only, not through live chat.
+- **Data left in the real database:** the synthetic memory `15ed39bb` and the
+  test conversations (cleanup awaits the owner's decision); the archived
+  `8cf36676` is kept.
+- **Limitations:** in a very long message only the first 24 keywords drive
+  memory search; lexical retrieval still misses paraphrases (the strict
+  xfail); concurrent conversations share Groq's rate limit.
+
+### Stage 0 C3: frontend usability (`7ac52b4`, 2026-10-16)
+
+- **Status:** committed locally, not pushed; **not deployed** (the running
+  frontend container is the 2026-10-12 image, and on 2026-10-16 its served
+  bundle had none of C3's UI strings). Not a numbered stage;
+  frontend and `docs/ui_usability_audit.md` only (40 files). No backend,
+  route, migration or dependency change; the `test` script in
+  `package.json` gains a test-only loader.
+- **What:** a Tasks view, a Monitors view (with stop), an Inbox (monitoring
+  alerts plus reminders), a provider status display, integration status that
+  no longer shows green for a credential nobody verified, conversation
+  rename, safe Markdown for assistant replies, and worded API errors. Audit
+  and findings: `docs/ui_usability_audit.md`. The Monitors view reads C2's
+  `TaskRead` monitor fields (two list calls, no per-task detail request); a
+  backend without them lists those tasks as "not reported". An open monitor
+  journal is keyed by the task's version (id + `updated_at`), so it re-reads
+  only when the task changed. Wording: "Checks run"; an overdue schedule says
+  the page cannot tell whether the runner is working; `running` no longer
+  says work is happening now. The provider display reads `/health`
+  `reachability` when present (C4) and otherwise shows
+  "Configured, not verified" or "Not available".
+- **Files:** new `frontend/components/*` (TaskActivity, MonitorsView,
+  InboxView, ProviderStatus, CancelControl, Markdown, Tabs, TaskParts, ui),
+  new `frontend/lib/*` (tasks, monitors, inbox, cancel, integrationStatus,
+  providerStatus, markdown, resource, polling, errors, format, tabs,
+  useInboxBadge), seven new test files plus `tests/support/` (a test-only
+  `.tsx` loader), and edits to `app/page.tsx`, `app/globals.css`,
+  `components/{IntegrationsPanel,MessageList,Sidebar}.tsx`,
+  `lib/{api,types}.ts` and `package.json`.
+- **Verification (isolated worktree):** frontend tests 160/160 (21 before),
+  type check clean, production build compiles; the backend tests that scan
+  the frontend plus C2's tests, 127 passed; full backend suite 6427 passed,
+  19 skipped, 0 failed. Every type matches the committed backend's OpenAPI
+  schemas and enums. Earlier, during the work (2026-10-13), end to end in a
+  real browser against a throwaway SQLite backend with synthetic data: login
+  dialog, tabs by keyboard, task list, monitor stop (server state confirmed
+  `cancelled`), alert mark-read, reminder rendering, rename, Markdown with
+  hostile input (0 scripts, 0 images, 0 handlers), integration state,
+  backend-down states. A mutation check then caught 24 real guard removals.
+  `npm run lint` was **not run**: ESLint is not installed.
+- **Limitations:** inactive tabs point (`aria-controls`) at unmounted
+  panels; narrow (phone) layouts were not checked; the sidebar keeps its
+  fixed width.
+
+### Stage 0 C2: monitor metadata on task reads (`30a1342`, 2026-10-16)
+
+- **Status:** committed locally, not pushed. Not a numbered stage;
+  owner-approved, read-only and additive (3 files).
+- **What:** `monitor` (`kind`, `operator`, `interval_seconds` only; never
+  `path` or `expected`), `next_run_at` and `check_count` are on every
+  `TaskRead` (list, detail, activity, cancel), each read from the task row
+  (`tasks.monitor`, `tasks.next_run_at`, `tasks.check_count`) in one helper,
+  `monitoring_fields` (`app/tasks/schemas.py`); no new source, route,
+  migration, service or write. Optional, so existing clients are unaffected.
+  The read model is `TaskMonitorRead`: it had shared a class name with the
+  chat-turn `MonitorRead`, which made FastAPI publish the chat schema as
+  `app__schemas__monitor__MonitorRead`; a test pins the published names.
+  Semantics worth knowing: `next_run_at` is a claim-lease horizon while a
+  check is in flight and is **not cleared by cancellation**, so only `state`
+  says whether anything will run; `TaskRead` already exposed `owner_id`,
+  `budget` and `spent` and still does.
+- **Tests:** `backend/tests/test_task_monitor_fields.py` (15). During the
+  work, `test_next_run_at_has_exactly_two_writers` failed because it treats
+  any keyword argument named `next_run_at` as a write; the test is unchanged
+  and the reads moved into `monitoring_fields`.
+- **Verification (isolated worktree):** the new file failed to import before
+  the change and passed after it (15); 24 related files 1192 passed, 17
+  skipped; full backend suite 6427 passed, 19 skipped, 0 failed.
+- **Live:** not checked by a request (the task routes need the token). The
+  backend restarted on 2026-10-14 after these files last changed, so it is
+  inferred, not verified, to serve the fields.
+
+### Stage 0 C1: frontend token-storage regression fix (`fc80592`, 2026-10-15)
+
+- **Status:** committed locally, not pushed; **not deployed** (inferred: the
+  running frontend image predates it, and C1 changes no visible text). Frontend only, one hunk in
+  `frontend/lib/api.ts`.
+- **Defect:** commit `a265df5` added a second
+  `window.sessionStorage.getItem(TOKEN_KEY)` in `frontend/lib/api.ts`,
+  breaking two backend structure tests that pin one call site per storage
+  operation (found in the Stage 6Q audit; 6411 passed, 2 failed).
+  `forgetTokenIf` now reads through `storedToken()`; the tests are unchanged.
+- **Verification:** both tests pass; frontend 21/21, type check clean (at
+  the time of the fix); full backend suite in an isolated worktree, 6412
+  passed, 19 skipped, 0 failed.
 
 ### Fix: frontend authentication token flow (commit titled `Fix frontend authentication token flow`, 2026-10-13)
 

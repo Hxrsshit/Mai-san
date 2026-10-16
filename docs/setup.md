@@ -56,8 +56,12 @@ Migrations run automatically as the backend container starts.
 curl http://localhost:8000/health
 ```
 
-`{"status":"ok",...}` means the database and key are both fine. `"degraded"`
-means one of them is not — the response says which.
+`{"status":"ok",...}` means the database is reachable and the model provider's
+last real request succeeded. `"degraded"` means one of them is not — the
+response says which. Right after every start it reads `"degraded"`, with
+`"llm": {"healthy": false, "reachability": "unverified"}`, until the first
+message reaches the model: `/health` reports an observed success and never
+calls the model itself.
 
 ### Everyday commands
 
@@ -183,8 +187,13 @@ Compose requires a key for the active provider. Set it in `.env` at the
 repository root.
 
 **`/health` shows `"llm": {"healthy": false}`**
-`GROQ_API_KEY` is missing or empty. The backend still starts — this is intentional, so
-the container reports degraded rather than crash-looping.
+Read `llm.detail` and `llm.reachability`. `unverified` with "No API key
+configured" (or "No model configured") means the key (for Groq,
+`GROQ_API_KEY`) or the model is missing or empty; the
+backend still starts — this is intentional, so the container reports degraded
+rather than crash-looping. `unverified` with "not yet verified" is normal
+after a start: send a message. `failing` names the error code of the last
+failed request.
 
 **`llm_auth_error` when sending a message**
 The key is set but rejected by Groq. Check for a typo or an expired key.

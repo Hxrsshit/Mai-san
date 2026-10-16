@@ -6,6 +6,12 @@ changelog, every route and schema named below, and the frontend source. Every
 endpoint listed was verified in a route file, not inferred from a service
 class. Nothing here proposes new architecture.
 
+*Status, 2026-10-16:* this records what was found on 2026-10-13. The UI it
+led to is committed as Stage 0 C3 (`7ac52b4`) and is not yet deployed; the
+monitor fields of section 4.1 are committed as C2 (`30a1342`) and `/health`
+`reachability` as C4 (`4b8d407`). Statements those commits made untrue are
+marked *Updated 2026-10-16*.
+
 ## 1. Frontend as found
 
 | Area | Finding |
@@ -71,8 +77,9 @@ text, never as Markdown.
 ### Monitoring: what the API does and does not say
 
 The `tasks` row has `monitor` (condition and interval), `next_run_at` and
-`check_count`. **None of these are in `TaskRead` or `TaskDetail`.** What the
-API does expose, through the event journal in `GET /api/tasks/{id}`:
+`check_count`. **As found, none of these were in `TaskRead` or `TaskDetail`.**
+(*Updated 2026-10-16:* all three are now, read from the row; see section
+4.1.) What the API exposed, through the event journal in `GET /api/tasks/{id}`:
 
 | Wanted | Available from | Notes |
 | --- | --- | --- |
@@ -83,10 +90,12 @@ API does expose, through the event journal in `GET /api/tasks/{id}`:
 | Still active? | task `state` (non-terminal) | Backend-authoritative. |
 | **Next scheduled execution** | **not exposed** | `next_run_at` exists only on the row. Adding "last check + interval" would be a guess; the UI says "not reported by the API". |
 
-Consequence: listing monitors costs one detail request per candidate task.
-The UI bounds this (25 active + 10 recently ended) and caches a detail by
-`(id, updated_at)`, so a refresh re-fetches only what changed. A smallest
-backend change that removes the N+1 is proposed in section 4.
+Consequence, as found: listing monitors cost one detail request per candidate
+task, and a smallest backend change that removes the N+1 was proposed in
+section 4. (*Updated 2026-10-16:* with that change, the Monitors view makes two
+list calls, up to 50 active and 10 recently ended tasks, and no per-task detail
+request; the journal is read only for a monitor a person opens, keyed by
+`(id, updated_at)`. See `frontend/lib/monitors.ts`.)
 
 ### Notifications (two separate stores)
 
@@ -132,15 +141,18 @@ observed authentication failure, so "Connected and recently verified",
 (observed) cannot be derived from integration data. The UI derives what the
 evidence supports and shows a neutral "credentials present, not verified"
 instead of green. `POST …/disconnect` returns `{disconnected,
-revoked_remotely}`; the current UI ignores `revoked_remotely`.
+revoked_remotely}`; the UI as found ignored `revoked_remotely` (*Updated
+2026-10-16:* it now says whether the provider confirmed the withdrawal,
+`disconnectMessage` in `frontend/lib/integrationStatus.ts`).
 
 ### Provider (`GET /health`, public)
 
 `llm: {healthy, detail, reachability}`. `reachability` (`unverified |
 reachable | failing`) is observed from the provider's last real request, never
-probed. It exists in the **uncommitted** working-tree changes to
-`api/routes/health.py` and `schemas/common.py` (the provider-reliability
-work); the running backend already serves it. The **provider name and model
+probed. It was then **uncommitted** provider-reliability work in
+`api/routes/health.py` and `schemas/common.py` (*Updated 2026-10-16:*
+committed in Stage 0 C4, `4b8d407`; the running backend, restarted
+2026-10-14, serves it). The **provider name and model
 are not fields**: the name appears only inside the `detail` sentence, the
 model nowhere over HTTP (`RuntimeFacts` goes into the prompt only). Provider
 selection is operator configuration (`LLM_PROVIDER`); there is no runtime
@@ -150,15 +162,16 @@ mentioned.
 ### Conversations (`conversations.py`)
 
 `PATCH /api/conversations/{id}` with `{title}` already exists (rename,
-trimmed, 1 to 200 chars, blank rejected 422). The frontend has no wrapper or
-control for it. `ConversationRead` is `{id, title, created_at, updated_at}`.
+trimmed, 1 to 200 chars, blank rejected 422). As found, the frontend had no
+wrapper or control for it (*Updated 2026-10-16:* C3 adds both).
+`ConversationRead` is `{id, title, created_at, updated_at}`.
 
 ## 3. Feature to authority map
 
 | UI feature | Authoritative API | Ownership / concurrency / paging |
 | --- | --- | --- |
 | Task list and detail | `GET /api/tasks`, `GET /api/tasks/{id}` | Owner from the token; list max 50, no cursor; detail returns the full journal. |
-| Monitor view | same two, derived from the journal | Detail cache keyed `(id, updated_at)`. |
+| Monitor view | `GET /api/tasks` (each task's `monitor`, `next_run_at`, `check_count`; C2); `GET /api/tasks/{id}` for an opened monitor's journal | Two list calls, no per-task detail request; the journal is keyed `(id, updated_at)`. *Updated 2026-10-16:* as first written, derived from the journal with a detail request per task. |
 | Stop a monitor | `POST /api/tasks/{id}/cancel {}` | Backend compare-and-set (6P); UI shows "stopped" only from the response state, handles 404/409/network. |
 | Monitoring alerts inbox | `GET /api/task-notifications`, `…/{id}`, `POST …/{id}/read` | Keyset paging by `before`; mark-read idempotent; read state taken from a re-read, not assumed. |
 | Reminders | `GET /api/reminders`, `GET /api/reminders/notifications`, `POST …/notifications/{id}/read` | Scheduled and unseen only (gap above). |
@@ -170,7 +183,7 @@ control for it. `ConversationRead` is `{id, title, created_at, updated_at}`.
 ## 4. Gaps and the smallest proposed backend changes (not implemented, approval needed)
 
 1. **Monitors in the task API.** **Done (approved and implemented
-   2026-10-13, uncommitted).** Read-only, optional fields on `TaskRead`
+   2026-10-13; committed as Stage 0 C2, `30a1342`).** Read-only, optional fields on `TaskRead`
    (response schema only: no route, no write, no migration):
    `monitor: {kind, operator, interval_seconds} | null`, `next_run_at`,
    `check_count`, each read from the task row. The monitor UI no longer makes
@@ -187,9 +200,9 @@ control for it. `ConversationRead` is `{id, title, created_at, updated_at}`.
    backend with no key returns `unverified` and the detail "No API key
    configured"). The UI therefore shows the backend's sentence beside a
    neutral "Not yet verified" and does not claim the provider is configured.
-   Touches the files holding another agent's uncommitted provider work, so it
-   should land with or after that. The UI already reads `provider` and `model`
-   if present.
+   Still proposed, not built. (It would touch the provider-reliability files,
+   which were then uncommitted; they are now committed in Stage 0 C4,
+   `4b8d407`.) The UI already reads `provider` and `model` if present.
 3. **Reminder history.** Either a `state` filter on `GET /api/reminders`
    (read-only, additive) or `include_read=true` on the notifications list.
 4. **Integration verification evidence.** A recorded last successful use or

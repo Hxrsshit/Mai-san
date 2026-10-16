@@ -8,9 +8,10 @@ is deliberately unavailable. **OpenAI is not implemented**: `LLM_PROVIDER=openai
 fails closed (`tests/test_provider_contract.py::test_unimplemented_providers_fail_closed`).
 
 The rule this checklist exists for: **a configured key is not a working
-provider.** Gemini was "configured" on 2026-10-13 while every request timed
-out; only a live smoke request showed it. Each step below names the evidence
-that proves it, and the level that evidence belongs to.
+provider.** Gemini was "configured" on 2026-10-13 while its requests timed
+out or failed with HTTP 503 (`gemini-3.8-flash`, provider capacity; see the
+changelog, Stage 0 C4); only live requests showed it. Each step below names
+the evidence that proves it, and the level that evidence belongs to.
 
 | Level | What it proves | Where |
 | --- | --- | --- |
@@ -22,6 +23,20 @@ that proves it, and the level that evidence belongs to.
 
 None of these substitutes for another. A passing mock test says nothing about
 the real endpoint; a successful smoke test says nothing about error handling.
+
+### Verification status (2026-10-16)
+
+| Mode | Unit and contract tests | Live against the real service |
+| --- | --- | --- |
+| `groq` | Yes | **Yes.** Live in the Stage 1 and 2 acceptance reports; the active provider at the last backend restart (2026-10-14), with live chat and memory recall that day (changelog, Stage 0 C4). |
+| `gemini` | Yes | **Mixed.** A live smoke test passed when it was added (`b14b71a`, 2026-09-30). On 2026-10-13 `gemini-3.8-flash` timed out or returned 503 (3 x 503 on the smoke test), while `gemini-3.5-flash` on the same key answered. Not re-verified since. |
+| `anthropic_api` | Yes | **Never.** No live test is recorded; it has been exercised only through stub transports (no key was configured at Stage 4F-F, `docs/stage4ff_acceptance_report.md`). |
+| `claude_subscription` | Selection only | Deliberately unavailable. |
+| `openai` | Fails closed | Not implemented. |
+
+All automated provider tests run on SQLite with mocked sockets; the
+PostgreSQL-gated tests have not run. A row says what was observed on its
+date, not that the provider works now: confirm with step 7.
 
 ---
 
@@ -121,7 +136,8 @@ the real endpoint; a successful smoke test says nothing about error handling.
    without a token; ports still on `127.0.0.1`. Expect the top-level
    `status` to read `degraded`, with `llm.healthy` false, after every start
    until the first model request succeeds: health reports an observed
-   success, never a configured key (the endpoint still answers 200).
+   success, never a configured key, and makes no model call itself (the
+   endpoint still answers 200).
 4. Rollback: restore the `.env` backup and recreate the backend the same way.
    Selecting a provider changes no schema, permission, memory or task.
 
