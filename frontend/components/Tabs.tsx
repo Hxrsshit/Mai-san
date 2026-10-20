@@ -2,7 +2,10 @@
 
 /**
  * A tab list: one tab in the Tab order, arrow keys move between tabs, and
- * every tab names the panel it controls.
+ * only the selected tab names its panel (`aria-controls="panelId(selected)"`).
+ * Tabs renders no panels: the caller renders the selected tab's panel with that
+ * id. Inactive tabs omit the attribute, so a caller may render only the
+ * selected panel without leaving a reference to a missing element.
  */
 
 import { type KeyboardEvent, useRef } from "react";
@@ -59,7 +62,7 @@ export function Tabs({
             role="tab"
             id={tabId(item.id)}
             aria-selected={active}
-            aria-controls={panelId(item.id)}
+            aria-controls={active ? panelId(selected) : undefined}
             tabIndex={active ? 0 : -1}
             onClick={() => onSelect(item.id)}
             onKeyDown={(event) => onKeyDown(event, index)}

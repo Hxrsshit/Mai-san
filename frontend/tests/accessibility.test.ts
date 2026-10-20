@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { createElement } from "react";
+import { createElement, Fragment } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { Sidebar } from "../components/Sidebar.tsx";
@@ -35,8 +35,40 @@ test("tabs follow the ARIA pattern: one tab stop, selected state, named panels",
   assert.equal(tabs.filter((t) => t.includes('tabindex="0"')).length, 1, "exactly one tab is in the Tab order");
   assert.ok(tabs.find((t) => t.includes('id="tab-tasks"'))?.includes('aria-selected="true"'));
   assert.ok(tabs.find((t) => t.includes('id="tab-chat"'))?.includes('aria-selected="false"'));
-  assert.ok(tabs.every((t) => t.includes(`aria-controls="${panelId(t.match(/id="tab-([a-z]+)"/)![1])}"`)));
+  // Only the selected tab names its panel; inactive tabs carry no aria-controls at all.
+  // The expected ID is a literal, and panelId (used for the panel's own id) is pinned to it separately.
+  const selectedTab = tabs.find((t) => t.includes('id="tab-tasks"'));
+  assert.ok(selectedTab?.includes('aria-controls="panel-tasks"'), `selected tab-tasks must have aria-controls="panel-tasks"; got ${selectedTab}`);
+  assert.equal(panelId("tasks"), "panel-tasks");
+  const inactiveTabs = ["chat", "inbox"].map((id) => ({ id, tag: tabs.find((t) => t.includes(`id="tab-${id}"`)) }));
+  assert.equal(inactiveTabs.filter(({ tag }) => tag !== undefined).length, 2, "both inactive tabs (tab-chat, tab-inbox) are rendered");
+  for (const { id, tag } of inactiveTabs) {
+    assert.doesNotMatch(tag!, /aria-controls=/, `inactive tab-${id} must have no aria-controls attribute; got ${tag}`);
+  }
   assert.equal(tabId("x"), "tab-x");
+});
+
+test("the selected tab's aria-controls resolves to the panel the caller renders", () => {
+  // Tabs renders no panels. Its contract is that the caller renders the selected
+  // tab's panel with id panelId(selected), as app/page.tsx does; with that panel
+  // beside the list, the reference must name exactly one element, the panel.
+  for (const { id: selected } of items) {
+    const html = renderToStaticMarkup(
+      createElement(
+        Fragment,
+        null,
+        createElement(Tabs, { items, selected, onSelect: noop, label: "Workspace" }),
+        createElement("div", { role: "tabpanel", id: panelId(selected), "aria-labelledby": tabId(selected) }),
+      ),
+    );
+    const selectedTabs = (html.match(/<button[^>]*role="tab"[^>]*>/g) ?? []).filter((t) => t.includes('aria-selected="true"'));
+    assert.equal(selectedTabs.length, 1, `exactly one tab is selected when selected=${selected}`);
+    const controls = selectedTabs[0].match(/aria-controls="([^"]+)"/)?.[1];
+    assert.ok(controls, `selected tab-${selected} must name its panel; got ${selectedTabs[0]}`);
+    const targets = (html.match(/<[a-z][a-z0-9-]*\s[^>]*>/g) ?? []).filter((t) => t.includes(` id="${controls}"`));
+    assert.equal(targets.length, 1, `aria-controls="${controls}" must match exactly one rendered element`);
+    assert.match(targets[0], /role="tabpanel"/, `aria-controls="${controls}" must name the panel, not ${targets[0]}`);
+  }
 });
 
 test("an unread count is spoken, not just shown", () => {

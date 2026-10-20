@@ -21,17 +21,17 @@ before substantial work and updates it after completing work (see
 
 ---
 
-## Current state (as of 2026-10-16)
+## Current state (as of 2026-10-20)
 
 | | |
 | --- | --- |
 | Latest completed stage | **Stage 6P: harden monitoring concurrency and truthfulness**: the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; find it with `git log -1 -- docs/STAGE_6O_AUDIT.md`). Stage 6O was an inspection-only audit (no commit of its own; its report is that file) |
-| Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only); then the Stage 0 consolidation checkpoints (not stages), each committing work that had been uncommitted: C1 `fc80592`, C2 `30a1342`, C3 `7ac52b4`, C4 `4b8d407` |
+| Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only); then the Stage 0 consolidation checkpoints (not stages), each committing work that had been uncommitted: C1 `fc80592`, C2 `30a1342`, C3 `7ac52b4`, C4 `4b8d407`, C5 `d4f8339` (documentation only); then the multi-agent workflow configuration, `5c7801c` (tooling and docs, no application code); then the tab accessibility fix, the commit titled `fix: link only the selected tab to its panel` (frontend only) |
 | Previous stages | 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
-| Branch | `main`. Nothing is pushed: on 2026-10-16 local `main` was 12 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch). |
+| Branch | `main`. Nothing is pushed: on 2026-10-20, before the tab accessibility fix, local `main` (`5c7801c`) was 14 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch). |
 | Latest migration | `0019_notification_deliveries.py` (head, 6M.1; 6M.2, 6M.3, 6M.4, 6N and 6P added none). The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
-| Next stage | **None started.** Stage 0 consolidation: C1 to C4 are committed; C5 (this file and the documentation corrections) is awaiting review. Do not begin another stage without an explicit request. |
-| Uncommitted work (2026-10-16) | Only the C5 documentation update and the untracked `MAi branding .png`. The six 2026-10-13 workstreams and the 2026-10-14 memory work are committed as Stage 0 C1 to C4 (see Completed). None of it was verified on PostgreSQL (its gated tests are unrun). **What is running (checked 2026-10-16, read-only):** the backend container last started 2026-10-14 09:48 UTC (Docker `StartedAt`), and a public `GET /health` returned `llm.reachability`, so it runs C4's health code. That it lacks C4's 2026-10-16 query bound and debug-pool cap is inferred, not tested: those files changed after it started, and uvicorn runs without reload. The frontend container is the 2026-10-12 image; its served bundle contained the token dialog but none of C3's UI strings, so C3 is not deployed. That C1 is not deployed is inferred from the image date (C1 changes no visible text). The migration head is unchanged (`0019`); the real `mai` database gained owner-approved test and correction records (see Stage 0 C4). |
+| Next stage | **None started.** Stage 0 consolidation is committed (C1 to C5; C5 is `d4f8339`). A plan for an Organisation & User Identity stage has been prepared for the owner and is **not approved and not started**; nothing of it is in the repository. Do not begin another stage without an explicit request. |
+| Uncommitted work (2026-10-20) | In the main checkout, only the untracked `MAi branding .png`. Outside it, the multi-agent pilot left three git worktrees and two branches under the gitignored `.claude/worktrees/` (see Uncommitted / in progress); they hold no work beyond the tab accessibility fix. **Below, as recorded on 2026-10-16 and not re-checked since:** the six 2026-10-13 workstreams and the 2026-10-14 memory work are committed as Stage 0 C1 to C4 (see Completed). None of it was verified on PostgreSQL (its gated tests are unrun). **What is running (checked 2026-10-16, read-only):** the backend container last started 2026-10-14 09:48 UTC (Docker `StartedAt`), and a public `GET /health` returned `llm.reachability`, so it runs C4's health code. That it lacks C4's 2026-10-16 query bound and debug-pool cap is inferred, not tested: those files changed after it started, and uvicorn runs without reload. The frontend container is the 2026-10-12 image; its served bundle contained the token dialog but none of C3's UI strings, so C3 is not deployed. That C1 is not deployed is inferred from the image date (C1 changes no visible text). The migration head is unchanged (`0019`); the real `mai` database gained owner-approved test and correction records (see Stage 0 C4). |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -39,6 +39,17 @@ These are in the working tree and are **not** part of any completed stage. Do
 not commit them as part of other work, and do not describe them as done.
 
 - **`MAi branding .png`** at the repository root: untracked.
+- **Multi-agent pilot leftovers (2026-10-19/20), under the gitignored
+  `.claude/worktrees/`.** All three worktrees are at `5c7801c`:
+  `pilot-integration` (detached HEAD), `agent-af25806cd3bbce2df` (branch
+  `worktree-agent-af25806cd3bbce2df`) and `agent-a0374c4b9fd2da035` (branch
+  `worktree-agent-a0374c4b9fd2da035`). The pilot integration worktree's two
+  modified files are byte-identical to the tab accessibility fix. Each agent
+  worktree holds an earlier draft of one of those files, which that fix
+  supersedes. `.claude/worktrees/frontend/` is not a worktree. It is build
+  output: with `output: "standalone"`, `next build` in a worktree follows its
+  `node_modules` symlink and writes traced files there. Cleanup awaits the
+  owner's approval.
 - *(Resolved, 2026-10-16)* The workstreams listed here on 2026-10-13 and
   2026-10-14 (frontend token-storage fix, LLM provider reliability,
   intent-classifier truncation, the UI usability phase, monitor metadata on
@@ -164,6 +175,22 @@ not commit them as part of other work, and do not describe them as done.
    (found during 6N; pre-existing). It unpacks five values from
    `send_message`, which has returned nine since 5B (ten since 6N), so it
    would raise `ValueError`. Nothing calls it. Not fixed in 6N.
+10. **Tooling: Claude Code permission rules miss other forms of the same git
+    command** (found in the 2026-10-19 multi-agent pilot; not an
+    application defect). The pilot session reported that a
+    `git -C <path> worktree add` ran without the prompt that
+    `Bash(git worktree *)` in `.claude/settings.json` is meant to force. That
+    report was not reproduced (dangerous forms were not tested on purpose).
+    The cause was confirmed from the Claude Code permission documentation.
+    Rules match the command text, and everything before the first
+    `*` must appear as written, so a global option before the subcommand
+    (`-C`, `-c`, `--git-dir`) escapes every git rule in the file. The same
+    applies to the `git -C <worktree> add` that `CLAUDE.md`'s integration
+    step 2 tells the lead to run. `5c7801c`'s commit message already says
+    these rules are guard-rails, not a security boundary. **Not fixed:**
+    the owner has a proposal (extra `ask` rules of the form
+    `Bash(git * <subcommand> *)`), not yet approved. It would still miss
+    `/usr/bin/git`, `env git`, `sh -c`, quoted subcommands and git aliases.
 
 ### Deferred / not built
 
@@ -272,6 +299,114 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Fix: link only the selected tab to its panel (commit titled `fix: link only the selected tab to its panel`, 2026-10-20)
+
+- **Status:** committed locally, not pushed, **not deployed**. Not a stage.
+  Frontend only: `frontend/components/Tabs.tsx` and
+  `frontend/tests/accessibility.test.ts`. No backend, route, migration or
+  dependency change. It resolves the C3 limitation "inactive tabs point
+  (`aria-controls`) at unmounted panels". It was also the first task run
+  through the `5c7801c` multi-agent workflow.
+- **What:** only the selected tab carries `aria-controls`
+  (`panelId(selected)`); inactive tabs omit it. `app/page.tsx` renders only
+  the selected tab's panel, so an inactive tab's reference pointed at a
+  missing element. The header comment states the component's contract:
+  `Tabs` renders no panels, the caller renders the selected panel with that
+  id, and the component cannot enforce what the caller renders.
+- **Tests:** the existing tab test now checks that the selected tab names
+  `panel-tasks`, that `panelId` is pinned to that format, and that both
+  inactive tabs are present and have no `aria-controls`. A new test, run
+  for every selection, renders the tab list beside a caller-style panel. It
+  asserts that the selected tab's reference matches exactly one rendered
+  element and that the element is the `tabpanel`. **Limitation:** the test
+  builds its own panel, so it does not prove that `app/page.tsx` meets the
+  contract. That is true from reading the page, not from a test.
+- **Pilot history (reported by the pilot session on 2026-10-19, not
+  re-run):**
+  - Two implementers worked in separate worktrees, one file each. The lead
+    integrated their work through the `CLAUDE.md` patch procedure.
+  - On the first version: frontend 160 passed; type check and build passed;
+    the four frontend-scanning backend files, 112 passed; full backend
+    suite 6662 passed, 19 skipped, 1 xfailed.
+  - The read-only security reviewer reported no findings.
+  - About 9.5 minutes elapsed.
+  - The PostgreSQL-gated race and migration tests were skipped: their test
+    database variables were not set.
+- **Refinements and verification (2026-10-20, on the final code):**
+  - The comment was reworded and the panel-resolution test added, in the
+    pilot integration worktree.
+  - Frontend tests, 161 passed, 0 failed, both in that worktree and after
+    applying the patch to the main checkout. The patch's SHA-256 is
+    `958306ada2206143a2bd7a586ec8d0f3525726feeeb6f6de035ef674a1d0a783`.
+  - `tsc --noEmit` clean in both places. `next build` passed in the
+    worktree on byte-identical files; it was not run in the main checkout.
+  - The four frontend-scanning backend files, 112 passed (main checkout).
+  - Full backend suite 6662 passed, 19 skipped, 1 xfailed (pilot worktree,
+    which has no `.env`, so `test_secrets.py` skipped).
+  - Mutation check, on a scratch copy of `Tabs.tsx`, restored and
+    confirmed byte-identical afterwards. Each of five mutants fails at
+    least one tab test: a hard-coded panel id, the tab's own id, a dangling
+    id, `aria-controls` on every tab, and a second element carrying the
+    panel's id. The first and last are caught only by the new test, and the
+    every-tab mutant only by the existing one.
+  - The read-only security reviewer did two rounds: no security findings,
+    no boundary crossings. Its two low findings in the test's tag matching
+    (an unescaped dynamic `RegExp`, and tag names with digits not matched)
+    were fixed. The reviewer read the first fix. The second, a
+    one-character pattern change, was checked by the test run and the
+    mutation check above, not by another review.
+  - Not run: `npm run lint` (ESLint is not installed), a live browser or
+    screen-reader check, and the PostgreSQL-gated tests (not affected).
+
+### Multi-agent workflow configuration (`5c7801c`, 2026-10-19)
+
+- **Status:** committed locally, not pushed. Not a stage. Tooling and
+  documentation only (subject `feat: add multi-agent workflow
+  configuration`, 6 files). No application code, route, migration or
+  dependency change.
+- **What:**
+  - `.claude/agents/` adds three agents: `implementer` and `verifier`, each
+    working in its own worktree, and a read-only `security-reviewer`.
+  - `.claude/settings.json` adds deny and ask permission rules for git,
+    `gh`, Alembic, Docker, package installs and `.env` reads. It also bases
+    agent worktrees on local `HEAD`.
+  - `CLAUDE.md` adds the multi-agent procedure: task cards, one owner per
+    file, shared files kept by the lead, and the patch integration checks.
+  - `.gitignore` ignores agent worktrees, local settings, a `node_modules`
+    symlink and `*.tsbuildinfo`.
+- **Verification:** the commit message says agent execution and the
+  integration procedure were unverified when it was committed. The
+  2026-10-19 pilot then exercised them on one frontend task. **Reported by
+  the pilot session, not independently re-checked:** worktree isolation,
+  file ownership checks, patch building and integration worked as intended.
+  **Checked on 2026-10-20:** the pilot's worktrees were based on `5c7801c`,
+  and the final integration patch contained only the two assigned files.
+  The pilot also surfaced Known defect 10 (permission rules miss
+  `git -C ...` forms). The rules are guard-rails, not a security boundary.
+
+### Stage 0 C5: documentation reconciliation (`d4f8339`, 2026-10-16)
+
+- **Status:** committed locally, not pushed. Not a numbered stage: the last
+  Stage 0 consolidation checkpoint. Documentation only (subject `Stage 0
+  C5: reconcile documentation with C1-C4`): this file,
+  `docs/provider_integration_checklist.md`, `docs/setup.md` and
+  `docs/ui_usability_audit.md`.
+- **What:**
+  - This file gains the C1 to C4 entries, with the uncommitted-work list
+    resolved into them.
+  - The provider checklist gains a per-provider verification-status table.
+    It records what was observed on each date, not that a provider works
+    now.
+  - `setup.md` describes `/health` as reporting the provider's last
+    observed request (`reachability`), not a configured key.
+  - The usability audit marks statements that C2 to C4 made untrue as
+    *Updated 2026-10-16*.
+- **Correction (2026-10-20):** until now, this file's "Current state" said
+  C5 was "awaiting review" and uncommitted. It was committed as `d4f8339`
+  on 2026-10-16. Whether a separate review took place before that commit is
+  not recorded.
+- **Verification:** documentation only; no tests are recorded for it.
 
 ### Stage 0 C4: backend reliability, memory recall and retrieval (`4b8d407`, 2026-10-16)
 
@@ -506,9 +641,10 @@ not commit them as part of other work, and do not describe them as done.
   hostile input (0 scripts, 0 images, 0 handlers), integration state,
   backend-down states. A mutation check then caught 24 real guard removals.
   `npm run lint` was **not run**: ESLint is not installed.
-- **Limitations:** inactive tabs point (`aria-controls`) at unmounted
-  panels; narrow (phone) layouts were not checked; the sidebar keeps its
-  fixed width.
+- **Limitations:** ~~inactive tabs point (`aria-controls`) at unmounted
+  panels~~ (resolved by the commit titled `fix: link only the selected tab
+  to its panel`; see that entry); narrow (phone) layouts were not checked;
+  the sidebar keeps its fixed width.
 
 ### Stage 0 C2: monitor metadata on task reads (`30a1342`, 2026-10-16)
 
