@@ -78,6 +78,16 @@ strictly scoped stages (see `docs/CHANGELOG.md`).
   `app.tasks.models.LOCAL_OWNER_ID` re-exports it). Owner columns exist, and
   every owner-scoped query filters on them. HTTP callers authenticate with one
   token; see §3 "API authentication".
+- **Organisation identity (Stage 7A):** `app/identity/` holds organisations,
+  users (people), organisation members (`admin` | `member`; `invited` |
+  `active` | `revoked`), linked Telegram identities and single-use link
+  codes (migration `0020`). One default organisation exists; its Admin
+  member **is** `CONFIGURED_OWNER_ID`, so every existing owner-scoped row
+  already belongs to that Admin. The shape is multi-tenant-ready, but **no
+  existing table is organisation-aware and tenant isolation is not
+  claimed**: conversations, messages, memories, entities, knowledge,
+  reminders and executions remain one global store. Employees have no chat
+  turns, no memory reads and no memory writes.
 
 ### Package map (backend/app)
 
@@ -108,7 +118,15 @@ strictly scoped stages (see `docs/CHANGELOG.md`).
   channel). `deps.get_owner_id` is the one request seam: unconfigured gives
   503 `authentication_not_configured`; a missing or malformed header gives
   401 `authentication_required` (with `WWW-Authenticate: Bearer`); a wrong
-  token gives 401 `invalid_credentials`. There is no bypass. The owner is
+  token gives 401 `invalid_credentials`. Since Stage 7A the token's owner is
+  a member, and the seam then checks in the database, on every request and
+  without a cache, that the member is `active` in an `active` organisation:
+  otherwise 403 `membership_inactive`; a failed check is 503
+  `membership_unavailable` (never access, never "inactive"). The seam ends
+  its read transaction at once and refuses (500 `seam_invariant`) if
+  anything already ran on the request session. `deps.get_principal`
+  re-reads membership itself and `deps.require_admin` adds 403
+  `admin_required`; both depend on the seam. There is no bypass. The owner is
   the token's, never a request value. Every router is included with
   `dependencies=[Depends(get_owner_id)]` except the public allow-list:
   `/health`, the two OAuth callbacks (protected by single-use `state`), the
@@ -116,7 +134,8 @@ strictly scoped stages (see `docs/CHANGELOG.md`).
   nothing there), `/docs` and `/openapi.json`. A route-introspection test
   fails for any other route without the seam: **a new data route must be
   protected.** Background work never authenticates and never imports
-  `app.api`; it uses `CONFIGURED_OWNER_ID` directly. The browser asks for
+  `app.api`; it uses `CONFIGURED_OWNER_ID` directly and, in Stage 7A, does
+  not check membership (a stated limitation). The browser asks for
   the token and keeps it only in `sessionStorage`; never put a token in
   `NEXT_PUBLIC_*`, a build, a cookie, `localStorage` or a URL.
 - **Secrets.** Never read, print, copy or commit `.env` or any credential
@@ -313,6 +332,21 @@ a change pass. If a test blocks a change, the test is usually right.
   - treat inbound text as instructions to the application.
   It must authenticate its caller (for example with a webhook secret and an
   allowed sender) and must be inert when unconfigured.
+- **Telegram (Stage 7A).** `app/telegram/updates.py` classifies an update by
+  an allow-list. Group, supergroup and channel updates are acknowledged and
+  ignored -- including the Admin's -- with no turn and no write. In a
+  private chat, any message whose first token (after leading whitespace and
+  format characters) begins with `/link` is a link command and is **never**
+  a chat turn; only an exact `/link <code>` or `/link@bot <code>` can
+  redeem, through `MembershipService`, and the webhook commits only a
+  successful link. Replies are fixed application text, and failure replies
+  are capped per process. The
+  only path to a chat turn is a private message from
+  `TELEGRAM_ALLOWED_CHAT_ID` (positive) whose sender has no attached
+  identity, while the Admin member is active. Admin Telegram accounts are
+  never linked by code. Database errors there are ignored (never a turn),
+  rolled back quietly outside any `except` block, and logged by category
+  only.
 
 ### 4.6 Database and migrations
 - The schema is created only by Alembic migrations
@@ -348,6 +382,27 @@ a change pass. If a test blocks a change, the test is usually right.
   active task needs it. There is no HTTP surface for scheduling background
   work, configuring monitoring, creating standing grants, or running the
   runner. Adding one is an architectural change (§6).
+- **Organisation membership (Stage 7A, approved by the owner):** under
+  `/api/organisation`, behind the seam and `require_admin`: list the
+  organisation and its members (GET); invite a member, issue a link code,
+  and revoke a member (three POSTs). The organisation is always the Admin's
+  own. Responses never carry a user id, a Telegram id, a code hash or a
+  token; code-bearing responses are `Cache-Control: no-store`, and those two
+  routes commit before answering, so a code is never shown that was not
+  saved (a failed commit is 503 with no code). There is no
+  route to create an Admin, delete anything, or unlink an identity.
+  Revocation (`app/organisation/revocation.py`, built only in `deps.py`) is
+  one transaction: the member is revoked, open codes invalidated, the
+  identity detached, every unfinished task cancelled through
+  `MonitorRequestService.cancel` with reason `member_revoked`, every live
+  grant revoked, and postconditions checked -- any failure rolls all of it
+  back. `MonitorRequestService.cancel` takes a closed `CancelReason`; the
+  cancel route's default (`cancelled_by_owner`) is unchanged. Revocation
+  cannot reach what has no owner column (reminders, executions, execution
+  approvals); a member with more than 500 unfinished tasks cannot be revoked
+  (it fails closed); a request already past the seam when revocation commits
+  may still complete; and the stage that enables member turns must re-check
+  membership before persisting a turn.
 - **Notification delivery (Stage 6L, approved by the owner):**
   `POST /api/task-notifications/{notification_id}/deliveries` with the body
   `{"adapter": "<name>"}` is the one route that triggers delivery. It hands
@@ -450,6 +505,14 @@ Run the suite from `backend/` with the venv: `.venv/bin/python -m pytest`.
   its own `mai_pgtest_*` database; the real `mai` database is refused. Run
   them for any change to task state, confirmation, grants or the runtime --
   SQLite has one writer and cannot show these races.
+- **Identity PostgreSQL tests (Stage 7A):** `tests/test_identity_races_pg.py`
+  (same `TEST_POSTGRES_ADMIN_URL` contract: link-code redemption, revocation
+  and their lock order) and `tests/test_identity_migration_pg.py`
+  (`TEST_POSTGRES_URL`: migration `0020` upgrade, downgrade and re-upgrade,
+  constraints and the partial unique indexes). The migration test drops and
+  recreates the 0020 tables in the database it is given, so that database
+  must be disposable (it refuses `mai`). Run both for any change to identity,
+  membership, link codes or revocation.
 
 For a stage or other substantial change:
 

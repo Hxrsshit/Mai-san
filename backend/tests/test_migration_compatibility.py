@@ -350,3 +350,170 @@ def postgres_url() -> str:
 def test_the_chain_runs_on_postgresql() -> None:
     """The test that would have caught this, on the dialect that showed it."""
     alembic(postgres_url(), "head")
+
+
+# --- Stage 7A: the organisation-identity migration --------------------------
+# The suite's databases are built by `create_all` plus a test-only seed
+# (`tests/conftest.py`). These tests keep that honest: the migration's seed is
+# the same, it is readable through the application's own query, and the
+# migrated schema -- including the two partial unique indexes and their
+# predicates -- is the schema the models declare.
+
+IDENTITY_TABLES = (
+    "organisations", "users", "organisation_members", "user_identities", "identity_link_codes",
+)
+
+
+def alembic_downgrade(url: str, target: str) -> None:
+    """`alembic downgrade`, in a subprocess, like `alembic` above."""
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", target],
+        cwd=BACKEND,
+        env={"PATH": "/usr/bin:/bin", "DATABASE_URL": url, "GROQ_API_KEY": "test-key",
+             "LOG_LEVEL": "WARNING"},
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"alembic downgrade {target} failed:\n{result.stdout}\n{result.stderr}")
+
+
+def _migration_0020():
+    path = MIGRATIONS / "0020_organisation_identity.py"
+    spec = importlib.util.spec_from_file_location("migration_0020", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_0020_seed_literals_equal_the_application_constants() -> None:
+    from app.core.owner import CONFIGURED_OWNER_ID
+    from app.identity import constants
+
+    migration = _migration_0020()
+    assert migration.DEFAULT_ORGANISATION_ID == constants.DEFAULT_ORGANISATION_ID
+    assert migration.DEFAULT_ORGANISATION_NAME == constants.DEFAULT_ORGANISATION_NAME
+    assert migration.LEGACY_ADMIN_USER_ID == constants.LEGACY_ADMIN_USER_ID
+    assert migration.LEGACY_ADMIN_DISPLAY_NAME == constants.LEGACY_ADMIN_DISPLAY_NAME
+    assert migration.LEGACY_ADMIN_MEMBER_ID == constants.LEGACY_ADMIN_MEMBER_ID == CONFIGURED_OWNER_ID
+
+
+def _seed_rows(database) -> dict:
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        found = {
+            table: connection.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one()
+            for table in ("organisations", "users", "organisation_members")
+        }
+    engine.dispose()
+    return found
+
+
+async def test_the_migrated_seed_is_the_active_admin_read_by_the_application(tmp_path) -> None:
+    """Through the application's own query and the real SQLite `Uuid` storage
+    path: a seed written in another form would not match, and every request
+    on a migrated database would be refused."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.owner import CONFIGURED_OWNER_ID
+    from app.identity.constants import DEFAULT_ORGANISATION_ID, Role
+    from app.identity.principal import load_active_principal
+
+    database = tmp_path / "seed.db"
+    alembic(f"sqlite+aiosqlite:///{database}", "head")
+    assert _seed_rows(database) == {"organisations": 1, "users": 1, "organisation_members": 1}
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    try:
+        async with engine.connect() as connection:
+            from sqlalchemy.ext.asyncio import AsyncSession
+
+            async with AsyncSession(bind=connection) as session:
+                principal = await load_active_principal(session, CONFIGURED_OWNER_ID)
+    finally:
+        await engine.dispose()
+    assert principal is not None
+    assert principal.member_id == CONFIGURED_OWNER_ID
+    assert principal.organisation_id == DEFAULT_ORGANISATION_ID
+    assert principal.role is Role.ADMIN
+
+
+def test_0020_downgrades_and_upgrades_again_with_one_seed(tmp_path) -> None:
+    database = tmp_path / "cycle.db"
+    url = f"sqlite+aiosqlite:///{database}"
+    alembic(url, "head")
+    alembic_downgrade(url, "0019")
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        remaining = {
+            row[0] for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'table'")
+            )
+        }
+    engine.dispose()
+    assert not remaining & set(IDENTITY_TABLES)
+    alembic(url, "head")
+    assert _seed_rows(database) == {"organisations": 1, "users": 1, "organisation_members": 1}
+
+
+def _schema(database) -> dict:
+    """Every schema object of the identity tables, as SQLite records it."""
+    from sqlalchemy import inspect
+
+    engine = create_engine(f"sqlite:///{database}")
+    found = {}
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        for table in IDENTITY_TABLES:
+            found[table] = {
+                "columns": sorted(
+                    (c["name"], str(c["type"]), c["nullable"]) for c in inspector.get_columns(table)
+                ),
+                "pk": inspector.get_pk_constraint(table)["name"],
+                "checks": sorted(
+                    (c["name"], " ".join(c["sqltext"].split()))
+                    for c in inspector.get_check_constraints(table)
+                ),
+                "uniques": sorted(
+                    (u["name"], tuple(u["column_names"])) for u in inspector.get_unique_constraints(table)
+                ),
+                "fks": sorted(
+                    (f["name"], tuple(f["constrained_columns"]), f["referred_table"],
+                     f.get("options", {}).get("ondelete"))
+                    for f in inspector.get_foreign_keys(table)
+                ),
+            }
+        # Indexes as SQLite stores their DDL: this is where a partial index's
+        # WHERE predicate lives, and what an inspector of constraints misses.
+        rows = connection.execute(text(
+            "SELECT tbl_name, name, sql FROM sqlite_master "
+            "WHERE type = 'index' AND sql IS NOT NULL"
+        )).all()
+    engine.dispose()
+    for table, name, sql in rows:
+        if table in found:
+            found[table].setdefault("indexes", []).append((name, " ".join(sql.split())))
+    for table in found:
+        found[table]["indexes"] = sorted(found[table].get("indexes", []))
+    return found
+
+
+def test_the_migrated_identity_schema_is_the_models_schema(tmp_path) -> None:
+    from app.database.metadata import Base
+
+    migrated = tmp_path / "migrated.db"
+    alembic(f"sqlite+aiosqlite:///{migrated}", "head")
+
+    declared = tmp_path / "declared.db"
+    engine = create_engine(f"sqlite:///{declared}")
+    Base.metadata.create_all(engine, tables=[Base.metadata.tables[t] for t in IDENTITY_TABLES])
+    engine.dispose()
+
+    expected, actual = _schema(declared), _schema(migrated)
+    assert actual == expected
+    # The comparison is not vacuous: both partial unique indexes are there,
+    # with their predicate.
+    indexes = dict(actual["user_identities"]["indexes"])
+    for name in ("uq_user_identities_provider_subject_attached",
+                 "uq_user_identities_user_id_provider_attached"):
+        assert indexes[name].startswith("CREATE UNIQUE INDEX")
+        assert indexes[name].endswith("WHERE detached_at IS NULL")

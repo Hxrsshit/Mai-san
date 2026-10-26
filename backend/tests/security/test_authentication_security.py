@@ -122,6 +122,9 @@ def test_the_seam_fails_closed_in_the_specified_order() -> None:
     malformed = fn.index("raise AuthenticationRequired()")
     wrong = fn.index("raise InvalidCredentials()")
     assert configured < fn.index("raise AuthenticationNotConfigured()") < malformed < wrong
+    # Stage 7A: then the member must be active; only then is an owner returned.
+    inactive = fn.index("raise MembershipInactive()")
+    assert wrong < fn.index("await _active_principal(session, owner_id)") < inactive < fn.index("return owner_id")
     assert "if scheme.lower() != 'bearer' or not token or ' ' in token:" in fn
 
 
@@ -223,7 +226,9 @@ def test_the_background_reaches_no_request_authentication() -> None:
 
 def test_6m4_adds_no_migration() -> None:
     versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
-    assert versions[-1] == "0019_notification_deliveries.py"
+    # Changed deliberately in 7A: 0020 is the organisation-identity migration,
+    # and the 6M.4 / 6M.2 migration-free guarantee still covers 0019.
+    assert versions[-2:] == ["0019_notification_deliveries.py", "0020_organisation_identity.py"]
 
 
 # ============================================================================

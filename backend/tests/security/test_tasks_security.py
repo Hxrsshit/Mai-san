@@ -467,9 +467,16 @@ async def test_the_api_reads_back_a_real_task(
 
 
 async def test_no_completed_task_can_exist_in_this_stage(
-    client, db_session, settings
+    client, db_session, settings, caplog
 ) -> None:
-    """"What did you do?" must answer nothing, because nothing ran."""
+    """"What did you do?" must answer nothing, because nothing ran.
+
+    Known defect 11: the count below leaves a write transaction open on the
+    shared SQLite connection. Without the commit after it, the request's own
+    queries fail, and before Stage 7A `list_tasks` swallowed that failure as
+    an empty answer, so this test passed without reading anything. The
+    response must now be a real 200 that sees the three blocked tasks.
+    """
     from app.tasks.service import TaskService
 
     service = TaskService(db_session, settings=settings)
@@ -486,7 +493,16 @@ async def test_no_completed_task_can_exist_in_this_stage(
         )
     ).scalar()
     assert completed == 0
-    assert (await client.get("/api/tasks/activity")).json()["did"]["total"] == 0
+    await db_session.commit()
+
+    caplog.set_level("INFO")
+    response = await client.get("/api/tasks/activity")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Not vacuous: the request read the tasks (BLOCKED is a waiting state).
+    assert body["waiting_for"]["total"] == 3
+    assert body["did"]["total"] == 0
+    assert not [r for r in caplog.records if r.getMessage() == "Failed to list tasks"]
 
 
 def test_the_service_has_no_execution_seam() -> None:

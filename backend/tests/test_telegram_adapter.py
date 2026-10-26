@@ -39,7 +39,11 @@ async def telegram(client: AsyncClient, conversation_id, settings):
 
 
 def update(*, update_id=1, chat_id=123, text="Hello Mai"):
-    return {"update_id": update_id, "message": {"chat": {"id": chat_id}, "text": text}}
+    return {"update_id": update_id, "message": {
+        "chat": {"id": chat_id, "type": "private"},
+        "from": {"id": chat_id, "is_bot": False},
+        "text": text,
+    }}
 
 
 async def test_text_update_reaches_existing_conversation_path(
@@ -62,8 +66,10 @@ async def test_text_update_reaches_existing_conversation_path(
         ({}, 400),  # malformed update
         ({"update_id": 1}, 200),  # no message update
         ({"update_id": 1, "message": {"text": "x"}}, 400),  # no chat
-        ({"update_id": 1, "message": {"chat": {"id": 123}}}, 200),  # no text
-        ({"update_id": 1, "message": {"chat": {"id": 123}, "text": "   "}}, 400),
+        ({"update_id": 1, "message": {"chat": {"id": 123, "type": "private"},
+                                      "from": {"id": 123, "is_bot": False}}}, 200),  # no text
+        ({"update_id": 1, "message": {"chat": {"id": 123, "type": "private"},
+                                      "from": {"id": 123, "is_bot": False}, "text": "   "}}, 400),
     ],
 )
 async def test_non_text_or_malformed_updates_are_not_conversation_turns(
@@ -82,7 +88,8 @@ async def test_authorization_and_deduplication_are_adapter_boundaries(
 ) -> None:
     headers = {"X-Telegram-Bot-Api-Secret-Token": "webhook-secret"}
     denied = await client.post("/api/telegram/webhook", json=update(chat_id=999), headers=headers)
-    assert denied.status_code == 403
+    assert denied.status_code == 200
+    assert denied.json() == {"ok": True, "ignored": True}
     first = await client.post("/api/telegram/webhook", json=update(update_id=8), headers=headers)
     duplicate = await client.post("/api/telegram/webhook", json=update(update_id=8), headers=headers)
     assert first.status_code == duplicate.status_code == 200

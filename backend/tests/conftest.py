@@ -36,6 +36,48 @@ from app.llm.factory import get_llm_provider
 from app.main import create_app
 
 
+# --- The default organisation (Stage 7A) ------------------------------------
+# Production gets these rows from migration 0020. Test databases are built by
+# `create_all`, which runs no migration, so the same rows are inserted when
+# the members table is created -- through the typed tables, exactly as the
+# migration does. `test_migration_compatibility` checks the migration's seed
+# against the same constants, so the two cannot drift silently.
+
+from datetime import datetime, timezone  # noqa: E402
+
+from sqlalchemy import event  # noqa: E402
+
+from app.identity.constants import (  # noqa: E402
+    DEFAULT_ORGANISATION_ID,
+    DEFAULT_ORGANISATION_NAME,
+    LEGACY_ADMIN_DISPLAY_NAME,
+    LEGACY_ADMIN_MEMBER_ID,
+    LEGACY_ADMIN_USER_ID,
+    MemberStatus,
+    OrganisationStatus,
+    Role,
+)
+from app.identity.models import Organisation, OrganisationMember, User  # noqa: E402
+
+
+@event.listens_for(OrganisationMember.__table__, "after_create")
+def _seed_default_organisation(target, connection, **_) -> None:
+    now = datetime.now(timezone.utc)
+    connection.execute(Organisation.__table__.insert(), [{
+        "id": DEFAULT_ORGANISATION_ID, "name": DEFAULT_ORGANISATION_NAME,
+        "status": OrganisationStatus.ACTIVE.value, "created_at": now, "updated_at": now,
+    }])
+    connection.execute(User.__table__.insert(), [{
+        "id": LEGACY_ADMIN_USER_ID, "display_name": LEGACY_ADMIN_DISPLAY_NAME,
+        "created_at": now, "updated_at": now,
+    }])
+    connection.execute(OrganisationMember.__table__.insert(), [{
+        "id": LEGACY_ADMIN_MEMBER_ID, "organisation_id": DEFAULT_ORGANISATION_ID,
+        "user_id": LEGACY_ADMIN_USER_ID, "role": Role.ADMIN.value,
+        "status": MemberStatus.ACTIVE.value, "created_at": now, "activated_at": now,
+    }])
+
+
 # --- Fake provider ----------------------------------------------------------
 
 

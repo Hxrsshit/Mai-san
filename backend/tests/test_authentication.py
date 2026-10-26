@@ -276,10 +276,15 @@ async def test_no_request_value_can_select_another_owner(
     assert read_at is None
 
 
-async def test_the_seam_returns_the_configured_owner_for_the_token(client) -> None:
+async def test_the_seam_returns_the_configured_owner_for_the_token(session_factory) -> None:
+    # Changed deliberately in 7A: the seam is async and checks membership in
+    # the database, so it is awaited with a session whose schema carries the
+    # default organisation's active Admin.
     from app.api.deps import get_owner_id
 
-    assert get_owner_id(Settings(_env_file=None), f"Bearer {TEST_API_TOKEN}") == CONFIGURED_OWNER_ID
+    async with session_factory() as session:
+        owner = await get_owner_id(Settings(_env_file=None), session, f"Bearer {TEST_API_TOKEN}")
+    assert owner == CONFIGURED_OWNER_ID
 
 
 async def test_another_owners_task_state_is_invisible(

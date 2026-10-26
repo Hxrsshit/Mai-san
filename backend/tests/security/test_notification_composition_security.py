@@ -269,4 +269,8 @@ def test_6k_adds_no_migration_or_table() -> None:
     versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
     # Changed deliberately in 6M.1: the next migration after 6H's 0018 is
     # 6M.1's delivery-records table, and nothing else.
-    assert [v for v in versions if v[:4] > "0018"] == ["0019_notification_deliveries.py"]
+    # Changed deliberately in 7A: 7A's organisation-identity migration
+    # follows 6M.1's, and nothing else.
+    assert [v for v in versions if v[:4] > "0018"] == [
+        "0019_notification_deliveries.py", "0020_organisation_identity.py",
+    ]

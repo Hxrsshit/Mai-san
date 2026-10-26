@@ -97,7 +97,7 @@ from app.core.logging import get_logger
 from app.integrations.gmail_schemas import NO_MESSAGES_MATCHED
 from app.tasks.models import Task, TaskStep
 from app.tasks.monitoring import MAX_MONITOR_LIFETIME_SECONDS
-from app.tasks.schemas import DEFAULT_BUDGET, TaskOutcome, TaskResult
+from app.tasks.schemas import DEFAULT_BUDGET, CancelReason, TaskOutcome, TaskResult
 from app.tasks.service import TaskService
 from app.tasks.states import TaskState
 
@@ -1032,11 +1032,15 @@ class MonitorRequestService:
 
     # --- Cancelling ----------------------------------------------------------
 
-    async def cancel(self, task_id: uuid.UUID) -> TaskResult:
+    async def cancel(
+        self, task_id: uuid.UUID, *, reason: CancelReason = CancelReason.OWNER
+    ) -> TaskResult:
         """Cancel one of the owner's tasks, through `TaskService.cancel`.
 
         Idempotent for a task already cancelled. A monitor's grant is released
         with it, unless another active task still needs the capability.
+        `reason` is journalled: the owner's own request by default, or
+        Stage 7A's `MEMBER_REVOKED` when an Admin revokes the member.
         """
         if self._tasks is None:
             return TaskResult(outcome=TaskOutcome.NOT_FOUND, reason="task_not_found")
@@ -1062,7 +1066,7 @@ class MonitorRequestService:
                 outcome=TaskOutcome.CANCELLED, task_id=task.id, state=task.state,
             )
         was_monitor = task.monitor is not None
-        result = await self._tasks.cancel(task_id, reason="cancelled_by_owner")
+        result = await self._tasks.cancel(task_id, reason=reason.value)
         if result.ok and was_monitor:
             await release_monitor_grants(self._session, self._owner_id)
         return result

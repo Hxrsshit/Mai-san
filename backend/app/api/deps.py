@@ -4,13 +4,23 @@ import uuid
 from typing import Annotated, Optional
 
 from fastapi import Depends, Header
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.composition.notification_delivery import notification_delivery_service
 from app.context.service import ContextService
 from app.core import auth
-from app.core.errors import AuthenticationNotConfigured, AuthenticationRequired, InvalidCredentials
+from app.core.errors import (
+    AdminRequired,
+    AuthenticationNotConfigured,
+    AuthenticationRequired,
+    InvalidCredentials,
+    MembershipInactive,
+    MembershipUnavailable,
+    SeamInvariantError,
+)
 from app.core.config import Settings, get_settings
+from app.core.logging import get_logger
 from app.database.session import get_db_session, get_session_factory
 from app.delivery.service import NotificationDeliveryService
 from app.delivery.status import DeliveryStatusReader
@@ -19,10 +29,16 @@ from app.llm.factory import get_llm_provider
 from app.entities.service import EntityService
 from app.execution.service import ExecutionService
 from app.history.service import HistoryImportService
+from app.identity.constants import Role
+from app.identity.principal import Principal, load_active_principal
+from app.identity.service import MembershipService
 from app.intent.service import IntentService
 from app.knowledge.service import KnowledgeService
 from app.memory.service import MemoryService
 from app.orchestration.service import OrchestrationService
+# RevocationIncomplete is re-exported for the organisation routes: only this
+# module imports `app.organisation` (Stage 7A dependency direction).
+from app.organisation.revocation import MemberRevocation, RevocationIncomplete
 from app.planning.service import PlanningService
 from app.tasks.notifications import NotificationService
 from app.tasks.requests import MonitorRequestService
@@ -36,6 +52,8 @@ from app.relationships.service import RelationshipService
 from app.retrieval.service import RetrievalService
 from app.services.chat_service import ChatService
 from app.services.conversation_service import ConversationService
+
+logger = get_logger(__name__)
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
@@ -212,8 +230,56 @@ def get_notification_delivery_service(session: DbSession, owner_id: "OwnerId") -
     return notification_delivery_service(session, owner_id)
 
 
-def get_owner_id(
+#: What a database read can raise. Drivers can let connection errors escape
+#: unwrapped (`get_db_session` catches the same pair on commit).
+_DATABASE_FAILURES = (SQLAlchemyError, OSError)
+
+
+async def _active_principal(session: AsyncSession, member_id: uuid.UUID) -> Optional[Principal]:
+    """Stage 7A. The member's active membership, read once and not cached.
+
+    Runs before any route code, so nothing may be pending on the request
+    session; if something is, that is a programming error and nothing is
+    rolled back over it. The read's transaction is ended at once, so the seam
+    holds no connection (PostgreSQL) and no write lock (SQLite's BEGIN
+    IMMEDIATE) for the rest of the request. A database error fails closed
+    as 503 -- never as "inactive" and never as access.
+    """
+    # Anything already begun on this session -- flushed or not -- would be
+    # rolled back below. Nothing may run before authentication.
+    if session.new or session.dirty or session.deleted or session.in_transaction():
+        raise SeamInvariantError()
+    try:
+        principal = await load_active_principal(session, member_id)
+    except _DATABASE_FAILURES as exc:
+        # The class name only: SQLAlchemy's text carries bound parameters.
+        logger.warning("Membership check failed", extra={"category": type(exc).__name__})
+        await _end_quietly(session)
+        raise MembershipUnavailable()
+    except Exception:
+        # Not a database failure: end the read, keep the original error.
+        await _end_quietly(session)
+        raise
+    try:
+        await session.rollback()
+    except _DATABASE_FAILURES as exc:
+        logger.warning("Membership check failed", extra={"category": type(exc).__name__})
+        raise MembershipUnavailable()
+    return principal
+
+
+async def _end_quietly(session: AsyncSession) -> None:
+    """End the seam's read on a path that is already failing, without
+    replacing the error that is on its way out."""
+    try:
+        await session.rollback()
+    except _DATABASE_FAILURES:
+        pass
+
+
+async def get_owner_id(
     settings: AppSettings,
+    session: DbSession,
     authorization: Optional[str] = Header(default=None),
 ) -> uuid.UUID:
     """The one place a request's owner is resolved (6M.2), and since 6M.4 the
@@ -223,8 +289,12 @@ def get_owner_id(
     is whoever the token authenticates -- the configured owner -- and never a
     request value. Fails closed: no configured digest is 503, no or malformed
     header is 401 `authentication_required`, a wrong token is 401
-    `invalid_credentials`. Every protected router depends on this (see
-    `app.main`), and the owner-bound services below receive its answer.
+    `invalid_credentials`. Since Stage 7A the owner is a member, and the
+    member must be active in an active organisation, checked in the database
+    on every request: otherwise 403 `membership_inactive`, or 503
+    `membership_unavailable` if the check itself fails. Every protected
+    router depends on this (see `app.main`), and the owner-bound services
+    below receive its answer.
     """
     if not auth.is_configured(settings):
         raise AuthenticationNotConfigured()
@@ -235,10 +305,65 @@ def get_owner_id(
     owner_id = auth.authenticate(token, settings)
     if owner_id is None:
         raise InvalidCredentials()
+    if await _active_principal(session, owner_id) is None:
+        raise MembershipInactive()
     return owner_id
 
 
 OwnerId = Annotated[uuid.UUID, Depends(get_owner_id)]
+
+
+async def get_principal(owner_id: OwnerId, session: DbSession) -> Principal:
+    """Stage 7A. The authenticated member, as a plain value.
+
+    Depends on the seam, so it can never be reached unauthenticated, and
+    reads the membership again itself rather than trusting a value handed
+    over -- a replaced seam (a test override) still cannot produce a
+    principal that is not active in the database.
+    """
+    principal = await _active_principal(session, owner_id)
+    if principal is None:
+        raise MembershipInactive()
+    return principal
+
+
+CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
+
+
+def require_admin(principal: CurrentPrincipal) -> Principal:
+    """Stage 7A. The authenticated member, who must be an Admin: 403 otherwise."""
+    if principal.role is not Role.ADMIN:
+        raise AdminRequired()
+    return principal
+
+
+AdminPrincipal = Annotated[Principal, Depends(require_admin)]
+
+
+def get_membership_service(session: DbSession, settings: AppSettings) -> MembershipService:
+    """Stage 7A. The identity service for the organisation routes. It never
+    commits: the request session does, when the route returns normally."""
+    return MembershipService(session, settings=settings)
+
+
+def get_member_revocation(session: DbSession, settings: AppSettings) -> MemberRevocation:
+    """Stage 7A. The one construction of member revocation.
+
+    Its cancel service is the second construction of `MonitorRequestService`
+    here (the first is the cancel route's, bound to the seam's owner). This
+    one is bound to the member being revoked, and `MemberRevocation` calls it
+    only with the member `mark_revoked` has just accepted in the Admin's own
+    organisation -- never with a request value.
+    """
+
+    def cancel_service_for(member_id: uuid.UUID) -> MonitorRequestService:
+        return MonitorRequestService(session, settings=settings, owner_id=member_id)
+
+    return MemberRevocation(session, cancel_service_for=cancel_service_for)
+
+
+MembershipServiceDep = Annotated[MembershipService, Depends(get_membership_service)]
+MemberRevocationDep = Annotated[MemberRevocation, Depends(get_member_revocation)]
 
 
 def get_notification_service(session: DbSession, owner_id: OwnerId) -> NotificationService:

@@ -58,6 +58,19 @@ DEFAULT_BUDGET: Dict[str, int] = {
 BUDGET_KEYS = frozenset(DEFAULT_BUDGET)
 
 
+class CancelReason(str, enum.Enum):
+    """Why a person's cancellation happened. A closed set: the journal records
+    the value, so "cancelled by the owner" is never written for a cancellation
+    the owner did not make.
+
+    OWNER          -- the task's owner asked (the cancel route, Stage 6N);
+    MEMBER_REVOKED -- an Admin revoked the owning member (Stage 7A).
+    """
+
+    OWNER = "cancelled_by_owner"
+    MEMBER_REVOKED = "member_revoked"
+
+
 class TaskResult(BaseModel):
     """The report for one task operation."""
 
@@ -366,6 +379,7 @@ class ActivityReport(BaseModel):
 
 
 __all__ = [
+    "CancelReason",
     "TaskMonitorRead",
     "monitoring_fields",
     "BUDGET_KEYS",

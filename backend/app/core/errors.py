@@ -65,6 +65,39 @@ class AuthenticationNotConfigured(MaiError):
     message = "API authentication is not configured on this server."
 
 
+# --- Membership (Stage 7A) --------------------------------------------------
+# Raised by the request seam after the token is accepted: the token names a
+# member, and the member must be active in an active organisation. Fixed
+# messages; none says which of the two failed.
+
+
+class MembershipInactive(MaiError):
+    status_code = 403
+    code = "membership_inactive"
+    message = "This account is not an active member of an active organisation."
+
+
+class MembershipUnavailable(MaiError):
+    status_code = 503
+    code = "membership_unavailable"
+    message = "Membership could not be checked. Try again shortly."
+
+
+class AdminRequired(MaiError):
+    status_code = 403
+    code = "admin_required"
+    message = "This action requires an organisation Admin."
+
+
+class SeamInvariantError(MaiError):
+    """The seam found writes pending on the request session before it ran.
+    Nothing may write before authentication; this is a programming error."""
+
+    status_code = 500
+    code = "seam_invariant"
+    message = "The request could not be authenticated."
+
+
 class ValidationError(MaiError):
     status_code = 422
     code = "validation_error"

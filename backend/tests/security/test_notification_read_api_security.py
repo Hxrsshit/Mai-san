@@ -74,8 +74,11 @@ def test_the_owner_is_resolved_in_one_function_from_the_credential_only() -> Non
     `Authorization` header -- and nothing else a caller could use to name an
     owner. The owner it returns is whatever `core.auth` authenticated."""
     owner = function(parse(DEPS), "get_owner_id")
+    # Changed deliberately in 7A: the session, for the membership check. It
+    # names no owner: the owner is still only what `core.auth` authenticated.
+    assert isinstance(owner, ast.AsyncFunctionDef)
     assert [(a.arg, ast.unparse(a.annotation)) for a in owner.args.args] == [
-        ("settings", "AppSettings"), ("authorization", "Optional[str]")]
+        ("settings", "AppSettings"), ("session", "DbSession"), ("authorization", "Optional[str]")]
     assert [ast.unparse(d) for d in owner.args.defaults] == ["Header(default=None)"]
     assert not owner.args.kwonlyargs
     [ret] = [n for n in ast.walk(owner) if isinstance(n, ast.Return)]
@@ -260,4 +263,6 @@ def test_paging_is_owner_scoped_bounded_and_anchored_through_get() -> None:
 
 def test_6m2_adds_no_migration() -> None:
     versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
-    assert versions[-1] == "0019_notification_deliveries.py"
+    # Changed deliberately in 7A: 0020 is the organisation-identity migration,
+    # and the 6M.4 / 6M.2 migration-free guarantee still covers 0019.
+    assert versions[-2:] == ["0019_notification_deliveries.py", "0020_organisation_identity.py"]

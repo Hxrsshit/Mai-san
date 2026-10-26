@@ -101,7 +101,31 @@ def test_the_service_is_built_only_by_chat_and_the_cancel_dependency() -> None:
         for node in ast.walk(parse(path)):
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "MonitorRequestService":
                 sites.append(str(path.relative_to(BACKEND)))
-    assert sorted(sites) == ["app/api/deps.py", "app/services/chat_service.py"], sites
+    # Changed deliberately in 7A: deps.py builds it twice -- the cancel
+    # route's (the seam's owner) and member revocation's (the revoked
+    # member, accepted by `mark_revoked`). Still nowhere else.
+    assert sorted(set(sites)) == ["app/api/deps.py", "app/services/chat_service.py"], sites
+    assert sites.count("app/api/deps.py") == 2, sites
+    assert sites.count("app/services/chat_service.py") == 1, sites
+
+
+def test_revocations_cancel_service_is_bound_only_to_the_revoked_member() -> None:
+    """Stage 7A. The second construction in deps.py takes its owner from the
+    member `MemberRevocation` hands it -- never from a request value, a header
+    or the seam's owner -- and the factory itself takes no owner at all."""
+    deps = parse(APP / "api" / "deps.py")
+    factory = function(deps, "get_member_revocation")
+    assert [a.arg for a in factory.args.args] == ["session", "settings"]
+    inner = function(factory, "cancel_service_for")
+    assert [a.arg for a in inner.args.args] == ["member_id"]
+    [ret] = [n for n in ast.walk(inner) if isinstance(n, ast.Return)]
+    assert ast.unparse(ret.value) == (
+        "MonitorRequestService(session, settings=settings, owner_id=member_id)"
+    )
+    [outer] = [n for n in factory.body if isinstance(n, ast.Return)]
+    assert ast.unparse(outer.value) == (
+        "MemberRevocation(session, cancel_service_for=cancel_service_for)"
+    )
 
 
 def test_handle_takes_the_conversation_and_the_raw_message_only() -> None:
@@ -305,7 +329,15 @@ def test_the_cancel_route_is_the_only_write_and_takes_exactly_an_empty_object() 
 
 def test_cancel_goes_through_task_service_cancel() -> None:
     cancel = ast.unparse(function(parse(REQUESTS), "cancel"))
-    assert "self._tasks.cancel(task_id, reason='cancelled_by_owner')" in cancel
+    # Changed deliberately in 7A: the reason is a closed enum, so a revocation
+    # is never journalled as the owner's own cancellation. The default -- the
+    # cancel route's -- is unchanged.
+    from app.tasks.schemas import CancelReason
+
+    assert "self._tasks.cancel(task_id, reason=reason.value)" in cancel
+    assert "reason: CancelReason=CancelReason.OWNER" in cancel  # ast.unparse spacing
+    assert {r.value for r in CancelReason} == {"cancelled_by_owner", "member_revoked"}
+    assert CancelReason.OWNER.value == "cancelled_by_owner"
     assert "release_monitor_grants(self._session, self._owner_id)" in cancel
 
 

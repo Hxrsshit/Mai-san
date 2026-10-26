@@ -27,6 +27,7 @@ from app.api.routes import (
     knowledge_router,
     notification_delivery_router,
     orchestration_router,
+    organisation_router,
     planning_router,
     reminders_router,
     tasks_router,
@@ -232,6 +233,11 @@ def create_app() -> FastAPI:
     # configured the 6K registry is empty and every request is refused, so
     # the route is inert, like the integrations router above.
     app.include_router(notification_delivery_router, dependencies=AUTHENTICATED)
+
+    # Stage 7A. Organisation membership: list, invite, issue a link code,
+    # revoke. Behind the seam like every data router, and each route also
+    # requires an Admin. Nothing here grants, schedules or executes.
+    app.include_router(organisation_router, dependencies=AUTHENTICATED)
 
     return app
 
