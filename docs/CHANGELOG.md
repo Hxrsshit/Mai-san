@@ -25,13 +25,13 @@ before substantial work and updates it after completing work (see
 
 | | |
 | --- | --- |
-| Latest completed stage | **Stage 6P: harden monitoring concurrency and truthfulness**: the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; find it with `git log -1 -- docs/STAGE_6O_AUDIT.md`). Stage 6O was an inspection-only audit (no commit of its own; its report is that file) |
+| Latest completed stage | **Stage 7A: Organisation & User Identity**, `8f3ef2f` (2026-10-26; see Completed). Organisation and membership identity with database-backed, fail-closed membership checks; **tenant isolation is not claimed** and member Telegram turns remain disabled |
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only); then the Stage 0 consolidation checkpoints (not stages), each committing work that had been uncommitted: C1 `fc80592`, C2 `30a1342`, C3 `7ac52b4`, C4 `4b8d407`, C5 `d4f8339` (documentation only); then the multi-agent workflow configuration, `5c7801c` (tooling and docs, no application code); then the tab accessibility fix, the commit titled `fix: link only the selected tab to its panel` (frontend only) |
-| Previous stages | 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
-| Branch | `main`. Nothing is pushed: on 2026-10-20, before the tab accessibility fix, local `main` (`5c7801c`) was 14 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch). |
-| Latest migration | Committed head: `0019_notification_deliveries.py` (6M.1; 6M.2, 6M.3, 6M.4, 6N and 6P added none). **Uncommitted:** `0020_organisation_identity.py` (Stage 7A), verified on throwaway SQLite files and, on 2026-10-21, on a disposable PostgreSQL 16 container (upgrade, downgrade to 0019, upgrade; see Stage 7A); **never applied to the real `mai` database**. The real `mai` database is at `0019`: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02, not any verification. |
-| Next stage | **Stage 7A: Organisation & User Identity** -- design approved by the owner; status: **implemented; verification passed; awaiting commit approval** (see Uncommitted / in progress). Not committed, pushed or deployed, and not migrated on any real database. Stage 0 consolidation is committed (C1 to C5; C5 is `d4f8339`). Do not begin another stage without an explicit request. |
-| Uncommitted work (2026-10-26) | In the main checkout: Stage 7A (42 paths: `AGENTS.md`, this file and 40 under `backend/`) and the untracked `MAi branding .png`. The 2026-10-19 pilot worktrees and branches were removed on 2026-10-20 (owner-approved, verified). Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; every file in them has been integrated into the main checkout, and their removal awaits the owner's approval. **Below, as recorded on 2026-10-16 and not re-checked since:** the six 2026-10-13 workstreams and the 2026-10-14 memory work are committed as Stage 0 C1 to C4 (see Completed). None of it was verified on PostgreSQL (its gated tests are unrun). **What is running (checked 2026-10-16, read-only):** the backend container last started 2026-10-14 09:48 UTC (Docker `StartedAt`), and a public `GET /health` returned `llm.reachability`, so it runs C4's health code. That it lacks C4's 2026-10-16 query bound and debug-pool cap is inferred, not tested: those files changed after it started, and uvicorn runs without reload. The frontend container is the 2026-10-12 image; its served bundle contained the token dialog but none of C3's UI strings, so C3 is not deployed. That C1 is not deployed is inferred from the image date (C1 changes no visible text). The migration head is unchanged (`0019`); the real `mai` database gained owner-approved test and correction records (see Stage 0 C4). |
+| Previous stages | 6P harden monitoring concurrency and truthfulness, the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; Stage 6O was an inspection-only audit with no commit of its own); 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
+| Branch | `main`. Nothing is pushed: on 2026-10-26, at Stage 7A (`8f3ef2f`), local `main` was 16 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording Stage 7A adds one more. |
+| Latest migration | `0020_organisation_identity.py` (Stage 7A, `8f3ef2f`): verified on throwaway SQLite files and, on 2026-10-21, on a disposable PostgreSQL 16 container (upgrade, downgrade to 0019, upgrade). **The real `mai` database is still at `0019`**: the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up, so starting it with this code would apply `0020`. |
+| Next stage | **None started.** Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled until tenant-aware memory access, an unlink route and a membership re-check before persisting a turn exist; none of that is started. Do not begin another stage without an explicit request. |
+| Uncommitted work (2026-10-26) | In the main checkout, only the untracked `MAi branding .png`. The 2026-10-19 pilot worktrees and branches were removed on 2026-10-20 (owner-approved, verified). Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. **Below, as recorded on 2026-10-16 and not re-checked since:** the six 2026-10-13 workstreams and the 2026-10-14 memory work are committed as Stage 0 C1 to C4 (see Completed). None of it was verified on PostgreSQL (its gated tests are unrun). **What is running (checked 2026-10-16, read-only):** the backend container last started 2026-10-14 09:48 UTC (Docker `StartedAt`), and a public `GET /health` returned `llm.reachability`, so it runs C4's health code. That it lacks C4's 2026-10-16 query bound and debug-pool cap is inferred, not tested: those files changed after it started, and uvicorn runs without reload. The frontend container is the 2026-10-12 image; its served bundle contained the token dialog but none of C3's UI strings, so C3 is not deployed. That C1 is not deployed is inferred from the image date (C1 changes no visible text). The migration head is unchanged (`0019`); the real `mai` database gained owner-approved test and correction records (see Stage 0 C4). |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -39,130 +39,6 @@ These are in the working tree and are **not** part of any completed stage. Do
 not commit them as part of other work, and do not describe them as done.
 
 - **`MAi branding .png`** at the repository root: untracked.
-- **Stage 7A: Organisation & User Identity (implemented 2026-10-20/21;
-  verification passed; awaiting commit approval -- NOT completed).** Approved by the owner; built by the lead and
-  four agents (implementers A, B, C and a verifier) under the `CLAUDE.md`
-  multi-agent procedure, each card's diff reviewed by the read-only security
-  reviewer, then the integrated whole. Design: `stage7a-design-v2.md` with
-  its v2.1 amendments, kept only in the session scratchpad and **not in the
-  repository**; on 2026-10-26 that copy (with the task cards, patches and
-  saved test logs) was found deleted from the scratchpad. The implemented
-  contract is recorded in `AGENTS.md` and in this entry; the test results
-  below are as recorded from the command output at the time.
-  - **What:** organisations, users, members (`admin` | `member`; `invited`
-    | `active` | `revoked`), linked Telegram identities and single-use link
-    codes (`app/identity/`, migration `0020`). One default organisation;
-    its Admin member **is** `CONFIGURED_OWNER_ID`, so every existing
-    owner-scoped row already belongs to that Admin and nothing is rewritten.
-    The API token keeps working for an **active** Admin.
-  - **Seam:** `deps.get_owner_id` is async and checks, in the database on
-    every request, that the member is active in an active organisation
-    (403 `membership_inactive`; a failed check is 503
-    `membership_unavailable`; pending work on the session is 500
-    `seam_invariant`). `get_principal` re-reads membership;
-    `require_admin` gives 403 `admin_required`.
-  - **Routes (approved):** `GET /api/organisation`, `GET
-    /api/organisation/members`, and three POSTs -- invite, issue a link
-    code, revoke -- all Admin-only. Code-bearing responses are `no-store`
-    and commit before answering. No unlink, delete or create-Admin route.
-  - **Link codes:** 16 characters from a 32-symbol alphabet (80 bits),
-    SHA-256 at rest, 600 s, single use, atomic redemption (member, then
-    code, locked; identity inserted in a savepoint). Never issued to or
-    redeemed for an Admin, nor from the Admin's own Telegram chat id.
-  - **Revocation:** one transaction -- member revoked, open codes
-    invalidated, identity detached, every unfinished task cancelled through
-    the existing locked `MonitorRequestService.cancel` with the new closed
-    reason `member_revoked`, every live grant revoked, postconditions
-    counted; any failure rolls all of it back.
-  - **Telegram:** group, supergroup and channel updates are ignored,
-    including the Admin's; a private message whose first token begins with
-    `/link` is a link command and never a chat turn; the only turn path is
-    the Admin's configured private chat (sender with no linked identity,
-    Admin active). Behaviour changes for existing callers: a non-allowed
-    chat now gets 200 `ignored` instead of 403; deduplication runs before
-    every branch; forwards and bot messages are ignored. No employee turns,
-    memory reads or memory writes.
-  - **Known defect 11 fixed** (see Known defects).
-  - **`AGENTS.md`** sections 2, 3, 4.5, 4.7 and 7 describe the above.
-  - **Approved test changes** (each deliberate, none weakened): five
-    migration-list pins accept `0020`; the seam signature and order pins;
-    both `MonitorRequestService` pins (construction sites, cancel reason);
-    the synchronous seam call in `test_authentication.py`; the Telegram
-    adapter payloads and the 403 -> 200 case; Known defect 11. New pins:
-    the revocation factory's binding, import directions, construction
-    sites, no-secret logging.
-  - **SQLite verification (run by the lead, 2026-10-21, on the final
-    code):** full suite ordered **6974 passed, 28 skipped, 1 xfailed, 0
-    failed**; shuffled (scratch `mai_shuffle` plugin, seed 728978407,
-    reordering confirmed by comparing collection order) **6974 passed, 28
-    skipped, 1 xfailed, 0 failed**. An earlier pair on the code before the
-    last route hardening (shuffle seed 1397224745) gave 6972 passed, 28
-    skipped, 1 xfailed, 0 failed.
-    `tests/security/test_secrets.py` was excluded deliberately (the main
-    checkout has a `backend/.env`, which may not be read). All 28 skips are
-    PostgreSQL-gated: `test_monitor_races_pg.py` (17),
-    `test_identity_races_pg.py` (5), `test_identity_migration_pg.py` (5),
-    `test_the_chain_runs_on_postgresql` (1). Mutation harnesses with
-    surviving controls on every card killed every real mutant (A 25 real
-    of 29, B 31 revocation and routes plus 22 in the last route round, C 27,
-    verifier 8 named mutations including the three Known defect 11
-    mutations; each file restored byte for byte).
-  - **PostgreSQL verification (run by the lead, 2026-10-21, each step
-    separately approved by the owner)** on a disposable PostgreSQL 16.15
-    container (`mai-pgtest`, image `postgres:16-alpine`
-    `sha256:cf78e766...0685`, bound only to `127.0.0.1:55432`, `tmpfs`
-    data, auto-remove, restricted role `mai_tester` with `LOGIN CREATEDB`
-    and not superuser; passwords only in `0600` scratch files, never
-    printed):
-    - **Migration:** `tests/test_identity_migration_pg.py` **5 passed** on a
-      throwaway `mai_chain_test` database -- upgrade -> downgrade to `0019`
-      -> upgrade with the seed present exactly once and only 0020's tables
-      removed by the downgrade; every CHECK refuses an invalid row; attached
-      identities unique, a detached one not counted; both partial unique
-      indexes carry `WHERE (detached_at IS NULL)`; constraint names equal
-      the models'. An independent read afterwards: `alembic_version` `0020`,
-      seed 1/1/1, the seeded member `...a1a1` admin and active.
-    - **Concurrency:** `tests/test_identity_races_pg.py` **5 passed** and
-      `tests/test_monitor_races_pg.py` **17 passed** (22 passed, 0 failed).
-      Each test created and dropped its own `mai_pgtest_*` database; none
-      was left, and `mai_chain_test` was unchanged.
-    - **Not run on PostgreSQL:** the older upgrade-only
-      `test_migration_compatibility.py::test_the_chain_runs_on_postgresql`
-      (its variable was set only for the identity migration file, whose
-      first test performs the same full chain from empty).
-    - **Teardown (2026-10-22):** the container was stopped by its exact id
-      and auto-removed (verified absent, no container with its label, port
-      free); the scratch credential directory was deleted. The real `mai`
-      database and the `mai-db` and `mai-backend` containers were never
-      contacted (ids and start times unchanged).
-  - **Security review:** the read-only reviewer reviewed the design twice
-    (v1: three blockers; v2: two textual blockers, both fixed), the lead
-    foundation, every card's diff and each follow-up, and the integrated
-    whole. No blocker or should-fix finding remains open; its commit gate
-    (PostgreSQL verification) is satisfied. The remaining notes are
-    recorded as limitations below. This is a review of the stated
-    properties, not a proof of every security property.
-  - **Not done:** no commit, push, deployment or production migration.
-  - **Limitations (stated, not fixed):** tenant isolation is not claimed --
-    conversations, memories, entities, knowledge, reminders and executions
-    remain one global store; the background runtime and automatic delivery
-    do not check membership; revocation cannot reach reminders, executions
-    or execution approvals (no owner column), cannot revoke a member with
-    more than 500 unfinished tasks (fails closed), and does not stop a
-    request already past the seam; a monitor's grant released by its cancel
-    is audited `monitor_ended`, not `member_revoked`; the Telegram failure-
-    reply cap (20 per minute) and the update deduplicator are per process;
-    `/link` forms that are not the first token (or hidden by non-Cf
-    characters) from the Admin's own chat are chat text; every
-    authenticated route now needs the database; organisation-route refusals
-    carry their reason in `message`, not `code`; no unlink route exists yet
-    (required before member turns are enabled); SQL parameters -- for
-    example a display name, a code hash or a Telegram id -- can still reach
-    logs through SQLAlchemy's or the driver's own logging at INFO or DEBUG
-    (the deferred `hide_parameters` change).
-  - **Route hardening:** database errors while issuing or committing a code
-    are 503 `database_error`, rolled back and logged by class name only,
-    outside any `except` block; no code is returned.
 - **Multi-agent pilot leftovers (2026-10-19/20), under the gitignored
   `.claude/worktrees/`.** *(Resolved 2026-10-20: removed with the owner's
   approval and verified -- only the main worktree remained, both branches
@@ -317,14 +193,14 @@ not commit them as part of other work, and do not describe them as done.
     the owner has a proposal (extra `ask` rules of the form
     `Bash(git * <subcommand> *)`), not yet approved. It would still miss
     `/usr/bin/git`, `env git`, `sh -c`, quoted subcommands and git aliases.
-11. **`tests/security/test_tasks_security.py::test_no_completed_task_can_exist_in_this_stage`
-    passed vacuously** (found 2026-10-20 while probing the Stage 7A seam;
+11. ~~**`tests/security/test_tasks_security.py::test_no_completed_task_can_exist_in_this_stage`
+    passed vacuously**~~ (found 2026-10-20 while probing the Stage 7A seam;
     pre-existing). Its `db_session` left a write transaction open on the
     shared SQLite connection, so the request's `/api/tasks/activity` queries
     failed ("cannot start a transaction within a transaction");
     `TaskService.list_tasks` swallowed that as `([], 0)`, and the test's
-    `did.total == 0` passed without reading anything. **Fixed in Stage 7A
-    (uncommitted):** the test commits before the request and asserts 200,
+    `did.total == 0` passed without reading anything. **Resolved in `8f3ef2f`
+    (Stage 7A):** the test commits before the request and asserts 200,
     `waiting_for.total == 3` (the three BLOCKED tasks) and `did.total == 0`,
     with no "Failed to list tasks" log. Mutation-tested: making "did" count
     BLOCKED tasks, making `list_tasks` return empty, and removing the commit
@@ -439,6 +315,141 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 7A: Organisation & User Identity (`8f3ef2f`, 2026-10-26)
+
+- **Status:** committed locally as
+  `8f3ef2f1da5246226db76453549acbb5a44ca12b` (parent `b7b6680`; 42 paths,
+  8271 insertions, 68 deletions), not pushed, **not deployed**. Implemented
+  2026-10-20/21; this record was added in a separate `docs:` commit.
+  Approved by the owner; built by the lead and four agents (implementers A,
+  B, C and a verifier) under the `CLAUDE.md` multi-agent procedure, each
+  card's diff reviewed by the read-only security reviewer, then the
+  integrated whole. Design: `stage7a-design-v2.md` with its v2.1 amendments,
+  kept only in the session scratchpad and **not in the repository**; on
+  2026-10-26 that copy (with the task cards, patches and saved test logs)
+  was found deleted from the scratchpad. The implemented contract is
+  recorded in `AGENTS.md` and in this entry; the test results below are as
+  recorded from the command output at the time.
+- **What:** organisations, users, members (`admin` | `member`; `invited`
+  | `active` | `revoked`), linked Telegram identities and single-use link
+  codes (`app/identity/`, migration `0020`). One default organisation;
+  its Admin member **is** `CONFIGURED_OWNER_ID`, so every existing
+  owner-scoped row already belongs to that Admin and nothing is rewritten.
+  The API token keeps working for an **active** Admin.
+- **Seam:** `deps.get_owner_id` is async and checks, in the database on
+  every request, that the member is active in an active organisation
+  (403 `membership_inactive`; a failed check is 503
+  `membership_unavailable`; pending work on the session is 500
+  `seam_invariant`). `get_principal` re-reads membership;
+  `require_admin` gives 403 `admin_required`.
+- **Routes (approved):** `GET /api/organisation`, `GET
+  /api/organisation/members`, and three POSTs -- invite, issue a link
+  code, revoke -- all Admin-only. Code-bearing responses are `no-store`
+  and commit before answering. No unlink, delete or create-Admin route.
+- **Link codes:** 16 characters from a 32-symbol alphabet (80 bits),
+  SHA-256 at rest, 600 s, single use, atomic redemption (member, then
+  code, locked; identity inserted in a savepoint). Never issued to or
+  redeemed for an Admin, nor from the Admin's own Telegram chat id.
+- **Revocation:** one transaction -- member revoked, open codes
+  invalidated, identity detached, every unfinished task cancelled through
+  the existing locked `MonitorRequestService.cancel` with the new closed
+  reason `member_revoked`, every live grant revoked, postconditions
+  counted; any failure rolls all of it back.
+- **Telegram:** group, supergroup and channel updates are ignored,
+  including the Admin's; a private message whose first token begins with
+  `/link` is a link command and never a chat turn; the only turn path is
+  the Admin's configured private chat (sender with no linked identity,
+  Admin active). Behaviour changes for existing callers: a non-allowed
+  chat now gets 200 `ignored` instead of 403; deduplication runs before
+  every branch; forwards and bot messages are ignored. No employee turns,
+  memory reads or memory writes.
+- **Known defect 11 fixed** (see Known defects).
+- **`AGENTS.md`** sections 2, 3, 4.5, 4.7 and 7 describe the above.
+- **Approved test changes** (each deliberate, none weakened): five
+  migration-list pins accept `0020`; the seam signature and order pins;
+  both `MonitorRequestService` pins (construction sites, cancel reason);
+  the synchronous seam call in `test_authentication.py`; the Telegram
+  adapter payloads and the 403 -> 200 case; Known defect 11. New pins:
+  the revocation factory's binding, import directions, construction
+  sites, no-secret logging.
+- **SQLite verification (run by the lead, 2026-10-21, on the final
+  code):** full suite ordered **6974 passed, 28 skipped, 1 xfailed, 0
+  failed**; shuffled (scratch `mai_shuffle` plugin, seed 728978407,
+  reordering confirmed by comparing collection order) **6974 passed, 28
+  skipped, 1 xfailed, 0 failed**. An earlier pair on the code before the
+  last route hardening (shuffle seed 1397224745) gave 6972 passed, 28
+  skipped, 1 xfailed, 0 failed.
+  `tests/security/test_secrets.py` was excluded deliberately (the main
+  checkout has a `backend/.env`, which may not be read). All 28 skips are
+  PostgreSQL-gated: `test_monitor_races_pg.py` (17),
+  `test_identity_races_pg.py` (5), `test_identity_migration_pg.py` (5),
+  `test_the_chain_runs_on_postgresql` (1). Mutation harnesses with
+  surviving controls on every card killed every real mutant (A 25 real
+  of 29, B 31 revocation and routes plus 22 in the last route round, C 27,
+  verifier 8 named mutations including the three Known defect 11
+  mutations; each file restored byte for byte).
+- **PostgreSQL verification (run by the lead, 2026-10-21, each step
+  separately approved by the owner)** on a disposable PostgreSQL 16.15
+  container (`mai-pgtest`, image `postgres:16-alpine`
+  `sha256:cf78e766...0685`, bound only to `127.0.0.1:55432`, `tmpfs`
+  data, auto-remove, restricted role `mai_tester` with `LOGIN CREATEDB`
+  and not superuser; passwords only in `0600` scratch files, never
+  printed):
+  - **Migration:** `tests/test_identity_migration_pg.py` **5 passed** on a
+    throwaway `mai_chain_test` database -- upgrade -> downgrade to `0019`
+    -> upgrade with the seed present exactly once and only 0020's tables
+    removed by the downgrade; every CHECK refuses an invalid row; attached
+    identities unique, a detached one not counted; both partial unique
+    indexes carry `WHERE (detached_at IS NULL)`; constraint names equal
+    the models'. An independent read afterwards: `alembic_version` `0020`,
+    seed 1/1/1, the seeded member `...a1a1` admin and active.
+  - **Concurrency:** `tests/test_identity_races_pg.py` **5 passed** and
+    `tests/test_monitor_races_pg.py` **17 passed** (22 passed, 0 failed).
+    Each test created and dropped its own `mai_pgtest_*` database; none
+    was left, and `mai_chain_test` was unchanged.
+  - **Not run on PostgreSQL:** the older upgrade-only
+    `test_migration_compatibility.py::test_the_chain_runs_on_postgresql`
+    (its variable was set only for the identity migration file, whose
+    first test performs the same full chain from empty).
+  - **Teardown (2026-10-22):** the container was stopped by its exact id
+    and auto-removed (verified absent, no container with its label, port
+    free); the scratch credential directory was deleted. The real `mai`
+    database and the `mai-db` and `mai-backend` containers were never
+    contacted (ids and start times unchanged).
+- **Security review:** the read-only reviewer reviewed the design twice
+  (v1: three blockers; v2: two textual blockers, both fixed), the lead
+  foundation, every card's diff and each follow-up, and the integrated
+  whole. No blocker or should-fix finding remains open; its commit gate
+  (PostgreSQL verification) is satisfied. The remaining notes are
+  recorded as limitations below. This is a review of the stated
+  properties, not a proof of every security property.
+- **Not done:** no push, no deployment, and migration `0020` has not been
+  applied to the real `mai` database (the backend container runs
+  `alembic upgrade head` at start-up, so starting it with this code would
+  apply it). Stage 7A does **not** make member Telegram turns safe and does
+  not enable them: they remain disabled until tenant-aware memory, an unlink
+  route and the membership re-check before a turn exist.
+- **Limitations (stated, not fixed):** tenant isolation is not claimed --
+  conversations, memories, entities, knowledge, reminders and executions
+  remain one global store; the background runtime and automatic delivery
+  do not check membership; revocation cannot reach reminders, executions
+  or execution approvals (no owner column), cannot revoke a member with
+  more than 500 unfinished tasks (fails closed), and does not stop a
+  request already past the seam; a monitor's grant released by its cancel
+  is audited `monitor_ended`, not `member_revoked`; the Telegram failure-
+  reply cap (20 per minute) and the update deduplicator are per process;
+  `/link` forms that are not the first token (or hidden by non-Cf
+  characters) from the Admin's own chat are chat text; every
+  authenticated route now needs the database; organisation-route refusals
+  carry their reason in `message`, not `code`; no unlink route exists yet
+  (required before member turns are enabled); SQL parameters -- for
+  example a display name, a code hash or a Telegram id -- can still reach
+  logs through SQLAlchemy's or the driver's own logging at INFO or DEBUG
+  (the deferred `hide_parameters` change).
+- **Route hardening:** database errors while issuing or committing a code
+  are 503 `database_error`, rolled back and logged by class name only,
+  outside any `except` block; no code is returned.
 
 ### Fix: link only the selected tab to its panel (commit titled `fix: link only the selected tab to its panel`, 2026-10-20)
 
