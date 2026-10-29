@@ -25,7 +25,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 | 6 | Tenant-aware entities, relationships, knowledge, retrieval, context | **Completed with unit 5** (migration `0022_scoped_uniqueness`) | as unit 5 |
 | 7 | Background membership gates, revocation races | **Completed** (see CHANGELOG, Stage 7B unit 7) | SQLite and live PostgreSQL (forced races), ordered and shuffled |
 | 8 | Ownership on reminders, executions, workflows, other revocable work | **Completed**: 8a reminders (`f9e22b1`), 8b executions and workflows (see CHANGELOG) | SQLite and live PostgreSQL (forced races), ordered and shuffled; security review M1-M3, L1-L6 |
-| 9 | Scope history imports, protect integration state | Not started | -- |
+| 9 | Scope history imports, protect integration state | **Completed** (see CHANGELOG): imports scoped; history API and integration-backed tools stay owner-only by decision | SQLite and live PostgreSQL, ordered and shuffled |
 | 10 | Final non-null and relational enforcement migration | Not started | -- |
 | 11 | Telegram organisation binding, sender identity, mention/reply, learning | Not started. Member Telegram turns stay **disabled** until units 4-10 and their security tests pass | -- |
 | 12 | Provider configuration, secret protection, usage limits | Not started | -- |
@@ -77,7 +77,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 ## Approval boundaries (stop here; never cross autonomously)
 
 - **H1:** the backend container runs `alembic upgrade head` on start-up over
-  the mounted working tree. Any restart applies `0020` to `0023` to the real
+  the mounted working tree. Any restart applies `0020` to `0024` to the real
   `mai` database (still at `0019`, as last recorded). Do not restart
   `mai-backend`. Changing the start-up behaviour, or migrating the real
   database, needs the owner's approval with a backup and rollback plan.
@@ -109,21 +109,19 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 
 ## Next action
 
-Unit 9: scope history imports and protect integration state.
+Unit 10: the final non-null and relational enforcement migration (design
+section 6) -- written and tested on disposable databases only:
 
-- History import: archives, imported conversations and messages, runs and
-  the duplicate-file check (`uq_imported_archives_source_sha256`, the last
-  global unique index on a scoped table) belong to the importing member;
-  then lift the interim Admin-only router dependency (`/api/history`).
-- Integration state: Google Calendar / Gmail connections and tokens are one
-  process-wide account. Until they are per member, integration-backed tools
-  stay owner-only (`ExecutionService._require_integration_owner`, unit 8b).
-  Decide per-member connections vs. owner-only by policy; never move or
-  re-attribute live credentials without the owner's approval.
+- composite same-scope foreign keys (`UNIQUE (id, organisation_id,
+  scope_id)` on scoped parents; references carry the scope columns), which
+  also make the deferred L3 of units 5-6 structural (aliases and evidence
+  cannot point across scopes);
+- foreign keys from scope columns to memberships (L0's M2);
+- NOT NULL on the scope columns **only once legacy rows are attributed** --
+  which is an owner-approved data operation. Until then the migration must
+  keep NULL legal (quarantine) and refuse to run if it finds orphans.
+- The migration's preconditions (orphan checks, refusal messages, downgrade
+  refusals) as in 0021-0024; PostgreSQL forced-race and migration tests.
 
-Then units 10-14 in order (10: the final non-null and relational
-enforcement migration -- composite same-scope foreign keys, which also
-settle the deferred L3 of units 5-6).
-
-Open item carried from unit 8: per-member fairness for reminders (one member
-with many due reminders can delay others') -- unit 12, usage limits.
+Then units 11-14. Open items: per-member reminder fairness (unit 12);
+per-member import sources and integration connections (owner decisions).

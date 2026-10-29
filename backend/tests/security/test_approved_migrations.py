@@ -68,7 +68,7 @@ def test_alembic_reads_only_the_versions_directory_and_only_source() -> None:
 
 ROGUE = '''"""An unapproved migration with Alembic's default hex file name."""
 revision = "c3a9f1e2d4b5"
-down_revision = "0023"
+down_revision = "0024"
 branch_labels = None
 depends_on = None
 
@@ -115,30 +115,30 @@ def test_a_migration_without_a_zero_prefix_is_detected(scripts) -> None:
 
 def test_reordered_revisions_are_detected(scripts) -> None:
     location, versions = scripts
+    _rewrite(versions / "0024_scoped_archive_digest.py",
+             'down_revision: Union[str, None] = "0023"', 'down_revision: Union[str, None] = "0022"')
     _rewrite(versions / "0023_scoped_execution_idempotency.py",
-             'down_revision: Union[str, None] = "0022"', 'down_revision: Union[str, None] = "0021"')
-    _rewrite(versions / "0022_scoped_uniqueness.py",
-             'down_revision: Union[str, None] = "0021"', 'down_revision: Union[str, None] = "0023"')
+             'down_revision: Union[str, None] = "0022"', 'down_revision: Union[str, None] = "0024"')
     assert migration_files(versions) == list(APPROVED_MIGRATIONS)       # names alone pass
     problems = chain_problems(location)
-    assert any(p.startswith("heads ['0022']") for p in problems), problems
+    assert any(p.startswith("heads ['0023']") for p in problems), problems
     assert any(p.startswith("walk ") for p in problems), problems
 
 
 def test_an_unexpected_revision_id_is_detected(scripts) -> None:
     location, versions = scripts
-    _rewrite(versions / "0023_scoped_execution_idempotency.py",
-             'revision: str = "0023"', 'revision: str = "abc123"')
+    _rewrite(versions / "0024_scoped_archive_digest.py",
+             'revision: str = "0024"', 'revision: str = "abc123"')
     problems = chain_problems(location)
     assert any("heads ['abc123']" in p for p in problems), problems
 
 
 def test_a_branch_is_detected(scripts) -> None:
     location, versions = scripts
-    (versions / "0024_branch.py").write_text(
-        ROGUE.replace('"c3a9f1e2d4b5"', '"0024"').replace('"0023"', '"0020"'), encoding="utf-8")
+    (versions / "0025_branch.py").write_text(
+        ROGUE.replace('"c3a9f1e2d4b5"', '"0025"').replace('"0024"', '"0020"'), encoding="utf-8")
     problems = chain_problems(location)
-    assert any(p.startswith("heads ") and "'0023'" in p and "'0024'" in p for p in problems), problems
+    assert any(p.startswith("heads ") and "'0024'" in p and "'0025'" in p for p in problems), problems
 
 
 def test_an_init_module_is_not_a_migration(scripts) -> None:

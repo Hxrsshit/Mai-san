@@ -41,15 +41,14 @@ SCOPED_TABLES = {
 }
 #: Global unique indexes that must stay exactly as they were (units 8-9 own
 #: these tables).
-GLOBAL_UNIQUES = {
-    "imported_archives": ("uq_imported_archives_source_sha256", ["source_sha256"]),
-}
+GLOBAL_UNIQUES: dict = {}   # none left on a scoped table since migration 0024
 #: Migration 0022: uniqueness per scope. (table, stem, key columns).
 SCOPED_UNIQUES = {
     "memories": ("type_normalized_content", ["memory_type", "normalized_content"]),
     "entities": ("normalized_name", ["normalized_name"]),
     "entity_aliases": ("normalized_alias", ["normalized_alias"]),
     "executions": ("idempotency_key", ["idempotency_key"]),          # migration 0023
+    "imported_archives": ("source_sha256", ["source_sha256"]),       # migration 0024
 }
 
 
@@ -91,11 +90,33 @@ def test_the_migration_check_is_the_model_check() -> None:
     assert _migration_0021().CHECK_SQL == KNOWLEDGE_SCOPE_CHECK_SQL
 
 
-@pytest.mark.parametrize("table_name", sorted(GLOBAL_UNIQUES))
-def test_the_global_unique_indexes_are_unchanged(table_name) -> None:
-    name, columns = GLOBAL_UNIQUES[table_name]
-    [index] = [i for i in Base.metadata.tables[table_name].indexes if i.name == name]
-    assert index.unique and [c.name for c in index.columns] == columns
+#: Unique keys on a scoped table that need no scope column: every column is
+#: the id of a row that itself belongs to one scope (same-scope references,
+#: design section 4), so two scopes can never share a key.
+ROW_KEYED_UNIQUES = {
+    ("relationships", "uq_relationships_triple"),            # entity ids
+    ("knowledge_conflicts", "uq_knowledge_conflicts_memory_pair"),        # memory ids
+    ("knowledge_conflicts", "uq_knowledge_conflicts_relationship_pair"),  # relationship ids
+}
+
+
+def test_no_scoped_table_keeps_a_global_unique_index() -> None:
+    """Since migration 0024 every unique key on a scoped table is either the
+    primary key or per scope (two partial indexes). A new global unique index
+    on a scoped table would let one member's row collide with -- and be found
+    through -- another's."""
+    offenders = []
+    for table in Base.metadata.sorted_tables:
+        if "scope_id" not in table.c:
+            continue
+        for index in table.indexes:
+            if index.unique and index.dialect_options["postgresql"]["where"] is None:
+                offenders.append((table.name, index.name))
+        for constraint in table.constraints:
+            if constraint.__class__.__name__ == "UniqueConstraint":
+                offenders.append((table.name, constraint.name))
+    assert sorted(set(offenders) - ROW_KEYED_UNIQUES) == [] and GLOBAL_UNIQUES == {}
+    assert ROW_KEYED_UNIQUES <= set(offenders), "a reviewed exception no longer exists"
 
 
 @pytest.mark.parametrize("table_name", sorted(SCOPED_UNIQUES))
@@ -121,15 +142,18 @@ def test_the_migration_creates_the_model_indexes() -> None:
     spec = importlib.util.spec_from_file_location("migration_0022", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    later_tables = {"executions": "0023_scoped_execution_idempotency.py",
+                    "imported_archives": "0024_scoped_archive_digest.py"}
     assert {t: (stem, list(cols)) for t, _old, stem, cols in module.INDEXES} == {
-        t: v for t, v in SCOPED_UNIQUES.items() if t != "executions"}
-    path = BACKEND / "alembic" / "versions" / "0023_scoped_execution_idempotency.py"
-    spec = importlib.util.spec_from_file_location("migration_0023", path)
-    later = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(later)
-    stem, _columns = SCOPED_UNIQUES["executions"]
-    assert (later.SCOPED, later.LEGACY) == (f"uq_executions_scoped_{stem}",
-                                            f"uq_executions_legacy_{stem}")
+        t: v for t, v in SCOPED_UNIQUES.items() if t not in later_tables}
+    for table, filename in later_tables.items():
+        path = BACKEND / "alembic" / "versions" / filename
+        spec = importlib.util.spec_from_file_location(filename, path)
+        later = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(later)
+        stem, _columns = SCOPED_UNIQUES[table]
+        assert (later.TABLE, later.SCOPED, later.LEGACY) == (
+            table, f"uq_{table}_scoped_{stem}", f"uq_{table}_legacy_{stem}")
 
 
 def test_personal_is_the_only_writable_visibility() -> None:
@@ -177,6 +201,7 @@ SCOPE_WRITERS = {
     APP / "reminders" / "service.py",               # unit 8a: reminders
     APP / "execution" / "service.py",               # unit 8b: executions
     APP / "workflows" / "service.py",               # unit 8b: workflows
+    APP / "history" / "service.py",                 # unit 9: imported archives
 }
 
 
@@ -365,9 +390,10 @@ def test_no_identity_map_read_of_a_conversation_or_message_anywhere() -> None:
 
 #: Scoped knowledge models, and the child tables read only through them.
 KNOWLEDGE_MODELS = {"Memory", "Entity", "EntityAlias", "Relationship", "KnowledgeConflict",
-                    "Reminder", "Execution", "Workflow"}           # unit 8
+                    "Reminder", "Execution", "Workflow",           # unit 8
+                    "ImportedArchive"}                             # unit 9
 KNOWLEDGE_CHILDREN = {"MemoryEntity", "RelationshipEvidence", "ReminderNotification",
-                      "ExecutionEvent"}
+                      "ExecutionEvent", "ImportedConversation", "ImportedMessage"}
 #: Reviewed statements on a scoped model that carry no clause, each justified
 #: here: (path relative to app/, function) -> the one (call, model) exempted.
 #: Every other statement in the function is still checked (review M3).

@@ -847,7 +847,7 @@ def test_0023_makes_execution_idempotency_per_scope(legacy_at_0020) -> None:
     from sqlalchemy.exc import IntegrityError
 
     url, database = legacy_at_0020
-    alembic(url, "head")
+    alembic(url, "0023")
     names = _index_names(database, "executions")
     assert {"uq_executions_scoped_idempotency_key", "uq_executions_legacy_idempotency_key"} <= names
     assert "uq_executions_idempotency_key" not in names
@@ -859,12 +859,12 @@ def test_0023_makes_execution_idempotency_per_scope(legacy_at_0020) -> None:
 
 def test_0023_downgrade_refuses_a_key_shared_across_scopes_and_is_clean_otherwise(legacy_at_0020) -> None:
     url, database = legacy_at_0020
-    alembic(url, "head")
+    alembic(url, "0023")
     _insert_execution(database, "only-admin", ADMIN_MEMBER_HEX)
     clean = alembic_attempt(url, "downgrade", "0022")
     assert clean.returncode == 0, clean.stderr
     assert "uq_executions_idempotency_key" in _index_names(database, "executions")
-    alembic(url, "head")
+    alembic(url, "0023")
     _insert_execution(database, "shared", ADMIN_MEMBER_HEX)
     _insert_execution(database, "shared", COLLEAGUE_MEMBER_HEX)
     refused = alembic_attempt(url, "downgrade", "0022")
@@ -879,3 +879,48 @@ def test_0023_refuses_an_offline_downgrade_and_renders_its_upgrade() -> None:
     rendered = alembic_attempt(OFFLINE_URL, "upgrade", "0022:0023", "--sql")
     assert rendered.returncode == 0, rendered.stderr
     assert "uq_executions_scoped_idempotency_key" in rendered.stdout
+
+
+# --- Stage 7B unit 9: the archive duplicate check per scope (0024) ---------------
+
+
+def _insert_archive(database, digest: str, member_hex=None) -> None:
+    scope = (", :org, :member, 'personal'" if member_hex else ", :org, NULL, NULL")
+    _execute(database, "INSERT INTO imported_archives (id, source_filename, source_sha256, "
+                       "source_bytes, import_format, status, conversations_imported, "
+                       "messages_imported, conversations_skipped, messages_skipped, redactions, "
+                       "memories_derived, created_at, updated_at, organisation_id, scope_id, "
+                       "scope_visibility) VALUES (:id, 'export.json', :digest, 1, 'chatgpt_json', "
+                       "'completed', 0, 0, 0, 0, 0, 0, :now, :now" + scope + ")",
+             {"id": uuid.uuid4().hex, "digest": digest, "now": BASE, "org": DEFAULT_ORG_HEX,
+              "member": member_hex})
+
+
+def test_0024_makes_the_archive_digest_per_scope_and_downgrades_safely(legacy_at_0020) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    url, database = legacy_at_0020
+    alembic(url, "head")
+    names = _index_names(database, "imported_archives")
+    assert {"uq_imported_archives_scoped_source_sha256",
+            "uq_imported_archives_legacy_source_sha256"} <= names
+    assert "uq_imported_archives_source_sha256" not in names
+    _insert_archive(database, "d" * 64, ADMIN_MEMBER_HEX)
+    _insert_archive(database, "d" * 64, COLLEAGUE_MEMBER_HEX)      # another scope: allowed
+    with pytest.raises(IntegrityError):
+        _insert_archive(database, "d" * 64, ADMIN_MEMBER_HEX)      # the same scope: refused
+    refused = alembic_attempt(url, "downgrade", "0023")
+    assert refused.returncode != 0 and "0024 downgrade refused" in refused.stdout + refused.stderr
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0024"
+    _execute(database, "DELETE FROM imported_archives")
+    clean = alembic_attempt(url, "downgrade", "0023")
+    assert clean.returncode == 0, clean.stderr
+    assert "uq_imported_archives_source_sha256" in _index_names(database, "imported_archives")
+
+
+def test_0024_refuses_an_offline_downgrade_and_renders_its_upgrade() -> None:
+    refused = alembic_attempt(OFFLINE_URL, "downgrade", "0024:0023", "--sql")
+    assert refused.returncode != 0 and "0024 refused: offline" in refused.stdout + refused.stderr
+    rendered = alembic_attempt(OFFLINE_URL, "upgrade", "0023:0024", "--sql")
+    assert rendered.returncode == 0, rendered.stderr
+    assert "uq_imported_archives_scoped_source_sha256" in rendered.stdout

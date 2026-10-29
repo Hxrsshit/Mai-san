@@ -59,6 +59,7 @@ SCOPED_UNIQUE_STEMS = {
     "entities": ("normalized_name", ("normalized_name",)),
     "entity_aliases": ("normalized_alias", ("normalized_alias",)),
     "executions": ("idempotency_key", ("idempotency_key",)),       # migration 0023
+    "imported_archives": ("source_sha256", ("source_sha256",)),    # migration 0024
 }
 
 

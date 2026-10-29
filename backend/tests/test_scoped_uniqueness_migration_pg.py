@@ -209,3 +209,47 @@ async def test_0023_makes_idempotency_per_scope_and_downgrades_safely() -> None:
         clean = alembic_attempt(url, "downgrade", "0022")
         assert clean.returncode == 0, clean.stderr
         assert "uq_executions_idempotency_key" in await _index_definitions(url, "executions")
+
+
+# --- Migration 0024: the archive duplicate check per scope (unit 9) -------------
+
+
+async def _archive(url: str, digest: str, member=None) -> None:
+    await execute(url,
+        "INSERT INTO imported_archives (id, source_filename, source_sha256, source_bytes,"
+        " import_format, status, conversations_imported, messages_imported,"
+        " conversations_skipped, messages_skipped, redactions, memories_derived, created_at,"
+        " updated_at, organisation_id, scope_id, scope_visibility) VALUES (:id, 'export.json',"
+        " :digest, 1, 'chatgpt_json', 'completed', 0, 0, 0, 0, 0, 0, :now, :now, :org, :member,"
+        " CASE WHEN CAST(:member AS uuid) IS NULL THEN NULL ELSE 'personal' END)",
+        {"id": uuid.uuid4(), "digest": digest, "now": NOW, "org": DEFAULT_ORG, "member": member})
+
+
+@needs_postgres
+@pytest.mark.anyio
+async def test_0024_makes_the_archive_digest_per_scope_and_downgrades_safely() -> None:
+    async with legacy_at_0020() as url:
+        alembic(url, "0023")
+        before_rows = await rows(url)
+        alembic(url, "0024")
+        assert await rows(url) == before_rows
+        found = await _index_definitions(url, "imported_archives")
+        assert "uq_imported_archives_source_sha256" not in found
+        assert found["uq_imported_archives_scoped_source_sha256"].endswith("WHERE (scope_id IS NOT NULL)")
+        assert found["uq_imported_archives_legacy_source_sha256"].endswith("WHERE (scope_id IS NULL)")
+
+        await _archive(url, "e" * 64, ADMIN_MEMBER)
+        await _archive(url, "e" * 64, COLLEAGUE_MEMBER)
+        with pytest.raises(IntegrityError):
+            await _archive(url, "e" * 64, ADMIN_MEMBER)
+
+        before_schema, before = await schema(url), await rows(url)
+        refused = alembic_attempt(url, "downgrade", "0023")
+        assert refused.returncode != 0 and "0024 downgrade refused" in refused.stdout + refused.stderr
+        assert await version(url) == "0024"
+        assert await schema(url) == before_schema and await rows(url) == before
+
+        await execute(url, "DELETE FROM imported_archives WHERE source_sha256 = :d", {"d": "e" * 64})
+        clean = alembic_attempt(url, "downgrade", "0023")
+        assert clean.returncode == 0, clean.stderr
+        assert "uq_imported_archives_source_sha256" in await _index_definitions(url, "imported_archives")

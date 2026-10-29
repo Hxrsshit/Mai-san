@@ -39,11 +39,12 @@ from app.history.sources import list_sources
 
 logger = get_logger(__name__)
 
-# Stage 7B units 5-6 (review M1): Admin-only until unit 9 scopes archives.
-# Import-derived memories are written in the caller's scope, but archives,
-# runs and the duplicate-file check are still global: a member importing the
-# operator's mounted export would take the Admin's history into their own
-# scope, and could list everyone's runs.
+# Admin-only (Stage 7B units 5-6 review M1; kept by unit 9). Archives, runs
+# and the duplicate check are per scope since unit 9, but the *sources* are
+# files mounted on the server -- the operator's own exports. A member
+# importing one would take the operator's history into their own scope. A
+# per-member import needs a per-member source (an upload path), which is a
+# product decision, not a scoping one.
 router = APIRouter(
     prefix="/api/history", tags=["history"], dependencies=[Depends(require_admin)]
 )

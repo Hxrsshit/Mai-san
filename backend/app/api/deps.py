@@ -215,6 +215,7 @@ def get_history_import_service(
             session=session, provider=provider, settings=settings, scope=scope
         ),
         settings=settings,
+        scope=scope,
     )
 
 

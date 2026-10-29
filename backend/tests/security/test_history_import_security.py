@@ -187,7 +187,7 @@ async def seed_memory(import_session_factory, content, origin, stated_at, conver
                 source_sha256=content[:20].ljust(64, "0")[:64],
                 source_bytes=1,
                 import_format=ImportFormat.CHATGPT_ZIP,
-                status=ImportStatus.COMPLETED,
+                status=ImportStatus.COMPLETED, **ADMIN_SCOPE.write_columns(),
             )
             session.add(archive)
             await session.flush()
@@ -692,7 +692,7 @@ async def test_the_unique_index_is_what_enforces_idempotency(
                 source_sha256=digest,
                 source_bytes=1,
                 import_format=ImportFormat.CHATGPT_ZIP,
-                status=ImportStatus.COMPLETED,
+                status=ImportStatus.COMPLETED, **ADMIN_SCOPE.write_columns(),
             )
         )
         with pytest.raises(IntegrityError):
