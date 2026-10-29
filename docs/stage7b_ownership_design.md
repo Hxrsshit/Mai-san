@@ -111,6 +111,39 @@ quarantine is resolved:
 Tested on disposable PostgreSQL: upgrade, refusal with orphans, refusal of a
 downgrade that loses information, re-upgrade, schema equals the ORM.
 
+### 6a. Unit 10 decisions (2026-10-30, before implementation)
+
+- **Which references.** Every reference from a scoped table to a scoped
+  parent: `memories.source_conversation_id`, `entity_aliases.entity_id`,
+  `relationships.source_entity_id` / `target_entity_id`, the five
+  `knowledge_conflicts` references, `reminders.conversation_id`,
+  `workflows.conversation_id`, `executions.conversation_id` /
+  `workflow_id`. References to an unscoped table (`memories.source_message_id`,
+  `source_imported_message_id`) and child tables without scope columns
+  (`memory_entities`, `relationship_evidence`, ...) stay enforced in code:
+  child tables gain no scope columns (section 3).
+- **How, without breaking the existing delete behaviour.** Each such
+  reference keeps its existing single-column foreign key (with its CASCADE
+  or SET NULL action) and gains a *second*, composite foreign key
+  `(ref, organisation_id, scope_id) -> parent (id, organisation_id,
+  scope_id)` with no action (NO ACTION, checked at the end of the
+  statement). On CASCADE the child row is gone before the check; on SET NULL
+  the reference column is NULL, and a composite key with a NULL component is
+  not checked (MATCH SIMPLE) -- so the scope columns are never nulled. Legacy
+  rows (scope NULL) are likewise unchecked: quarantine keeps working.
+  Parents gain `UNIQUE (id, organisation_id, scope_id)`.
+- **Preconditions.** The upgrade refuses, changing nothing, if any scoped
+  row references a row of another scope or an unattributed row.
+- **Deferred, with reasons -- a change to steps 3 and 4 above:**
+  - the foreign key from `(organisation_id, scope_id)` to the membership
+    (L0's M2): an organisation-visibility row (`scope_id` = the
+    organisation's id) can never satisfy it, so it belongs with the
+    shared-memory policy that will make that visibility writable. Until
+    then, scopes are only ever derived from an authenticated, active
+    `Principal` (units 4-9, structure-tested).
+  - `NOT NULL` on the scope columns: legacy rows remain unattributed until
+    the owner-approved attribution operation (section 7) has run.
+
 ## 7. Legacy rows (quarantine)
 
 The owner's directive: ambiguous historical data stays quarantined until
