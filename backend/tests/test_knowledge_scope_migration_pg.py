@@ -58,6 +58,7 @@ SCOPED_UNIQUE_STEMS = {
     "memories": ("type_normalized_content", ("memory_type", "normalized_content")),
     "entities": ("normalized_name", ("normalized_name",)),
     "entity_aliases": ("normalized_alias", ("normalized_alias",)),
+    "executions": ("idempotency_key", ("idempotency_key",)),       # migration 0023
 }
 
 

@@ -27,7 +27,7 @@ later units will write from; its visibilities must equal
 """
 
 import uuid
-from typing import Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Protocol, Tuple, runtime_checkable
 
 from sqlalchemy import CheckConstraint, Index, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -85,7 +85,80 @@ def scoped_unique_indexes(table: str, stem: str, *columns: str) -> Tuple[Index, 
     )
 
 
+@runtime_checkable
+class ScopeBinding(Protocol):
+    """What a layer that may not import `app.identity` needs of a trusted
+    scope (Stage 7B unit 8b): execution, tasks, authorization and the
+    background runtime are kept free of identity by a Stage 7A structure
+    test, yet their scoped rows must be filtered and written exactly as
+    everyone else's.
+
+    `app.identity.scope.KnowledgeScope` satisfies this structurally; neither
+    module imports the other. A binding is only ever *received* -- from the
+    composition root, built there from an authenticated, active `Principal`
+    -- never constructed in these layers (a structure test pins that no class
+    there defines `write_columns`; the scope-write tripwire catches any other
+    way of naming the scope columns)."""
+
+    @property
+    def member_id(self) -> uuid.UUID: ...
+
+    def clause(self, model) -> Any: ...
+
+    def write_columns(self) -> Dict[str, object]: ...
+
+    def owns(self, row: object) -> bool: ...
+
+
+def require_binding(value: object, owner: str) -> "ScopeBinding":
+    """`value` itself if it is a scope binding; otherwise `TypeError`. The
+    identity-free counterpart of `app.identity.scope.require_scope`: a
+    missing scope fails closed at construction."""
+    if value is None or not isinstance(value, ScopeBinding) or isinstance(value, (dict, str)):
+        raise TypeError(f"{owner} needs a scope binding")
+    return value
+
+
+#: The composition root's member -> scope resolver (Stage 7B unit 8b). Set
+#: once by `app.main.create_app` to `app.identity.scope.scope_for_member`;
+#: until then every resolution is None, so work that needs a scope is
+#: refused rather than run unscoped.
+_member_scope_resolver: Optional[
+    Callable[[Any, uuid.UUID], Awaitable[Optional["ScopeBinding"]]]
+] = None
+
+
+def register_member_scope_resolver(
+    resolver: Callable[[Any, uuid.UUID], Awaitable[Optional["ScopeBinding"]]],
+) -> None:
+    """Install the resolver. Called by the composition root only (a structure
+    test pins the one call site and forbids any other write). Installing the
+    same resolver again is a no-op; a different one is refused."""
+    global _member_scope_resolver
+    if _member_scope_resolver is not None and _member_scope_resolver is not resolver:
+        raise RuntimeError("a different member scope resolver is already registered")
+    _member_scope_resolver = resolver
+
+
+async def resolve_member_scope(session, member_id: uuid.UUID) -> Optional["ScopeBinding"]:
+    """The scope of `member_id` if they are an active member, re-read now in
+    `session` (under a share lock, so revocation serializes with the work), or
+    None -- also when no resolver is installed. For layers that know only an
+    owner id (tasks, the runner) and may not import `app.identity`."""
+    if _member_scope_resolver is None or member_id is None:
+        return None
+    binding = await _member_scope_resolver(session, member_id)
+    # Belt and braces: a binding is accepted only for the member asked about.
+    if binding is None or not isinstance(binding, ScopeBinding) or binding.member_id != member_id:
+        return None
+    return binding
+
+
 __all__ = [
+    "ScopeBinding",
+    "register_member_scope_resolver",
+    "require_binding",
+    "resolve_member_scope",
     "KNOWLEDGE_SCOPE_CHECK_NAME",
     "KNOWLEDGE_SCOPE_CHECK_SQL",
     "KNOWLEDGE_SCOPE_VISIBILITIES",

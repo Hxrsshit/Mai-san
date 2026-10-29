@@ -278,6 +278,13 @@ async def advance_claimed_task(
         tasks = TaskService(session, settings=settings, owner_id=owner_id)
         runner = TaskRunner(tasks)
 
+        # Stage 7B unit 8b (review M1): the owner first, then the task row --
+        # the lock order revocation uses -- so the two cannot deadlock. An
+        # owner who is no longer active gets nothing written at all.
+        if not await runner.bind_owner():
+            await session.rollback()
+            return None
+
         task = await tasks.get(task_id)
         if task is not None and task.state is TaskState.QUEUED:
             # The runner's own transition, so `running` is written in one

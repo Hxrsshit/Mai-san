@@ -17,6 +17,7 @@ from httpx import AsyncClient
 from app.execution import workspace as workspace_module
 from app.execution.errors import WorkspaceViolation
 from app.execution.schemas import ExecutionRequest, payload_fingerprint
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 
@@ -485,7 +486,7 @@ async def test_policy_tightened_after_approval_still_refuses_at_dispatch(
     from app.tools import policy
     from app.tools.schemas import AuthorizationStatus, DenialReason
 
-    service = ExecutionService(db_session, settings=execution_settings)
+    service = ExecutionService(db_session, settings=execution_settings, scope=ADMIN_SCOPE)
     execution = await service.create(
         ExecutionRequest(
             tool_name="create_text_file",

@@ -20,6 +20,7 @@ from app.execution.models import Execution
 from app.execution.states import ExecutionState
 from app.research.confirmation import Confirmation, interpret
 from app.research.service import CHAT_CONFIRMABLE_TOOLS
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
@@ -98,7 +99,7 @@ async def test_yes_cannot_execute_a_tool_proposed_through_the_api(
     from app.execution.service import ExecutionService
 
     async with session_factory() as session:
-        service = ExecutionService(session, settings=execution_settings)
+        service = ExecutionService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         execution = await service.create(
             ExecutionRequest(
                 tool_name="create_text_file",
@@ -162,7 +163,7 @@ async def test_a_conversation_linked_non_research_tool_is_not_confirmable(
     from app.execution.service import ExecutionService
 
     async with session_factory() as session:
-        service = ExecutionService(session, settings=execution_settings)
+        service = ExecutionService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         execution = await service.create(
             ExecutionRequest(
                 tool_name="create_text_file",

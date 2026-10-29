@@ -46,6 +46,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.models.scope import ScopeBinding, require_binding
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.execution.errors import ExecutionError
@@ -124,11 +125,19 @@ class WorkflowService:
         settings: Optional[Settings] = None,
         executions: Optional[ExecutionService] = None,
         integrations=None,
+        *,
+        scope: ScopeBinding,
     ) -> None:
         self._session = session
         self._settings = settings or get_settings()
+        # Stage 7B unit 8b: the member's scope, for every execution this
+        # service proposes or reads. An injected execution service must be
+        # bound to the same scope.
+        self._scope = require_binding(scope, "WorkflowService")
+        if executions is not None and executions.scope != self._scope:
+            raise TypeError("the execution service is bound to another scope")
         self._executions = executions or ExecutionService(
-            session, settings=self._settings
+            session, settings=self._settings, scope=self._scope
         )
         self._integrations = integrations
 
@@ -148,6 +157,10 @@ class WorkflowService:
         what was proposed, not re-matched as a fresh request.
         """
         try:
+            # Stage 7B unit 8b: a workflow references only a conversation of
+            # its scope (design section 4).
+            if not await self._conversation_in_scope(conversation_id):
+                return WorkflowResult(outcome=WorkflowOutcome.NOT_WORKFLOW)
             pending = await self._pending_for(conversation_id)
             if pending is not None:
                 # The original: a confirmation is its own phrase table.
@@ -223,6 +236,7 @@ class WorkflowService:
             kind="research_document",
             state=WorkflowState.PENDING,
             plan=plan.model_dump(mode="json"),
+            **self._scope.write_columns(),
         )
         self._session.add(workflow)
         await self._session.flush()
@@ -344,6 +358,7 @@ class WorkflowService:
             kind="briefing",
             state=WorkflowState.PENDING,
             plan=plan.model_dump(mode="json"),
+            **self._scope.write_columns(),
         )
         self._session.add(workflow)
         await self._session.flush()
@@ -720,7 +735,11 @@ class WorkflowService:
         *body* of a text file and nothing else. It cannot choose the path, and
         it is bounded well below the executor's own limit.
         """
-        workflow = await self._session.get(Workflow, workflow_id)
+        # A filtered SELECT, never `session.get` (the identity map would
+        # bypass the scope filter).
+        workflow = (await self._session.execute(
+            select(Workflow).where(Workflow.id == workflow_id, self._scope.clause(Workflow))
+        )).scalars().first()
         if workflow is None:
             return WorkflowResult(outcome=WorkflowOutcome.NOT_WORKFLOW)
 
@@ -1026,11 +1045,20 @@ class WorkflowService:
             .where(
                 Workflow.conversation_id == conversation_id,
                 Workflow.state == WorkflowState.AWAITING_APPROVAL,
+                self._scope.clause(Workflow),
             )
             .order_by(Workflow.created_at.desc())
             .limit(1)
         )
         return result.scalars().first()
+
+    async def _conversation_in_scope(self, conversation_id: uuid.UUID) -> bool:
+        from app.database.models.conversation import Conversation
+
+        return (await self._session.execute(
+            select(Conversation.id).where(
+                Conversation.id == conversation_id, self._scope.clause(Conversation))
+        )).first() is not None
 
     def _transition(self, workflow: Workflow, target: WorkflowState) -> None:
         """One table decides every legal move. See `states.py`."""

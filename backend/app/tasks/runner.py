@@ -58,6 +58,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.logging import get_logger
+from app.database.models.scope import resolve_member_scope
 from app.execution.errors import ExecutionError
 from app.execution.service import ExecutionService
 from app.execution.states import ExecutionState
@@ -89,9 +90,12 @@ class TaskRunner:
         self._tasks = tasks
         self._session = tasks._session
         self._settings = tasks._settings
-        self._executions = executions or ExecutionService(
-            self._session, settings=self._settings
-        )
+        # Stage 7B unit 8b: the owner's executions are bound to the owner's
+        # scope, resolved when the first one is created (`_owner_executions`)
+        # -- the owner re-read then, so an inactive owner's step is refused.
+        # An injected service is used as given.
+        self._executions: Optional[ExecutionService] = executions
+        self._owner_bound = False
         # Stage 6E. The one authorization service, and the grant lookup it
         # consults. The runner holds the lookup only to hand it over: it
         # never calls a method on it, and never reads a grant itself.
@@ -102,6 +106,44 @@ class TaskRunner:
         self._grants = grants if grants is not None else GrantService(
             self._session, owner_id=tasks.owner_id
         )
+
+    async def _owner_executions(self) -> ExecutionService:
+        """The execution service for this task's owner, bound to the owner's
+        scope as it is now. Raises `ExecutionError` (`owner_not_active`) when
+        the owner is no longer an active member, which every caller already
+        handles as a refusal: nothing is created and nothing runs. An
+        injected service must be bound to that same scope (review L4)."""
+        if not self._owner_bound:
+            scope = await resolve_member_scope(self._session, self._tasks.owner_id)
+            if scope is None:
+                raise ExecutionError(reason="owner_not_active", detail="no active member scope")
+            if self._executions is None:
+                self._executions = ExecutionService(
+                    self._session, settings=self._settings, scope=scope)
+            elif self._executions.scope != scope:
+                raise ExecutionError(reason="owner_scope_mismatch",
+                                     detail="injected execution service")
+            self._owner_bound = True
+        return self._executions
+
+    async def bind_owner(self) -> bool:
+        """Re-read the owner and bind their scope, *before* any task row is
+        written (review M1). Revocation locks the member row and then the
+        owner's tasks; taking the member first here gives every path one lock
+        order -- member, then task -- so the two cannot deadlock. False when
+        the owner is no longer an active member: the caller then writes
+        nothing."""
+        try:
+            await self._owner_executions()
+        except ExecutionError:
+            return False
+        return True
+
+    def _owner_refusal(self, task_id: uuid.UUID) -> RunnerResult:
+        logger.info("Runner refused: the owner is no longer an active member",
+                    extra={"task_id": str(task_id)})
+        return RunnerResult(outcome=RunnerOutcome.REFUSED, task_id=task_id,
+                            reason="owner_not_active")
 
     async def advance(self, task_id: uuid.UUID) -> RunnerResult:
         """Advance this task by at most one step. Safe to call repeatedly.
@@ -123,6 +165,8 @@ class TaskRunner:
             )
 
     async def _advance(self, task_id: uuid.UUID) -> RunnerResult:
+        if not await self.bind_owner():
+            return self._owner_refusal(task_id)
         task = await self._tasks.get_detail(task_id)
         if task is None:
             # Includes another owner's task: `get_detail` filters on owner in
@@ -213,6 +257,8 @@ class TaskRunner:
             parse_spec,
         )
 
+        if not await self.bind_owner():
+            return self._owner_refusal(task_id)
         task = await self._tasks.get_detail(task_id)
         if task is None:
             return RunnerResult(
@@ -292,7 +338,7 @@ class TaskRunner:
         )
 
         try:
-            execution = await self._executions.create(
+            execution = await (await self._owner_executions()).create(
                 ExecutionRequest(
                     tool_name=binding.capability,
                     arguments=dict(step.arguments or {}),
@@ -588,7 +634,7 @@ class TaskRunner:
         )
 
         try:
-            execution = await self._executions.create(
+            execution = await (await self._owner_executions()).create(
                 ExecutionRequest(
                     tool_name=binding.capability,
                     arguments=dict(step.arguments or {}),

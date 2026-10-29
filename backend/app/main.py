@@ -110,6 +110,14 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
 
+    # Stage 7B unit 8b. The task layers know only an owner id and may not
+    # import identity; they obtain the owner's scope at execution time
+    # through this resolver, which re-reads the member under a share lock.
+    from app.database.models.scope import register_member_scope_resolver
+    from app.identity.scope import scope_for_member
+
+    register_member_scope_resolver(scope_for_member)
+
     app = FastAPI(
         title=f"{settings.APP_NAME} API",
         description="Stage 1 foundation: chat, conversation persistence, LLM integration.",

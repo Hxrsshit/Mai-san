@@ -54,6 +54,16 @@ WS = "list_workspace_files"
 
 
 @pytest.fixture(autouse=True)
+async def _other_owner_is_an_active_member(session_factory):
+    """Stage 7B unit 8b: work runs only for an active owner, so the second
+    owner these tests use is a real member."""
+    from tests.scopes import make_active_member
+    from tests.test_delivery import OTHER as _OTHER
+
+    await make_active_member(session_factory, _OTHER)
+
+
+@pytest.fixture(autouse=True)
 def _registry():
     from app.tools import catalog  # noqa: F401
 

@@ -637,10 +637,16 @@ async def test_another_owner_cannot_advance_a_task(
 ) -> None:
     service, runner, db_session = calendar_runner
     task_id = await authorized_task(service, step("a", 1))
+    other = uuid.UUID("bbbbbbbb-0000-0000-0000-00000000bbbb")
+    # A real, active second member (Stage 7B unit 8b), so what refuses them is
+    # the owner filter, not their lack of a membership.
+    from tests.scopes import add_active_member
+
+    await add_active_member(db_session, other)
 
     theirs = TaskService(
         db_session, settings=service._settings,
-        owner_id=uuid.UUID("bbbbbbbb-0000-0000-0000-00000000bbbb"),
+        owner_id=other,
     )
     their_runner = TaskRunner(theirs)
     result = await their_runner.advance(task_id)
@@ -853,7 +859,7 @@ async def test_a_human_approval_lets_the_runner_proceed(
     assert execution.state is ExecutionState.PROPOSED
 
     # A person approves that specific execution, through the existing path.
-    await runner._executions.approve(execution.id)
+    await (await runner._owner_executions()).approve(execution.id)
     await db_session.refresh(execution)
     assert execution.state is ExecutionState.APPROVED
 

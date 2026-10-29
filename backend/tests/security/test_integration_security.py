@@ -30,6 +30,7 @@ from app.integrations.errors import NetworkPolicyViolation
 from app.integrations.policy import NetworkPolicy, is_forbidden_address
 from app.integrations.result import ExternalData, ExternalResult, ExternalResultState
 from tests.support.fake_integration import FakeIntegration, integration_environment
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 INTEGRATIONS = APP / "integrations"
@@ -493,7 +494,7 @@ async def test_hostile_external_content_grants_nothing(
             db_session, settings=execution_settings, authorization=authorization,
             registry=executable, integrations=integrations,
         ),
-        executable=executable,
+        executable=executable, scope=ADMIN_SCOPE,
     )
 
     execution = await service.create(

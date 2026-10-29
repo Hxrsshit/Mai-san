@@ -29,8 +29,8 @@ before substantial work and updates it after completing work (see
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only); then the Stage 0 consolidation checkpoints (not stages), each committing work that had been uncommitted: C1 `fc80592`, C2 `30a1342`, C3 `7ac52b4`, C4 `4b8d407`, C5 `d4f8339` (documentation only); then the multi-agent workflow configuration, `5c7801c` (tooling and docs, no application code); then the tab accessibility fix, the commit titled `fix: link only the selected tab to its panel` (frontend only) |
 | Previous stages | 6P harden monitoring concurrency and truthfulness, the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; Stage 6O was an inspection-only audit with no commit of its own); 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main`. Nothing is pushed: on 2026-10-29, after Stage 7B L0 (`e1e8b55`), local `main` was 18 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording it adds one more. |
-| Latest migration | Committed head: `0022_scoped_uniqueness.py` (Stage 7B units 5-6; per-scope unique indexes; verified on SQLite and disposable PostgreSQL 16 by `tests/test_scoped_uniqueness_migration_pg.py`). Before it, `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020`, `0021` and `0022` (security review H1; changing that needs a separate approved plan). |
-| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (`1cb1e94`, scoped knowledge) **7** (`bbd77ff`, background membership gates) and **8a** (reminders; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
+| Latest migration | Committed head: `0023_scoped_execution_idempotency.py` (Stage 7B unit 8b), and before it `0022_scoped_uniqueness.py` (Stage 7B units 5-6); both per-scope unique indexes, verified on SQLite and disposable PostgreSQL 16 by `tests/test_scoped_uniqueness_migration_pg.py`. Before it, `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020` to `0023` (security review H1; changing that needs a separate approved plan). |
+| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (`1cb1e94`, scoped knowledge) **7** (`bbd77ff`, background membership gates) **8a** (`f9e22b1`, reminders) and **8b** (executions and workflows; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
 | Uncommitted work (2026-10-29) | Only the untracked `MAi branding .png`. Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. What is running was last checked on 2026-10-16 (see Stage 0 C5): `mai-backend` started 2026-10-14 09:48 UTC and was still unchanged on 2026-10-29 (same ID and start time, 0 restarts). |
 
 ### Uncommitted / in progress (NOT completed)
@@ -334,7 +334,113 @@ not commit them as part of other work, and do not describe them as done.
 
 ## Completed (newest first)
 
-### Stage 7B unit 8a: reminders belong to their member (this commit, 2026-10-30)
+### Stage 7B unit 8b: executions and workflows belong to their member (this commit, 2026-10-30)
+
+- **Status:** completed (the second half of unit 8; reminders were 8a).
+  One migration (0023, below); no dependency change. **Not applied to the
+  real database.**
+- **What:**
+  - **A scope for the identity-free layers.** `app.execution`, `app.tasks`,
+    `app.authorization` and `app.background` must not import identity
+    (Stage 7A). `app.database.models.scope` now holds `ScopeBinding` (a
+    runtime-checkable protocol: `member_id`, `clause`, `write_columns`,
+    `owns`, which `KnowledgeScope` satisfies structurally), `require_binding`,
+    and a member-scope resolver registry. `app.main.create_app` registers
+    `app.identity.scope.scope_for_member` (the member re-read under the unit 7
+    share lock, then `KnowledgeScope.personal`). The registry refuses a
+    second, different resolver, and a resolved binding is accepted only for
+    the member asked about.
+  - **`ExecutionService(..., *, scope)`**: required binding. Executions are
+    created with the scope; `get` (a filtered SELECT, not `session.get`),
+    `history` and the idempotency lookup are scope-filtered. A conversation
+    outside the scope is not linked; a workflow outside the scope is refused.
+    The idempotency race now uses a savepoint, not a full rollback, so the
+    caller's transaction (and its membership lock) survives.
+  - **Integrations are the configured owner's alone until unit 9.** An
+    integration is one connected account; a member's calendar, mail or
+    search execution would act on the owner's. Integration-backed tools are
+    refused at proposal for any other member (`integration_owner_only`).
+  - **Research, calendar, mail and workflow services** require a binding and
+    pass it on; an injected execution service must have the same scope. The
+    research and mail pending-proposal lookups and every workflow read and
+    write are scoped; a workflow turn in a conversation outside the scope is
+    not a workflow.
+  - **Task executions** (`TaskService.create_step_execution`, `TaskRunner`)
+    resolve the owner's scope at execution time; an owner who is not an
+    active member (or no registered resolver) gets `owner_not_active` and
+    nothing is created. An injected execution service must match the owner's
+    scope. **Lock order:** the runner binds the owner (member row, FOR SHARE)
+    before any task-row write, and the runtime does so before
+    `mark_task_running` -- the same order revocation uses (member, then
+    tasks), so the two cannot deadlock.
+  - **Migration `0023_scoped_execution_idempotency`:** the global unique
+    index on `executions.idempotency_key` -- which let one member's
+    payload-derived key return or block another's record (and, before
+    per-scope keys, let one member pre-create an execution under another's
+    runner key) -- becomes per scope plus a legacy partial index. No data
+    change; downgrade refuses shared keys; offline downgrade refused.
+  - The reminder cancel route answers 404 rather than 500 if the re-read
+    after a committed cancel fails.
+- **Consequences:** legacy (unattributed) executions and workflows are
+  quarantined; a legacy in-flight task step gets a new scoped execution that
+  needs approval again. An owner who is inactive when their step runs gets
+  the step refused (fail closed), including during a temporary organisation
+  suspension.
+- **Tests:** `tests/test_execution_scope.py` (21): every service refuses a
+  non-binding; scope written on create; a colleague and an outsider cannot
+  read, see the journal of, approve, revoke or run the Admin's execution
+  (rows unchanged), even from the identity map; the same payload is one
+  execution per scope; references stay inside the scope; legacy executions
+  quarantined and never returned as "the original"; the API 404s; a
+  workflow of another scope is never found and a turn in another scope's
+  conversation is not a workflow; an injected service of another scope is
+  refused; a task step runs in its owner's scope; a missing, revoked or
+  suspended owner and an unregistered resolver get no execution; the
+  background runner creates nothing for an inactive owner; integration-backed
+  tools are the owner's alone; the research and mail proposal lookups never
+  find another scope's execution. PostgreSQL forced race
+  (`tests/test_background_membership_races_pg.py`): the runner waits on the
+  member lock without holding the task row, then writes nothing after the
+  revocation. Migration 0023 on SQLite (3) and gated PostgreSQL (1); 0022's
+  tests now target 0022. Structure: `Execution`, `Workflow` and
+  `ExecutionEvent` in the statement checker; the dispatcher's claim exempt
+  for its one `update(Execution)` statement only; `active_member_rows` a
+  binding only in the scheduler's discovery, with exactly that call site;
+  the execution journal reachable only from the execution service and the
+  dispatcher; the resolver registered only by `app/main.py` and never
+  written elsewhere; no class in the identity-free layers defines
+  `write_columns`. Mechanical: 15 test files pass the Admin scope; eight
+  modules make their second owner a real active member
+  (`tests.scopes.make_active_member`); three "another owner" tests do too, so
+  they still test the owner filter.
+- **Mutation check:** eight defects, all caught -- `get` unscoped (6),
+  idempotency lookup unscoped (3), conversation reference unchecked (1),
+  workflow reference unchecked (1), `finalise` unscoped (1), task step
+  ignoring an inactive owner (2), runner ignoring an inactive owner (1),
+  workflow turn ignoring its conversation (1) -- and the lock-order fix (the
+  PostgreSQL race fails without it). Sources restored byte for byte.
+- **Independent review** (the `security-reviewer` agent, read-only, over 8a
+  and 8b): no cross-scope read, write, approve or run path found. Fixed:
+  **M1** the runner/revocation lock-order inversion; **M2** integration
+  state is global -- integration-backed tools are owner-only until unit 9;
+  **M3** the checker's cross-member binding and dispatcher exemption
+  narrowed, the journal's callers pinned; **L1** savepoint on the
+  idempotency race; **L3** resolver registration and result checked; **L4**
+  injected services' scope checked in the task layers; **L5** revoked and
+  suspended owners, proposal lookups and the race tested; **L6** a comment
+  corrected. Deferred: **L2** per-member fairness for reminders (one member
+  with many due reminders can delay others' by a few polls) to unit 12's
+  usage limits. Noted: 0023 takes ordinary (non-concurrent) index locks --
+  apply with the application stopped.
+- **Verification (SQLite + disposable PostgreSQL 16, 2026-10-30, after the
+  review fixes):** full suite ordered **7297 passed, 1 xfailed, 0 failed, 0
+  skipped**; shuffled (seed 3301876522) **7297 passed, 1 xfailed, 0
+  failed**. `tests/security/test_secrets.py` excluded as before. (The run
+  before it failed one test on both passes: a third "another owner" test
+  whose owner had no membership row; that owner is now a real member, so it
+  still tests the owner filter.)
+
+### Stage 7B unit 8a: reminders belong to their member (`f9e22b1`, 2026-10-30)
 
 - **Status:** completed (the reminder half of unit 8; executions and
   workflows are unit 8b). No migration, no dependency change.

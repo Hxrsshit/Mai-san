@@ -107,7 +107,7 @@ def get_intent_service(
 
 
 def get_execution_service(
-    session: DbSession, settings: AppSettings
+    session: DbSession, settings: AppSettings, scope: "Scope"
 ) -> ExecutionService:
     """Built per request, and gated inside rather than here.
 
@@ -116,7 +116,7 @@ def get_execution_service(
     work with the switch off -- unreachable. The service itself decides which
     operations the switch covers.
     """
-    return ExecutionService(session, settings=settings)
+    return ExecutionService(session, settings=settings, scope=scope)
 
 
 def get_tool_registry() -> ToolRegistry:

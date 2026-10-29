@@ -8,6 +8,17 @@ only an explicit run request reaches the dispatcher.
 Nothing here is triggered by a model. `ChatService` may *identify* that a turn
 described an action (Stage 4D), and identifying is where it stops: no code
 path leads from a generated reply to `create()`, let alone to `run()`.
+
+**Whose executions (Stage 7B unit 8b).** The service belongs to one scope,
+given at construction as a `ScopeBinding` (this package may not import
+`app.identity`; the composition root hands it the member's `KnowledgeScope`).
+Executions are created with `scope.write_columns()`; every read, the
+idempotency lookup included, is filtered by `scope.clause`, so another
+member's execution is "unknown", exactly like a missing id, and one
+member's payload-derived key never returns another's record (the unique
+index is per scope since migration 0023). A conversation or workflow is
+referenced only if it is in the same scope. The dispatcher receives only an
+execution this service has just loaded inside its scope.
 """
 
 import uuid
@@ -20,6 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
+from app.database.models.conversation import Conversation
+from app.database.models.scope import ScopeBinding, require_binding
 from app.execution import approvals, audit
 from app.execution.dispatcher import Dispatcher
 from app.execution.errors import (
@@ -55,8 +68,11 @@ class ExecutionService:
         authorization: Optional[AuthorizationService] = None,
         dispatcher: Optional[Dispatcher] = None,
         executable: Optional[object] = None,
+        *,
+        scope: ScopeBinding,
     ) -> None:
         self._session = session
+        self._scope = require_binding(scope, "ExecutionService")
         self._settings = settings or get_settings()
         self._authorization = authorization or AuthorizationService()
         # Injectable so a test can exercise the lifecycle against its own
@@ -71,6 +87,10 @@ class ExecutionService:
             authorization=self._authorization,
             registry=self._executable,
         )
+
+    @property
+    def scope(self) -> ScopeBinding:
+        return self._scope
 
     # --- Propose ------------------------------------------------------------
 
@@ -89,6 +109,17 @@ class ExecutionService:
         record of what was decided, never the basis for deciding.
         """
         self._require_enabled()
+
+        # References stay inside the scope (design section 4). A foreign or
+        # unknown conversation is simply not linked -- it would otherwise
+        # make the proposal confirmable from another member's chat. A
+        # workflow step must belong to a workflow of this scope.
+        if conversation_id is not None and not await self._in_scope(Conversation, conversation_id):
+            conversation_id = None
+        if workflow_id is not None and not await self._workflow_in_scope(workflow_id):
+            raise InvalidStateTransition(detail="workflow_not_in_scope")
+
+        self._require_integration_owner(request.tool_name)
 
         decision = self._authorization.authorize(
             ActionProposal(
@@ -129,16 +160,19 @@ class ExecutionService:
             # reaching one.
             workflow_id=workflow_id,
             step_index=step_index,
+            **self._scope.write_columns(),
         )
-        self._session.add(execution)
-
         try:
-            await self._session.flush()
+            # A savepoint, not a full rollback (Stage 7B review L1): losing
+            # the race must not also release what the caller's transaction
+            # holds -- the owner's membership lock among it.
+            async with self._session.begin_nested():
+                self._session.add(execution)
+                await self._session.flush()
         except IntegrityError:
             # Two concurrent requests carrying the same key. The unique
             # constraint decided; the loser reads the winner's row rather than
             # retrying, so both callers see one execution.
-            await self._session.rollback()
             duplicate = await self._by_idempotency_key(key)
             if duplicate is None:
                 raise
@@ -355,7 +389,11 @@ class ExecutionService:
     # --- Reads --------------------------------------------------------------
 
     async def get(self, execution_id: uuid.UUID) -> Execution:
-        execution = await self._session.get(Execution, execution_id)
+        # A filtered SELECT, never `session.get` (the identity map would
+        # bypass the filter).
+        execution = (await self._session.execute(
+            select(Execution).where(Execution.id == execution_id, self._scope.clause(Execution))
+        )).scalars().first()
         if execution is None:
             raise UnknownExecution(detail=str(execution_id))
         return execution
@@ -365,7 +403,8 @@ class ExecutionService:
         await self.get(execution_id)
         result = await self._session.execute(
             select(ExecutionEvent)
-            .where(ExecutionEvent.execution_id == execution_id)
+            .join(Execution, Execution.id == ExecutionEvent.execution_id)
+            .where(ExecutionEvent.execution_id == execution_id, self._scope.clause(Execution))
             .order_by(ExecutionEvent.sequence)
         )
         return list(result.scalars())
@@ -374,9 +413,35 @@ class ExecutionService:
 
     async def _by_idempotency_key(self, key: str) -> Optional[Execution]:
         result = await self._session.execute(
-            select(Execution).where(Execution.idempotency_key == key)
+            select(Execution).where(
+                Execution.idempotency_key == key, self._scope.clause(Execution)
+            )
         )
         return result.scalars().first()
+
+    async def _in_scope(self, model, row_id: uuid.UUID) -> bool:
+        return (await self._session.execute(
+            select(model.id).where(model.id == row_id, self._scope.clause(model))
+        )).first() is not None
+
+    async def _workflow_in_scope(self, workflow_id: uuid.UUID) -> bool:
+        from app.workflows.models import Workflow
+
+        return await self._in_scope(Workflow, workflow_id)
+
+    def _require_integration_owner(self, tool_name: str) -> None:
+        """Integration-backed tools are the configured owner's alone until
+        integration state is scoped (Stage 7B unit 9; review M2).
+
+        An integration is one connected account -- the owner's calendar,
+        the owner's mailbox -- held process-wide. Another member's execution
+        would be their own row acting on the owner's data, so it is refused
+        at proposal, before anything is recorded."""
+        from app.core.owner import CONFIGURED_OWNER_ID
+
+        tool = self._executable.get(tool_name)
+        if tool is not None and tool.integration_name and self._scope.member_id != CONFIGURED_OWNER_ID:
+            raise NotExecutable(detail="integration_owner_only")
 
     def _require_enabled(self) -> None:
         if not self._settings.EXECUTION_ENABLED:

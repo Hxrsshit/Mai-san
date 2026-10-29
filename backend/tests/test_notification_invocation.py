@@ -52,6 +52,16 @@ DB_SECRET = "postgresql+asyncpg://mai:db-password-sentinel-6l@db:5432/mai"
 PATH_SECRET = "/srv/mai/internal/path-sentinel-6l.py"
 
 
+@pytest.fixture(autouse=True)
+async def _other_owner_is_an_active_member(session_factory):
+    """Stage 7B unit 8b: work runs only for an active owner, so the second
+    owner these tests use is a real member."""
+    from tests.scopes import make_active_member
+    from tests.test_delivery import OTHER as _OTHER
+
+    await make_active_member(session_factory, _OTHER)
+
+
 def route(notification_id) -> str:
     return f"/api/task-notifications/{notification_id}/deliveries"
 

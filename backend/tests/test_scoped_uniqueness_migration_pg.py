@@ -94,7 +94,7 @@ async def test_the_upgrade_swaps_each_global_index_for_two_partial_ones() -> Non
 @pytest.mark.anyio
 async def test_uniqueness_holds_per_scope_and_among_legacy_rows() -> None:
     async with legacy_at_0020() as url:
-        alembic(url, "head")
+        alembic(url, "0022")
         await _entity(url, "postgresql", ADMIN_MEMBER)
         await _entity(url, "postgresql", COLLEAGUE_MEMBER)     # another scope: allowed
         with pytest.raises(IntegrityError):
@@ -110,7 +110,7 @@ async def test_uniqueness_holds_per_scope_and_among_legacy_rows() -> None:
 @pytest.mark.parametrize("second", [COLLEAGUE_MEMBER, None], ids=["two-scopes", "scoped-and-legacy"])
 async def test_the_downgrade_refuses_a_key_shared_across_scopes(second) -> None:
     async with legacy_at_0020() as url:
-        alembic(url, "head")
+        alembic(url, "0022")
         await _entity(url, "shared", ADMIN_MEMBER)
         await _entity(url, "shared", second)
         before_schema, before_rows = await schema(url), await rows(url)
@@ -152,7 +152,7 @@ async def test_the_migrated_unique_indexes_are_the_models_indexes() -> None:
     from app.database.metadata import Base
 
     async with legacy_at_0020() as url:
-        alembic(url, "head")
+        alembic(url, "0022")
         for table, (_old, stem, _columns) in INDEXES.items():
             found = await _index_definitions(url, table)
             for kind in ("scoped", "legacy"):
@@ -166,3 +166,46 @@ async def test_the_migrated_unique_indexes_are_the_models_indexes() -> None:
                 assert f"WHERE {predicate}" in declared and migrated.endswith(f"WHERE ({predicate})")
                 columns = declared[declared.index("(") + 1:declared.index(")")]
                 assert f"({columns})" in migrated, (name, declared, migrated)
+
+
+# --- Migration 0023: execution idempotency per scope (unit 8b) -----------------
+
+
+async def _execution(url: str, key: str, member=None) -> None:
+    await execute(url,
+        "INSERT INTO executions (id, tool_name, arguments, state, authorization_status,"
+        " idempotency_key, created_at, updated_at, organisation_id, scope_id, scope_visibility)"
+        " VALUES (:id, 'echo', '{}', 'proposed', 'allowed', :key, :now, :now, :org, :member,"
+        " CASE WHEN CAST(:member AS uuid) IS NULL THEN NULL ELSE 'personal' END)",
+        {"id": uuid.uuid4(), "key": key, "now": NOW, "org": DEFAULT_ORG, "member": member})
+
+
+@needs_postgres
+@pytest.mark.anyio
+async def test_0023_makes_idempotency_per_scope_and_downgrades_safely() -> None:
+    async with legacy_at_0020() as url:
+        alembic(url, "0022")
+        before_rows = await rows(url)
+        alembic(url, "0023")
+        assert await rows(url) == before_rows
+        found = await _index_definitions(url, "executions")
+        assert "uq_executions_idempotency_key" not in found
+        assert found["uq_executions_scoped_idempotency_key"].endswith("WHERE (scope_id IS NOT NULL)")
+        assert found["uq_executions_legacy_idempotency_key"].endswith("WHERE (scope_id IS NULL)")
+
+        await _execution(url, "same-payload", ADMIN_MEMBER)
+        await _execution(url, "same-payload", COLLEAGUE_MEMBER)
+        with pytest.raises(IntegrityError):
+            await _execution(url, "same-payload", ADMIN_MEMBER)
+
+        before_schema, before = await schema(url), await rows(url)
+        refused = alembic_attempt(url, "downgrade", "0022")
+        assert refused.returncode != 0
+        assert "0023 downgrade refused" in refused.stdout + refused.stderr
+        assert await version(url) == "0023"
+        assert await schema(url) == before_schema and await rows(url) == before
+
+        await execute(url, "DELETE FROM executions WHERE idempotency_key = 'same-payload'")
+        clean = alembic_attempt(url, "downgrade", "0022")
+        assert clean.returncode == 0, clean.stderr
+        assert "uq_executions_idempotency_key" in await _index_definitions(url, "executions")

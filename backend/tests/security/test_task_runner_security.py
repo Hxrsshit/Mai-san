@@ -350,10 +350,16 @@ async def test_another_owners_step_cannot_be_executed(
 ) -> None:
     service, runner, db_session = calendar_runner
     task_id = await authorized_task(service, step("a", 1))
+    other = uuid.UUID("cccccccc-0000-0000-0000-00000000cccc")
+    # A real, active second member (Stage 7B unit 8b), so what refuses them is
+    # the owner filter, not their lack of a membership.
+    from tests.scopes import add_active_member
+
+    await add_active_member(db_session, other)
 
     theirs = TaskService(
         db_session, settings=service._settings,
-        owner_id=uuid.UUID("cccccccc-0000-0000-0000-00000000cccc"),
+        owner_id=other,
     )
     result = await TaskRunner(theirs).advance(task_id)
     assert result.outcome is RunnerOutcome.REFUSED

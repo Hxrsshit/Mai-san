@@ -43,13 +43,13 @@ SCOPED_TABLES = {
 #: these tables).
 GLOBAL_UNIQUES = {
     "imported_archives": ("uq_imported_archives_source_sha256", ["source_sha256"]),
-    "executions": ("uq_executions_idempotency_key", ["idempotency_key"]),
 }
 #: Migration 0022: uniqueness per scope. (table, stem, key columns).
 SCOPED_UNIQUES = {
     "memories": ("type_normalized_content", ["memory_type", "normalized_content"]),
     "entities": ("normalized_name", ["normalized_name"]),
     "entity_aliases": ("normalized_alias", ["normalized_alias"]),
+    "executions": ("idempotency_key", ["idempotency_key"]),          # migration 0023
 }
 
 
@@ -121,7 +121,15 @@ def test_the_migration_creates_the_model_indexes() -> None:
     spec = importlib.util.spec_from_file_location("migration_0022", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert {t: (stem, list(cols)) for t, _old, stem, cols in module.INDEXES} == SCOPED_UNIQUES
+    assert {t: (stem, list(cols)) for t, _old, stem, cols in module.INDEXES} == {
+        t: v for t, v in SCOPED_UNIQUES.items() if t != "executions"}
+    path = BACKEND / "alembic" / "versions" / "0023_scoped_execution_idempotency.py"
+    spec = importlib.util.spec_from_file_location("migration_0023", path)
+    later = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(later)
+    stem, _columns = SCOPED_UNIQUES["executions"]
+    assert (later.SCOPED, later.LEGACY) == (f"uq_executions_scoped_{stem}",
+                                            f"uq_executions_legacy_{stem}")
 
 
 def test_personal_is_the_only_writable_visibility() -> None:
@@ -166,7 +174,9 @@ SCOPE_WRITERS = {
     APP / "entities" / "service.py",                # unit 5: entities, aliases, the scope's User
     APP / "relationships" / "service.py",           # unit 5: relationships
     APP / "knowledge" / "lifecycle.py",             # unit 5: conflict links
-    APP / "reminders" / "service.py",               # unit 8: reminders
+    APP / "reminders" / "service.py",               # unit 8a: reminders
+    APP / "execution" / "service.py",               # unit 8b: executions
+    APP / "workflows" / "service.py",               # unit 8b: workflows
 }
 
 
@@ -355,12 +365,22 @@ def test_no_identity_map_read_of_a_conversation_or_message_anywhere() -> None:
 
 #: Scoped knowledge models, and the child tables read only through them.
 KNOWLEDGE_MODELS = {"Memory", "Entity", "EntityAlias", "Relationship", "KnowledgeConflict",
-                    "Reminder"}                                    # unit 8
-KNOWLEDGE_CHILDREN = {"MemoryEntity", "RelationshipEvidence", "ReminderNotification"}
-#: Calls that bind a model to a scope: the member's own scope, or -- for the
-#: reminder scheduler's cross-member discovery -- "rows of active members'
-#: personal scopes" (`active_member_rows`), which never admits a legacy row.
-SCOPE_BINDING_CALLS = {"clause", "active_member_rows"}
+                    "Reminder", "Execution", "Workflow"}           # unit 8
+KNOWLEDGE_CHILDREN = {"MemoryEntity", "RelationshipEvidence", "ReminderNotification",
+                      "ExecutionEvent"}
+#: Reviewed statements on a scoped model that carry no clause, each justified
+#: here: (path relative to app/, function) -> the one (call, model) exempted.
+#: Every other statement in the function is still checked (review M3).
+REVIEWED_SCOPED_STATEMENTS = {
+    # The dispatcher claims, by id, an execution that `ExecutionService` has
+    # just loaded inside its scope and handed over; it is never given an id.
+    ("execution/dispatcher.py", "_claim"): ("update", "Execution"),
+}
+#: Calls that bind a model to a scope: the member's own `clause`.
+SCOPE_BINDING_CALLS = {"clause"}
+#: "Rows of active members' personal scopes" -- cross-member by design -- is
+#: a binding only for the reminder scheduler's discovery (review M3).
+CROSS_MEMBER_BINDINGS = {("reminders/scheduler.py", "due_reminders"): "active_member_rows"}
 #: Reviewed child-table statements (memory links, evidence) that need no
 #: clause of their own, keyed by (path relative to app/, function). The
 #: exemption covers only statements naming child tables alone; any statement
@@ -372,6 +392,9 @@ REVIEWED_KNOWLEDGE_STATEMENTS = {
     # The evidence pair is checked only after `scope.owns` has verified both
     # the relationship and the memory.
     ("relationships/service.py", "_add_evidence"),
+    # The journal append's sequence read, by an execution id the scoped
+    # service or the dispatcher has just loaded inside its scope.
+    ("execution/audit.py", "record"),
 }
 
 _SIMPLE_STATEMENTS = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return)
@@ -396,6 +419,16 @@ def _statement_expressions(function) -> list:
     return found
 
 
+def _names_in(call: ast.Call, models: set) -> set:
+    """Model names used in a call's positional arguments."""
+    found = set()
+    for arg in call.args:
+        for node in ast.walk(arg):
+            if isinstance(node, ast.Name) and node.id in models:
+                found.add(node.id)
+    return found
+
+
 def _call_name(call: ast.Call):
     return call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None)
 
@@ -416,6 +449,8 @@ def _unbound_knowledge_statements(source: str, relative: str) -> list:
         if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         reviewed = (relative, function.name) in REVIEWED_KNOWLEDGE_STATEMENTS
+        exempt = REVIEWED_SCOPED_STATEMENTS.get((relative, function.name))
+        cross = CROSS_MEMBER_BINDINGS.get((relative, function.name))
         for expression in _statement_expressions(function):
             calls = [n for n in ast.walk(expression) if isinstance(n, ast.Call)]
             if not any(_call_name(c) in _QUERY_CALLS for c in calls):
@@ -424,9 +459,15 @@ def _unbound_knowledge_statements(source: str, relative: str) -> list:
                      if isinstance(n, ast.Name) and n.id in KNOWLEDGE_MODELS | KNOWLEDGE_CHILDREN}
             if not named:
                 continue
+            binders = SCOPE_BINDING_CALLS | ({cross} if cross else set())
             bound = {c.args[0].id for c in calls
-                     if _call_name(c) in SCOPE_BINDING_CALLS and c.args
+                     if _call_name(c) in binders and c.args
                      and isinstance(c.args[0], ast.Name)}
+            if exempt is not None:
+                call, model = exempt
+                if any(_call_name(c) == call and _names_in(c, {model}) for c in calls) \
+                        and named == {model}:
+                    continue
             scoped = named & KNOWLEDGE_MODELS
             if scoped:
                 if scoped <= bound:
@@ -451,7 +492,8 @@ def test_every_knowledge_query_is_scope_bound() -> None:
 
 
 def test_the_reviewed_knowledge_statements_still_exist() -> None:
-    for relative, name in REVIEWED_KNOWLEDGE_STATEMENTS:
+    for relative, name in (REVIEWED_KNOWLEDGE_STATEMENTS | set(REVIEWED_SCOPED_STATEMENTS)
+                           | set(CROSS_MEMBER_BINDINGS)):
         tree = ast.parse((APP / relative).read_text(encoding="utf-8"))
         assert any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
                    for n in ast.walk(tree)), (relative, name)
@@ -533,3 +575,95 @@ def test_no_identity_map_read_of_a_knowledge_row_anywhere() -> None:
 ])
 def test_the_identity_map_checker(source, flagged) -> None:
     assert bool(_identity_map_reads(source)) is flagged
+
+
+
+def test_the_member_scope_resolver_is_registered_only_by_the_composition_root() -> None:
+    """Unit 8b: whoever registers the resolver decides what an owner's scope
+    is for every task execution. Exactly one call site: `app/main.py`."""
+    sites = []
+    for path in sorted(APP.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call):
+                name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", None)
+                if name == "register_member_scope_resolver":
+                    sites.append(str(path.relative_to(BACKEND)))
+    assert sites == ["app/main.py"]
+
+
+def test_nothing_in_the_identity_free_layers_implements_a_scope_binding() -> None:
+    """A binding is received, never made, in execution, tasks, authorization
+    and background: no class there defines `write_columns`."""
+    for package in ("execution", "tasks", "authorization", "background", "workflows"):
+        for path in sorted((APP / package).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.ClassDef):
+                    methods = {n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+                    assert "write_columns" not in methods, (str(path), node.name)
+
+
+
+def _call_sites(name: str) -> list:
+    sites = []
+    for path in sorted(APP.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(function):
+                if isinstance(node, ast.Call) and _call_name(node) == name:
+                    sites.append((str(path.relative_to(APP)), function.name))
+    return sorted(set(sites))
+
+
+def test_the_cross_member_binding_has_exactly_its_reviewed_call_site() -> None:
+    """Review M3: `active_member_rows` selects every active member's rows; it
+    is used by the reminder scheduler's discovery and nowhere else."""
+    assert _call_sites("active_member_rows") == sorted(CROSS_MEMBER_BINDINGS)
+
+
+def test_the_execution_journal_is_written_only_by_the_execution_package() -> None:
+    """`audit.record` journals against any execution id it is given; only
+    the scoped service and the dispatcher (which acts on what the service
+    loaded) may call it (review M3)."""
+    allowed = {"execution/dispatcher.py", "execution/service.py"}
+    reachers = []
+    for path in sorted(APP.rglob("*.py")):
+        relative = str(path.relative_to(APP))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom):
+                names = {alias.name for alias in node.names}
+                if node.module == "app.execution.audit" and "record" in names:
+                    reachers.append(relative)
+                if node.module == "app.execution" and "audit" in names:
+                    reachers.append(relative)
+            elif isinstance(node, ast.Import):
+                if any(alias.name == "app.execution.audit" for alias in node.names):
+                    reachers.append(relative)
+    assert set(reachers) <= allowed, sorted(set(reachers))
+
+
+def test_the_resolver_is_never_written_outside_its_module() -> None:
+    """Review L3: no direct assignment or `setattr` of the resolver slot."""
+    offenders = []
+    for path in sorted(APP.rglob("*.py")):
+        if path == APP / "database" / "models" / "scope.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute) and node.attr == "_member_scope_resolver":
+                offenders.append(str(path.relative_to(APP)))
+            if isinstance(node, ast.Constant) and node.value == "_member_scope_resolver":
+                offenders.append(str(path.relative_to(APP)))
+    assert offenders == []
+
+
+@pytest.mark.parametrize("source, flagged", [
+    # The reviewed exemption covers its one statement only.
+    ("async def _claim(self, e): await self._s.execute(update(Execution).where(Execution.id == e.id))", False),
+    ("async def _claim(self, e):\n    await self._s.execute(update(Execution).where(Execution.id == e.id))\n"
+     "    await self._s.execute(select(Execution))", True),
+    # `active_member_rows` outside its reviewed function is not a binding.
+    ("async def f(s): return await s.execute(select(Execution).where(active_member_rows(Execution)))", True),
+])
+def test_the_narrowed_exemptions(source, flagged) -> None:
+    assert bool(_unbound_knowledge_statements(source, "execution/dispatcher.py")) is flagged

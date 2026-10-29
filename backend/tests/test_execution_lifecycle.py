@@ -13,6 +13,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.execution.states import ExecutionState
+from tests.scopes import ADMIN_SCOPE
 
 CREATE = {
     "tool_name": "create_text_file",
@@ -479,7 +480,7 @@ async def test_the_dispatcher_validates_arguments_itself(
         authorization=permissive,
         dispatcher=Dispatcher(
             db_session, settings=execution_settings, authorization=permissive
-        ),
+        ), scope=ADMIN_SCOPE,
     )
 
     execution = await service.create(

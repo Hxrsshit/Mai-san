@@ -762,7 +762,7 @@ def _insert_entity(database, normalized: str, member_hex=None) -> None:
 def test_0022_replaces_each_global_index_with_two_partial_ones(legacy_at_0020) -> None:
     url, database = legacy_at_0020
     before = _row_counts(database)
-    alembic(url, "head")
+    alembic(url, "0022")
     assert _row_counts(database) == before                 # no data change
     for table, stem in SCOPED_INDEXES_0022.items():
         names = _index_names(database, table)
@@ -774,7 +774,7 @@ def test_0022_lets_two_scopes_hold_the_same_name_but_not_one_scope_twice(legacy_
     from sqlalchemy.exc import IntegrityError
 
     url, database = legacy_at_0020
-    alembic(url, "head")
+    alembic(url, "0022")
     _insert_entity(database, "postgresql", ADMIN_MEMBER_HEX)
     _insert_entity(database, "postgresql", COLLEAGUE_MEMBER_HEX)   # another member: allowed
     with pytest.raises(IntegrityError):
@@ -787,7 +787,7 @@ def test_0022_lets_two_scopes_hold_the_same_name_but_not_one_scope_twice(legacy_
 
 def test_0022_downgrades_cleanly_when_no_key_is_shared(legacy_at_0020) -> None:
     url, database = legacy_at_0020
-    alembic(url, "head")
+    alembic(url, "0022")
     _insert_entity(database, "only-admin", ADMIN_MEMBER_HEX)
     result = alembic_attempt(url, "downgrade", "0021")
     assert result.returncode == 0, result.stderr
@@ -802,7 +802,7 @@ def test_0022_downgrade_refuses_when_a_key_is_shared_across_scopes(legacy_at_002
     """Two members (or a member and a legacy row) holding the same name cannot
     go back under one global index; the downgrade refuses and changes nothing."""
     url, database = legacy_at_0020
-    alembic(url, "head")
+    alembic(url, "0022")
     _insert_entity(database, "shared", ADMIN_MEMBER_HEX)
     _insert_entity(database, "shared", second_member)
     before = _row_counts(database)
@@ -828,3 +828,54 @@ def test_0022_renders_its_upgrade_offline() -> None:
     assert result.returncode == 0, result.stderr
     assert "uq_entities_scoped_normalized_name" in result.stdout
     assert "WHERE scope_id IS NOT NULL" in result.stdout
+
+
+# --- Stage 7B unit 8b: execution idempotency per scope (0023) ----------------
+
+
+def _insert_execution(database, key: str, member_hex=None) -> None:
+    scope = (", :org, :member, 'personal'" if member_hex else ", :org, NULL, NULL")
+    _execute(database, "INSERT INTO executions (id, tool_name, arguments, state, "
+                       "authorization_status, idempotency_key, created_at, updated_at, "
+                       "organisation_id, scope_id, scope_visibility) VALUES (:id, 'echo', '{}', "
+                       "'proposed', 'allowed', :key, :now, :now" + scope + ")",
+             {"id": uuid.uuid4().hex, "key": key, "now": BASE, "org": DEFAULT_ORG_HEX,
+              "member": member_hex})
+
+
+def test_0023_makes_execution_idempotency_per_scope(legacy_at_0020) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    url, database = legacy_at_0020
+    alembic(url, "head")
+    names = _index_names(database, "executions")
+    assert {"uq_executions_scoped_idempotency_key", "uq_executions_legacy_idempotency_key"} <= names
+    assert "uq_executions_idempotency_key" not in names
+    _insert_execution(database, "same-payload", ADMIN_MEMBER_HEX)
+    _insert_execution(database, "same-payload", COLLEAGUE_MEMBER_HEX)     # another scope: allowed
+    with pytest.raises(IntegrityError):
+        _insert_execution(database, "same-payload", ADMIN_MEMBER_HEX)     # the same scope: refused
+
+
+def test_0023_downgrade_refuses_a_key_shared_across_scopes_and_is_clean_otherwise(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    alembic(url, "head")
+    _insert_execution(database, "only-admin", ADMIN_MEMBER_HEX)
+    clean = alembic_attempt(url, "downgrade", "0022")
+    assert clean.returncode == 0, clean.stderr
+    assert "uq_executions_idempotency_key" in _index_names(database, "executions")
+    alembic(url, "head")
+    _insert_execution(database, "shared", ADMIN_MEMBER_HEX)
+    _insert_execution(database, "shared", COLLEAGUE_MEMBER_HEX)
+    refused = alembic_attempt(url, "downgrade", "0022")
+    assert refused.returncode != 0
+    assert "0023 downgrade refused" in refused.stdout + refused.stderr
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0023"
+
+
+def test_0023_refuses_an_offline_downgrade_and_renders_its_upgrade() -> None:
+    refused = alembic_attempt(OFFLINE_URL, "downgrade", "0023:0022", "--sql")
+    assert refused.returncode != 0 and "0023 refused: offline" in refused.stdout + refused.stderr
+    rendered = alembic_attempt(OFFLINE_URL, "upgrade", "0022:0023", "--sql")
+    assert rendered.returncode == 0, rendered.stderr
+    assert "uq_executions_scoped_idempotency_key" in rendered.stdout

@@ -24,7 +24,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 | 5 | Personal-memory isolation, scoped deduplication | **Completed with unit 6** (see CHANGELOG, Stage 7B units 5-6) | SQLite and live PostgreSQL, ordered and shuffled; security review M1-M2, L1-L6 |
 | 6 | Tenant-aware entities, relationships, knowledge, retrieval, context | **Completed with unit 5** (migration `0022_scoped_uniqueness`) | as unit 5 |
 | 7 | Background membership gates, revocation races | **Completed** (see CHANGELOG, Stage 7B unit 7) | SQLite and live PostgreSQL (forced races), ordered and shuffled |
-| 8 | Ownership on reminders, executions, workflows, other revocable work | **8a (reminders) completed** (see CHANGELOG); **8b** (executions, workflows) next | SQLite and live PostgreSQL, ordered and shuffled |
+| 8 | Ownership on reminders, executions, workflows, other revocable work | **Completed**: 8a reminders (`f9e22b1`), 8b executions and workflows (see CHANGELOG) | SQLite and live PostgreSQL (forced races), ordered and shuffled; security review M1-M3, L1-L6 |
 | 9 | Scope history imports, protect integration state | Not started | -- |
 | 10 | Final non-null and relational enforcement migration | Not started | -- |
 | 11 | Telegram organisation binding, sender identity, mention/reply, learning | Not started. Member Telegram turns stay **disabled** until units 4-10 and their security tests pass | -- |
@@ -77,7 +77,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 ## Approval boundaries (stop here; never cross autonomously)
 
 - **H1:** the backend container runs `alembic upgrade head` on start-up over
-  the mounted working tree. Any restart applies `0020`, `0021` and `0022` to the real
+  the mounted working tree. Any restart applies `0020` to `0023` to the real
   `mai` database (still at `0019`, as last recorded). Do not restart
   `mai-backend`. Changing the start-up behaviour, or migrating the real
   database, needs the owner's approval with a backup and rollback plan.
@@ -109,19 +109,21 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 
 ## Next action
 
-Unit 8b: ownership on executions and workflows -- write and filter their
-scope (both carry the L0 columns), give the execution paths (chat, tasks,
-runner, research, calendar, mail, workflows) the owner's scope, and keep
-their conversation and workflow references inside the scope (design sections
-3 and 4). Reminders are done (8a). Then units 9-14 in order.
+Unit 9: scope history imports and protect integration state.
 
-Design constraint for unit 8 (recorded 2026-10-29): `app.execution`,
-`app.tasks`, `app.authorization` and `app.background` must never import
-`app.identity` (a Stage 7A structure test). They should therefore depend on a
-structural protocol in the database layer (`app.database.models.scope`,
-e.g. `ScopeBinding` with `clause(model)` and `write_columns()`), which
-`KnowledgeScope` satisfies without either side importing the other; the
-composition root (`app/api/deps.py`, the reminder scheduler's start-up)
-hands them the trusted scope. The scope-write tripwire and allowlist extend
-to them. Execution and workflows have their own owner and approval model
-(Stage 4/6), so read `docs/` for those stages before changing them.
+- History import: archives, imported conversations and messages, runs and
+  the duplicate-file check (`uq_imported_archives_source_sha256`, the last
+  global unique index on a scoped table) belong to the importing member;
+  then lift the interim Admin-only router dependency (`/api/history`).
+- Integration state: Google Calendar / Gmail connections and tokens are one
+  process-wide account. Until they are per member, integration-backed tools
+  stay owner-only (`ExecutionService._require_integration_owner`, unit 8b).
+  Decide per-member connections vs. owner-only by policy; never move or
+  re-attribute live credentials without the owner's approval.
+
+Then units 10-14 in order (10: the final non-null and relational
+enforcement migration -- composite same-scope foreign keys, which also
+settle the deferred L3 of units 5-6).
+
+Open item carried from unit 8: per-member fairness for reminders (one member
+with many due reminders can delay others') -- unit 12, usage limits.

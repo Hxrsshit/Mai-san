@@ -611,7 +611,7 @@ async def executions(db_session, execution_settings: Settings):
     """An `ExecutionService` on the test session, for tests below the API."""
     from app.execution.service import ExecutionService
 
-    return ExecutionService(db_session, settings=execution_settings)
+    return ExecutionService(db_session, settings=execution_settings, scope=ADMIN_SCOPE)
 
 
 @pytest_asyncio.fixture
@@ -735,7 +735,7 @@ async def research_client(
                 authorization=authorization, registry=executable,
                 integrations=integrations,
             ),
-            executable=executable,
+            executable=executable, scope=ADMIN_SCOPE,
         )
         return ChatService(
             session=session,
@@ -755,13 +755,13 @@ async def research_client(
                 session,
                 settings=execution_settings,
                 executions=executions,
-                integrations=integrations,
+                integrations=integrations, scope=ADMIN_SCOPE,
             ),
             workflow_service=WorkflowService(
                 session,
                 settings=execution_settings,
                 executions=executions,
-                integrations=integrations,
+                integrations=integrations, scope=ADMIN_SCOPE,
             ),
             scope=ADMIN_SCOPE,
         )
@@ -900,7 +900,7 @@ async def calendar_client(
                 authorization=authorization, registry=executable,
                 integrations=integrations,
             ),
-            executable=executable,
+            executable=executable, scope=ADMIN_SCOPE,
         )
         return ChatService(
             session=session,
@@ -916,7 +916,7 @@ async def calendar_client(
                 session,
                 settings=calendar_settings,
                 executions=executions,
-                integrations=integrations,
+                integrations=integrations, scope=ADMIN_SCOPE,
             ),
             scope=ADMIN_SCOPE,
         )
@@ -1039,7 +1039,7 @@ async def briefing_client(
                 authorization=authorization, registry=executable,
                 integrations=integrations,
             ),
-            executable=executable,
+            executable=executable, scope=ADMIN_SCOPE,
         )
         return ChatService(
             session=session,
@@ -1053,15 +1053,15 @@ async def briefing_client(
             ),
             calendar_service=CalendarService(
                 session, settings=calendar_settings,
-                executions=executions, integrations=integrations,
+                executions=executions, integrations=integrations, scope=ADMIN_SCOPE,
             ),
             research_service=ResearchService(
                 session, settings=calendar_settings,
-                executions=executions, integrations=integrations,
+                executions=executions, integrations=integrations, scope=ADMIN_SCOPE,
             ),
             workflow_service=WorkflowService(
                 session, settings=calendar_settings,
-                executions=executions, integrations=integrations,
+                executions=executions, integrations=integrations, scope=ADMIN_SCOPE,
             ),
             scope=ADMIN_SCOPE,
         )
@@ -1210,7 +1210,7 @@ async def gmail_client(
                 authorization=authorization, registry=executable,
                 integrations=integrations,
             ),
-            executable=executable,
+            executable=executable, scope=ADMIN_SCOPE,
         )
         return ChatService(
             session=session,
@@ -1224,7 +1224,7 @@ async def gmail_client(
             ),
             mail_service=MailService(
                 session, settings=calendar_settings,
-                executions=executions, integrations=integrations,
+                executions=executions, integrations=integrations, scope=ADMIN_SCOPE,
             ),
             scope=ADMIN_SCOPE,
         )
@@ -1324,7 +1324,7 @@ async def calendar_runner(
             authorization=AuthorizationService(registry=tools),
             registry=executable,
             integrations=integrations,
-        ),
+        ), scope=ADMIN_SCOPE,
     )
     service = TaskService(db_session, settings=calendar_settings)
     runner = TaskRunner(service, executions=executions)
@@ -1360,7 +1360,7 @@ async def calendar_runner(
                 authorization=AuthorizationService(registry=tools),
                 registry=executable,
                 integrations=integrations,
-            ),
+            ), scope=ADMIN_SCOPE,
         )
         other_service = TaskService(session, settings=calendar_settings)
         return other_service, TaskRunner(other_service, executions=other_executions)

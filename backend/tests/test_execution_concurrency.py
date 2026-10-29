@@ -24,6 +24,7 @@ from app.execution.errors import AlreadyRunning, ExecutionError
 from app.execution.schemas import ExecutionRequest
 from app.execution.service import ExecutionService
 from app.execution.states import ExecutionState
+from tests.scopes import ADMIN_SCOPE
 
 
 async def _approved(executions, path="race.txt", key="race-1"):
@@ -67,14 +68,14 @@ async def test_two_runners_produce_one_file_and_one_refusal(
     the test would pass without the database deciding anything.
     """
     async with concurrent_session_factory() as setup_session:
-        setup = ExecutionService(setup_session, settings=execution_settings)
+        setup = ExecutionService(setup_session, settings=execution_settings, scope=ADMIN_SCOPE)
         execution = await _approved(setup, path="contested.txt", key="race-2")
         await setup_session.commit()
         execution_id = execution.id
 
     async def attempt():
         async with concurrent_session_factory() as session:
-            service = ExecutionService(session, settings=execution_settings)
+            service = ExecutionService(session, settings=execution_settings, scope=ADMIN_SCOPE)
             try:
                 await service.run(execution_id)
                 await session.commit()
@@ -98,18 +99,18 @@ async def test_the_loser_of_a_race_did_not_run_the_tool(
     the claim refusal means it stopped before the tool.
     """
     async with session_factory() as setup_session:
-        setup = ExecutionService(setup_session, settings=execution_settings)
+        setup = ExecutionService(setup_session, settings=execution_settings, scope=ADMIN_SCOPE)
         execution = await _approved(setup, path="single.txt", key="race-3")
         await setup_session.commit()
         execution_id = execution.id
 
     async with session_factory() as first_session:
-        first = ExecutionService(first_session, settings=execution_settings)
+        first = ExecutionService(first_session, settings=execution_settings, scope=ADMIN_SCOPE)
         await first.run(execution_id)
         await first_session.commit()
 
     async with session_factory() as second_session:
-        second = ExecutionService(second_session, settings=execution_settings)
+        second = ExecutionService(second_session, settings=execution_settings, scope=ADMIN_SCOPE)
         with pytest.raises(ExecutionError) as refused:
             await second.run(execution_id)
 
@@ -134,7 +135,7 @@ async def test_concurrent_creates_with_one_key_make_one_record(
 
     async def create():
         async with concurrent_session_factory() as session:
-            service = ExecutionService(session, settings=execution_settings)
+            service = ExecutionService(session, settings=execution_settings, scope=ADMIN_SCOPE)
             execution = await service.create(
                 ExecutionRequest(
                     tool_name="create_text_file",
@@ -178,7 +179,7 @@ async def test_the_database_refuses_a_duplicate_idempotency_key(
             arguments={"path": "a.txt", "content": "x"},
             state=ExecutionState.PROPOSED,
             authorization_status=AuthorizationStatus.APPROVAL_REQUIRED,
-            idempotency_key="the-same-key",
+            idempotency_key="the-same-key", **ADMIN_SCOPE.write_columns(),
         )
 
     db_session.add(row())

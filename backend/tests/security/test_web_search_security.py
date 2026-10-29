@@ -94,7 +94,7 @@ def _service(session, settings, environment):
             session, settings=settings, authorization=authorization,
             registry=executable, integrations=integrations,
         ),
-        executable=executable,
+        executable=executable, scope=ADMIN_SCOPE,
     )
 
 

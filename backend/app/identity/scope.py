@@ -33,7 +33,7 @@ from sqlalchemy import ColumnElement, and_, select
 from app.database.models.scope import KNOWLEDGE_SCOPE_VISIBILITIES
 from app.identity.constants import MemberStatus, OrganisationStatus
 from app.identity.models import Organisation, OrganisationMember
-from app.identity.principal import Principal
+from app.identity.principal import Principal, lock_active_principal
 
 _NIL = uuid.UUID(int=0)
 
@@ -183,6 +183,17 @@ def personal_member_of(row: object) -> Optional[uuid.UUID]:
     return member if isinstance(member, uuid.UUID) else None
 
 
+async def scope_for_member(session, member_id: uuid.UUID) -> Optional[KnowledgeScope]:
+    """The personal scope of `member_id` if they are an active member of an
+    active organisation, re-read now under a share lock (unit 7's
+    `lock_active_principal`), or None. Registered by the composition root as
+    the member scope resolver (`app.database.models.scope`), so the task
+    layers obtain a member's scope at execution time without importing
+    identity."""
+    principal = await lock_active_principal(session, member_id)
+    return KnowledgeScope.personal(principal) if principal is not None else None
+
+
 def require_scope(value: object, owner: str) -> KnowledgeScope:
     """`value` itself if it is a `KnowledgeScope`; otherwise `InvalidScope`.
     Every scoped service checks its constructor argument with this, so a
@@ -212,4 +223,5 @@ __all__ = [
     "active_member_rows",
     "personal_member_of",
     "require_scope",
+    "scope_for_member",
 ]

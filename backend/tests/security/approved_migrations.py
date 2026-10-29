@@ -46,6 +46,7 @@ APPROVED_MIGRATIONS = (
     "0020_organisation_identity.py",    # Stage 7A
     "0021_knowledge_scope.py",          # Stage 7B L0
     "0022_scoped_uniqueness.py",        # Stage 7B units 5-6
+    "0023_scoped_execution_idempotency.py",  # Stage 7B unit 8b
 )
 
 

@@ -37,7 +37,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.database.models.base import Base, utcnow
-from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    scoped_unique_indexes,
+)
 from app.execution.states import ExecutionState
 from app.tools.schemas import AuthorizationStatus, RiskLevel
 
@@ -195,8 +199,10 @@ class Execution(Base, KnowledgeScopeColumns):
     )
 
     __table_args__ = (
-        # The idempotency guarantee, enforced where it cannot be raced.
-        Index("uq_executions_idempotency_key", "idempotency_key", unique=True),
+        # The idempotency guarantee, enforced where it cannot be raced --
+        # per scope since Stage 7B unit 8b (migration 0023): one member's
+        # payload-derived key never collides with, or returns, another's.
+        *scoped_unique_indexes("executions", "idempotency_key", "idempotency_key"),
         Index("ix_executions_state", "state"),
         Index("ix_executions_tool_name", "tool_name"),
         Index("ix_executions_created_at", "created_at"),

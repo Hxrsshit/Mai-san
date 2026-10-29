@@ -125,19 +125,19 @@ class ChatService:
             self._settings.MAI_SYSTEM_PROMPT
         )
         self._workflows = workflow_service or WorkflowService(
-            session, settings=settings
+            session, settings=settings, scope=scope
         )
         self._calendar = calendar_service or CalendarService(
-            session, settings=settings
+            session, settings=settings, scope=scope
         )
-        self._mail = mail_service or MailService(session, settings=settings)
+        self._mail = mail_service or MailService(session, settings=settings, scope=scope)
         # Stage 5F.1. Local-only and deterministic: no provider, no model
         # call, no integration.
         self._reminders = ReminderChat(
             ReminderService(session, settings=self._settings, scope=scope)
         )
         self._research = research_service or ResearchService(
-            session, settings=self._settings
+            session, settings=self._settings, scope=scope
         )
         self._intent = intent_service or IntentService(
             session=session,

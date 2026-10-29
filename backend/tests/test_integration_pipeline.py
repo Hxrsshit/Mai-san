@@ -27,6 +27,7 @@ from app.integrations.result import (
 from app.tools.authorization import AuthorizationService
 from app.tools.schemas import AuthorizationStatus
 from tests.support.fake_integration import integration_environment
+from tests.scopes import ADMIN_SCOPE
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ def _service(db_session, settings, environment, dispatcher_overrides=None):
         settings=settings,
         authorization=authorization,
         dispatcher=dispatcher,
-        executable=executable,
+        executable=executable, scope=ADMIN_SCOPE,
     ), integration
 
 

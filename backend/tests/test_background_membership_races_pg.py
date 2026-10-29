@@ -107,3 +107,50 @@ async def test_a_step_that_starts_during_a_revocation_waits_and_does_nothing(pg,
         await revoking.commit()
 
     assert await contender is None
+
+
+async def test_the_runner_takes_the_member_before_the_task_so_revocation_cannot_deadlock(
+    pg, settings
+) -> None:
+    """Review M1 (unit 8b). Revocation locks the member row, then the
+    member's tasks. The runner now binds the owner first: while a revocation
+    holds the member row, the runner waits *without* having locked the task
+    row (a third connection can still lock it at once), and once the
+    revocation commits it writes nothing."""
+    from sqlalchemy import text as sql_text
+
+    from app.tasks.models import Task
+    from app.tasks.runner import TaskRunner
+    from app.tasks.service import TaskService
+
+    member_id, _scope = await active_member(pg, settings)
+    async with pg() as setup:
+        created = await TaskService(setup, settings=settings, owner_id=member_id).create_for_user(
+            "Sentinel objective")
+        await setup.commit()
+    task_id = created.task_id
+
+    async def advance():
+        async with pg() as session:
+            result = await TaskRunner(TaskService(session, settings=settings, owner_id=member_id)
+                                      ).advance(task_id)
+            await session.commit()
+            return result
+
+    async with pg() as revoking:
+        await revoking.execute(select(OrganisationMember.id)
+                               .where(OrganisationMember.id == member_id).with_for_update())
+        runner = asyncio.ensure_future(advance())
+        await asyncio.sleep(HOLD)
+        assert not runner.done(), "the runner did not wait for the member lock"
+        async with pg() as probe:                      # the task row is free
+            await probe.execute(sql_text("SET LOCAL lock_timeout = '200ms'"))
+            await probe.execute(select(Task.id).where(Task.id == task_id).with_for_update())
+            await probe.rollback()
+        await revoking.execute(update(OrganisationMember).where(OrganisationMember.id == member_id)
+                               .values(status=MemberStatus.REVOKED.value,
+                                       revoked_at=datetime.now(timezone.utc)))
+        await revoking.commit()
+
+    result = await runner
+    assert result.reason == "owner_not_active", result

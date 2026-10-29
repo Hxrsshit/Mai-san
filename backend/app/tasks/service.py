@@ -665,13 +665,22 @@ class TaskService:
                 reason="dependencies_incomplete",
             )
 
-        if executions is None:
-            from app.execution.service import ExecutionService
-
-            executions = ExecutionService(self._session, settings=self._settings)
-
         from app.execution.errors import ExecutionError
         from app.execution.schemas import ExecutionRequest
+
+        if executions is None:
+            # Stage 7B unit 8b: bound to the owner's scope as it is now; an
+            # owner who is no longer active gets a refusal, not a run.
+            from app.database.models.scope import resolve_member_scope
+            from app.execution.service import ExecutionService
+
+            scope = await resolve_member_scope(self._session, self._owner_id)
+            if scope is None:
+                return TaskResult(
+                    outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                    reason="owner_not_active",
+                )
+            executions = ExecutionService(self._session, settings=self._settings, scope=scope)
 
         try:
             execution = await executions.create(

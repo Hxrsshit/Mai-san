@@ -59,6 +59,10 @@ async def cancel_reminder(reminder_id: uuid.UUID, service: Reminders) -> Reminde
             status_code=status.HTTP_409_CONFLICT, detail=result.outcome.value
         )
     refreshed = await service.get(reminder_id)
+    if refreshed is None:  # the re-read failed after a committed cancel
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="reminder_not_found"
+        )
     return ReminderRead.model_validate(refreshed, from_attributes=True)
 
 
