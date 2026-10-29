@@ -37,6 +37,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
 from app.execution.states import ExecutionState
 from app.tools.schemas import AuthorizationStatus, RiskLevel
 
@@ -74,7 +75,7 @@ class ExecutionEventType(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
-class Execution(Base):
+class Execution(Base, KnowledgeScopeColumns):
     """One proposed action, and whatever became of it."""
 
     __tablename__ = "executions"
@@ -214,6 +215,7 @@ class Execution(Base):
             "state NOT IN ('succeeded', 'failed') OR completed_at IS NOT NULL",
             name="completed_requires_timestamp",
         ),
+        knowledge_scope_check(),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

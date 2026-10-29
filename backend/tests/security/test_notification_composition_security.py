@@ -10,6 +10,7 @@ AST walk.
 
 import ast
 from pathlib import Path
+from tests.security.approved_migrations import APPROVED_MIGRATIONS, after, migration_files
 
 BACKEND = Path(__file__).resolve().parents[2]
 APP = BACKEND / "app"
@@ -266,11 +267,6 @@ def test_the_root_logs_only_the_adapter_names() -> None:
 
 
 def test_6k_adds_no_migration_or_table() -> None:
-    versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
-    # Changed deliberately in 6M.1: the next migration after 6H's 0018 is
-    # 6M.1's delivery-records table, and nothing else.
-    # Changed deliberately in 7A: 7A's organisation-identity migration
-    # follows 6M.1's, and nothing else.
-    assert [v for v in versions if v[:4] > "0018"] == [
-        "0019_notification_deliveries.py", "0020_organisation_identity.py",
-    ]
+    # Changed deliberately in 6M.1 (0019) and 7A (0020), then centralised in
+    # 7B L0: after 6H's 0018 come exactly the approved migrations, in order.
+    assert after("0018", migration_files()) == after("0018", APPROVED_MIGRATIONS)

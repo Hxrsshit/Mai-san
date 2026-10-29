@@ -25,6 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
 
 
 def _enum_values(enum_cls) -> list:
@@ -67,7 +68,7 @@ class RelationshipStatus(str, enum.Enum):
     ARCHIVED = "archived"
 
 
-class Relationship(Base):
+class Relationship(Base, KnowledgeScopeColumns):
     __tablename__ = "relationships"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -145,6 +146,7 @@ class Relationship(Base):
             "confidence_score >= 0.0 AND confidence_score <= 1.0",
             name="confidence_score_range",
         ),
+        knowledge_scope_check(),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

@@ -8,6 +8,7 @@ codes. Every structural claim is an AST walk.
 
 import ast
 from pathlib import Path
+from tests.security.approved_migrations import APPROVED_MIGRATIONS, after, migration_files
 
 BACKEND = Path(__file__).resolve().parents[2]
 APP = BACKEND / "app"
@@ -262,7 +263,8 @@ def test_paging_is_owner_scoped_bounded_and_anchored_through_get() -> None:
 
 
 def test_6m2_adds_no_migration() -> None:
-    versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
-    # Changed deliberately in 7A: 0020 is the organisation-identity migration,
-    # and the 6M.4 / 6M.2 migration-free guarantee still covers 0019.
-    assert versions[-2:] == ["0019_notification_deliveries.py", "0020_organisation_identity.py"]
+    # Changed deliberately in 7A (0020), then centralised in 7B L0: 0019 is
+    # followed only by migrations on the approved list, which records each
+    # one's stage. Exact, so an unlisted migration still fails here.
+    assert "0019_notification_deliveries.py" in migration_files()
+    assert after("0019", migration_files()) == after("0019", APPROVED_MIGRATIONS)

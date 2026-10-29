@@ -40,6 +40,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
 
 
 def _enum_values(enum_cls) -> list:
@@ -103,7 +104,7 @@ class ImportedRole(str, enum.Enum):
 EXTRACTABLE_ROLES = frozenset({ImportedRole.USER})
 
 
-class ImportedArchive(Base):
+class ImportedArchive(Base, KnowledgeScopeColumns):
     """One import run over one export file."""
 
     __tablename__ = "imported_archives"
@@ -175,6 +176,7 @@ class ImportedArchive(Base):
         # win, whatever the application believes.
         Index("uq_imported_archives_source_sha256", "source_sha256", unique=True),
         Index("ix_imported_archives_status_created_at", "status", "created_at"),
+        knowledge_scope_check(),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

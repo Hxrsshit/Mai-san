@@ -88,6 +88,22 @@ strictly scoped stages (see `docs/CHANGELOG.md`).
   claimed**: conversations, messages, memories, entities, knowledge,
   reminders and executions remain one global store. Employees have no chat
   turns, no memory reads and no memory writes.
+- **Knowledge-scope foundation (Stage 7B L0):** ten tables
+  (`conversations`, `memories`, `entities`, `entity_aliases`,
+  `relationships`, `knowledge_conflicts`, `reminders`, `executions`,
+  `workflows`, `imported_archives`) carry nullable `organisation_id`,
+  `scope_id` and `scope_visibility` (`app/database/models/scope.py`,
+  migration `0021`), with one CHECK each. `app/identity/scope.py`
+  `KnowledgeScope` is the frozen, validated scope value, to be made only by
+  `KnowledgeScope.personal(principal)` / `.organisation(principal)`.
+  Python cannot enforce that (the constructor is public, and so is
+  `Principal`'s): it is a **repository rule**, checked by AST in
+  `tests/security/test_scope_construction_structure.py` (construction
+  sites, no copying or mutating of frozen values), not an unforgeable
+  property. Personal is the only writable visibility. In
+  L0 **nothing writes or filters on a scope**: legacy rows have the default
+  organisation and **no scope (unattributed)**; new rows have neither. The
+  columns must never get a default. Tenant isolation is still not claimed.
 
 ### Package map (backend/app)
 
@@ -353,6 +369,13 @@ a change pass. If a test blocks a change, the test is usually right.
   (`backend/alembic/versions/`, sequential `NNNN_name.py`). Application code
   never calls `create_all`; tests do, on SQLite.
 - Migrations must be additive unless a stage explicitly requires otherwise.
+- **Approved migration list (Stage 7B L0):** every migration file must be
+  listed, in order, in `tests/security/approved_migrations.py`; the
+  per-stage "added no migration" pins and `test_approved_migrations.py`
+  compare the directory with it exactly. Adding a migration means adding it
+  there, as a reviewed change. Discovery follows Alembic (every `*.py` in
+  `versions/` except `__init__*`, not only `0*.py`), and Alembic's own
+  revision graph must be one line through the list with a single head.
   Every migration needs a working `downgrade()`. Enum values are added with
   `ALTER TYPE ... ADD VALUE IF NOT EXISTS` on PostgreSQL only, and are not
   removed on downgrade (the column is an append-only journal).
@@ -513,6 +536,17 @@ Run the suite from `backend/` with the venv: `.venv/bin/python -m pytest`.
   recreates the 0020 tables in the database it is given, so that database
   must be disposable (it refuses `mai`). Run both for any change to identity,
   membership, link codes or revocation.
+- **Knowledge-scope PostgreSQL tests (Stage 7B L0):**
+  `tests/test_knowledge_scope_migration_pg.py` (`TEST_POSTGRES_URL`; fails,
+  rather than skips, on a URL that is not PostgreSQL, names `mai` or has no
+  "test" in its database name). Run it for any change to migration `0021` or
+  the scope columns.
+- **The test server.** Use a disposable server only, never `mai-db`. The role
+  needs `CREATEDB` and, so that `DROP DATABASE ... WITH (FORCE)` cannot fail
+  on a background worker (for example autovacuum) connected to a throwaway
+  database, membership of `pg_signal_backend`. It does not need to be a
+  superuser. Without `pg_signal_backend`, a test can pass and still error in
+  teardown (seen once, 2026-10-29).
 
 For a stage or other substantial change:
 

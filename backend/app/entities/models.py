@@ -23,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
 
 
 def _enum_values(enum_cls) -> list:
@@ -49,7 +50,7 @@ class EntityStatus(str, enum.Enum):
     ARCHIVED = "archived"
 
 
-class Entity(Base):
+class Entity(Base, KnowledgeScopeColumns):
     __tablename__ = "entities"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -102,13 +103,14 @@ class Entity(Base):
         Index("uq_entities_normalized_name", "normalized_name", unique=True),
         Index("ix_entities_entity_type", "entity_type"),
         Index("ix_entities_status_created_at", "status", "created_at"),
+        knowledge_scope_check(),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Entity {self.entity_type.value} {self.canonical_name!r}>"
 
 
-class EntityAlias(Base):
+class EntityAlias(Base, KnowledgeScopeColumns):
     """An alternative surface form that resolves to one entity."""
 
     __tablename__ = "entity_aliases"
@@ -136,6 +138,7 @@ class EntityAlias(Base):
         # resolution ambiguous, which is worse than having no alias at all.
         Index("uq_entity_aliases_normalized_alias", "normalized_alias", unique=True),
         Index("ix_entity_aliases_entity_id", "entity_id"),
+        knowledge_scope_check(),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

@@ -44,6 +44,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
 
 
 def _enum_values(enum_cls) -> list:
@@ -90,7 +91,7 @@ class NotificationState(str, enum.Enum):
     READ = "read"
 
 
-class Reminder(Base):
+class Reminder(Base, KnowledgeScopeColumns):
     """One standing instruction to say something at a time."""
 
     __tablename__ = "reminders"
@@ -177,6 +178,7 @@ class Reminder(Base):
         # serves it, and there is deliberately not a second.
         Index("ix_reminders_state_next_run_at", "state", "next_run_at"),
         Index("ix_reminders_conversation_id", "conversation_id"),
+        knowledge_scope_check(),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

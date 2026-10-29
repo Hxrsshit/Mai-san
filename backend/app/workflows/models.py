@@ -29,6 +29,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.database.models.base import Base
+from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
 from app.workflows.states import WorkflowState
 
 #: `jsonb` on PostgreSQL, `json` on SQLite. The same choice Stage 4E made.
@@ -49,7 +50,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class Workflow(Base):
+class Workflow(Base, KnowledgeScopeColumns):
     """One planned composition of existing capabilities."""
 
     __tablename__ = "workflows"
@@ -128,6 +129,7 @@ class Workflow(Base):
             name="ck_workflows_completed_requires_timestamp",
         ),
         Index("ix_workflows_created_at", "created_at"),
+        knowledge_scope_check(),
     )
 
     def __repr__(self) -> str:

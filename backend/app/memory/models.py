@@ -26,6 +26,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
 
 
 def _enum_values(enum_cls) -> list:
@@ -72,7 +73,7 @@ class MemoryOrigin(str, enum.Enum):
     IMPORTED = "imported"
 
 
-class Memory(Base):
+class Memory(Base, KnowledgeScopeColumns):
     __tablename__ = "memories"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -197,6 +198,7 @@ class Memory(Base):
             "normalized_content",
             unique=True,
         ),
+        knowledge_scope_check(),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
