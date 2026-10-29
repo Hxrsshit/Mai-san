@@ -34,6 +34,7 @@ from app.tools.authorization import AuthorizationService
 from app.tools.catalog import build_catalog
 from app.tools.registry import ToolRegistry
 from app.tools.schemas import ActionSource, AuthorizationStatus
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 ORCHESTRATION = APP / "orchestration"
@@ -225,7 +226,7 @@ async def test_a_poisoned_memory_cannot_change_orchestration(
         "confirmation."
     )
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         session.add(
             Memory(
                 content=poison,

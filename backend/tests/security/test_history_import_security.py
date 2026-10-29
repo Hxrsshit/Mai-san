@@ -31,6 +31,7 @@ from app.memory.models import Memory, MemoryOrigin, MemoryStatus, MemoryType
 from app.prompt.formatter import REFERENCE_HEADER, knowledge_block
 from app.services.conversation_service import ConversationService
 from tests.conftest import chatgpt_export
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -160,7 +161,7 @@ async def test_the_import_log_records_a_fingerprint_not_the_filename_content(
 async def seed_memory(import_session_factory, content, origin, stated_at, conversation=None):
     async with import_session_factory() as session:
         if origin is MemoryOrigin.LIVE:
-            conversation = await ConversationService(session).create_conversation()
+            conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
             memory = Memory(
                 content=content,
                 normalized_content=content.lower()[:900],
@@ -346,7 +347,7 @@ async def test_a_later_live_statement_supersedes_imported_knowledge(
                     status=EntityStatus.ACTIVE,
                 )
             )
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         live = Memory(
             content="User switched from Heroku to Fly.io for deployments.",
             normalized_content="user switched from heroku to fly.io for deployments.",

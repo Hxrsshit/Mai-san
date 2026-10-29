@@ -16,6 +16,7 @@ from app.relationships.models import (
 )
 from app.relationships.service import RelationshipService
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 
 def payload(*relationships) -> str:
@@ -33,7 +34,7 @@ def candidate(source, rel_type, target, confidence=0.93):
 
 @pytest.fixture
 async def conversation(db_session):
-    return await ConversationService(db_session).create_conversation()
+    return await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
 
 
 async def make_entity(db_session, name, kind=EntityType.TECHNOLOGY) -> Entity:

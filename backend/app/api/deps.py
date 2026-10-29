@@ -31,6 +31,7 @@ from app.execution.service import ExecutionService
 from app.history.service import HistoryImportService
 from app.identity.constants import Role
 from app.identity.principal import Principal, load_active_principal
+from app.identity.scope import KnowledgeScope
 from app.identity.service import MembershipService
 from app.intent.service import IntentService
 from app.knowledge.service import KnowledgeService
@@ -63,14 +64,15 @@ Provider = Annotated[LLMProvider, Depends(get_llm_provider)]
 SessionFactory = Annotated[object, Depends(get_session_factory)]
 
 
-def get_conversation_service(session: DbSession) -> ConversationService:
-    return ConversationService(session)
+def get_conversation_service(session: DbSession, scope: "Scope") -> ConversationService:
+    """Stage 7B unit 4: bound to the authenticated member's own scope."""
+    return ConversationService(session, scope)
 
 
 def get_context_service(
-    session: DbSession, settings: AppSettings
+    session: DbSession, settings: AppSettings, scope: "Scope"
 ) -> ContextService:
-    return ContextService(session=session, settings=settings)
+    return ContextService(session=session, settings=settings, scope=scope)
 
 
 def get_retrieval_service(
@@ -98,10 +100,10 @@ def get_prompt_formatter(
 
 
 def get_intent_service(
-    session: DbSession, provider: Provider, settings: AppSettings
+    session: DbSession, provider: Provider, settings: AppSettings, scope: "Scope"
 ) -> IntentService:
     """Stage 4A understanding. Read-only, and holds no executor."""
-    return IntentService(session=session, provider=provider, settings=settings)
+    return IntentService(session=session, provider=provider, settings=settings, scope=scope)
 
 
 def get_execution_service(
@@ -152,16 +154,39 @@ def get_chat_service(
     intent_service: "Intent",
     planning_service: "Planning",
     orchestration_service: "Orchestration",
+    scope: "Scope",
 ) -> ChatService:
     return ChatService(
         session=session,
         provider=provider,
         settings=settings,
+        scope=scope,
         context_service=context_service,
         prompt_formatter=formatter,
         intent_service=intent_service,
         planning_service=planning_service,
         orchestration_service=orchestration_service,
+    )
+
+
+def build_chat_service(
+    session: AsyncSession, provider: LLMProvider, settings: Settings, scope: KnowledgeScope
+) -> ChatService:
+    """The chat service for an adapter that authenticates outside the bearer
+    seam (Telegram's Admin chat, Stage 7A). Composed exactly as the
+    `get_chat_service` dependency chain composes it, so the adapter cannot run
+    a different turn. `scope` must come from a principal the adapter has just
+    loaded from the database (Stage 7B unit 4)."""
+    return get_chat_service(
+        session=session,
+        provider=provider,
+        settings=settings,
+        context_service=get_context_service(session, settings, scope),
+        formatter=get_prompt_formatter(settings, provider),
+        intent_service=get_intent_service(session, provider, settings, scope),
+        planning_service=get_planning_service(provider, settings),
+        orchestration_service=get_orchestration_service(settings),
+        scope=scope,
     )
 
 
@@ -328,6 +353,18 @@ async def get_principal(owner_id: OwnerId, session: DbSession) -> Principal:
 
 
 CurrentPrincipal = Annotated[Principal, Depends(get_principal)]
+
+
+def get_knowledge_scope(principal: CurrentPrincipal) -> KnowledgeScope:
+    """Stage 7B unit 4. The authenticated member's personal knowledge scope.
+
+    Derived only from the principal, which `get_principal` re-reads from the
+    database on every request -- never from a request value
+    (`docs/stage7b_ownership_design.md`, section 1)."""
+    return KnowledgeScope.personal(principal)
+
+
+Scope = Annotated[KnowledgeScope, Depends(get_knowledge_scope)]
 
 
 def require_admin(principal: CurrentPrincipal) -> Principal:

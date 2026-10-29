@@ -10,6 +10,7 @@ from app.entities.models import Entity, EntityAlias, EntityStatus, EntityType, M
 from app.entities.service import EntityService
 from app.memory.models import Memory, MemoryStatus, MemoryType
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 
 def payload(*entities) -> str:
@@ -29,7 +30,7 @@ def candidate(name, entity_type="technology", description=None, aliases=None,
 
 @pytest.fixture
 async def conversation(db_session):
-    return await ConversationService(db_session).create_conversation()
+    return await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
 
 
 async def make_memory(db_session, conversation, content="User decided to use PostgreSQL for Mai.") -> Memory:

@@ -19,6 +19,7 @@ from app.tasks.requests import MonitorOutcome
 from app.tasks.service import TaskService
 from app.tasks.states import TaskState
 from tests.conftest import AUTH_HEADERS
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -115,8 +116,8 @@ async def test_a_turn_without_an_owner_sets_nothing_up(
     db_session, settings, fake_provider
 ) -> None:
     """The Telegram path: `send_conversation_turn(owner_id=None)`."""
-    conversation = await ConversationService(db_session).create_conversation()
-    chat = ChatService(session=db_session, provider=fake_provider, settings=settings)
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
+    chat = ChatService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE)
     *_, monitor = await chat.send_message(conversation.id, REQUEST)
     assert monitor.outcome is MonitorOutcome.UNAVAILABLE
     *_, monitor = await chat.send_message(conversation.id, "yes")

@@ -12,8 +12,10 @@ from app.api.deps import (
     DbSession,
     OwnerId,
     Provider,
+    Scope,
     SessionFactory,
 )
+from app.identity.scope import InvalidScope, KnowledgeScope
 from app.schemas.common import ErrorResponse
 from app.schemas.conversation import (
     ConversationCreate,
@@ -197,6 +199,7 @@ async def send_message(
     session_factory: SessionFactory,
     session: DbSession,
     owner_id: OwnerId,
+    scope: Scope,
 ) -> ChatResponse:
     return await send_conversation_turn(
         conversation_id=conversation_id,
@@ -211,6 +214,7 @@ async def send_message(
         # route passes one, so only an authenticated API turn can set up
         # monitoring.
         owner_id=owner_id,
+        scope=scope,
     )
 
 
@@ -225,14 +229,23 @@ async def send_conversation_turn(
     session_factory: SessionFactory,
     session: DbSession,
     owner_id: Optional[uuid.UUID] = None,
+    scope: KnowledgeScope,
 ) -> ChatResponse:
     """Run the established conversation turn for an approved interface.
+
+    `scope` must be the scope `chat` was built with (Stage 7B unit 4); the
+    post-turn memory extraction runs in it; a mismatch is refused before
+    anything runs.
 
     This is the application boundary behind the HTTP route.  External
     adapters may call it only after authenticating their own transport and
     resolving an existing Mai conversation; it deliberately owns the exact
     same commit and post-turn extraction behaviour as the browser API.
     """
+    if scope != chat.scope:
+        # Checked before anything runs: the turn and its extraction must share
+        # one scope (security review F3).
+        raise InvalidScope("the turn's scope is not the chat service's scope")
     (
         user_message,
         assistant_message,
@@ -288,6 +301,7 @@ async def send_conversation_turn(
             # Passed explicitly so dependency overrides are honoured.
             provider=provider,
             session_factory=session_factory,
+            scope=scope,
         )
 
     return ChatResponse(

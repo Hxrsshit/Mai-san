@@ -17,12 +17,18 @@ Stage 7B L0 policy:
   in the type so the design is complete, but `write_columns` refuses it:
   shared-memory writes are not enabled, and nothing in L0 writes a scope.
 * No scope means unattributed. There is deliberately no "default scope".
+
+Since unit 4 the scoped services read with `clause(model)` and write with
+`write_columns()`: those two methods are the only way application code names
+the scope columns (`tests/security/test_knowledge_scope_structure.py`).
 """
 
 import enum
 import uuid
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Optional
+
+from sqlalchemy import ColumnElement, and_
 
 from app.database.models.scope import KNOWLEDGE_SCOPE_VISIBILITIES
 from app.identity.principal import Principal
@@ -86,6 +92,23 @@ class KnowledgeScope:
         _principal(principal)
         return cls(
             principal.organisation_id, principal.organisation_id, ScopeVisibility.ORGANISATION
+        )
+
+    def clause(self, model) -> ColumnElement[bool]:
+        """The read filter for a scoped `model`: its rows in this scope only.
+
+        All three columns, so an unattributed (legacy, quarantined) row --
+        NULL scope -- never matches, and neither does a row of another
+        organisation or another member. Stage 7B units 4-10 read only
+        personal scopes (`docs/stage7b_ownership_design.md`, section 2); the
+        organisation scope is refused here until shared reads are approved.
+        The only way a scoped query should name the scope columns."""
+        if self.visibility not in WRITABLE_VISIBILITIES:
+            raise ScopeNotWritable(f"{self.visibility.value} scope is not readable yet")
+        return and_(
+            model.organisation_id == self.organisation_id,
+            model.scope_id == self.scope_id,
+            model.scope_visibility == self.visibility.value,
         )
 
     def write_columns(self) -> Dict[str, object]:

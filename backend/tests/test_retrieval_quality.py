@@ -25,6 +25,7 @@ from app.prompt.formatter import PromptFormatter, knowledge_block
 from app.retrieval.query_normalizer import keyword_matches, term_kind, word_forms
 from app.retrieval.service import RetrievalService
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -51,7 +52,7 @@ DECOYS = [
 
 async def store(session, items, conversation_id=None):
     if conversation_id is None:
-        conversation_id = (await ConversationService(session).create_conversation()).id
+        conversation_id = (await ConversationService(session, ADMIN_SCOPE).create_conversation()).id
     now = datetime.now(timezone.utc)
     for i, (text, importance) in enumerate(items):
         created = now - timedelta(days=i + 1)
@@ -216,7 +217,7 @@ async def test_the_relevant_memory_survives_the_unchanged_budget(db_session, set
     assert settings.RETRIEVAL_MAX_MEMORIES == 10
     await store(db_session, [(f"User drinks green tea at desk number {i}.", 10) for i in range(25)]
                 + [(TEA, 3)])
-    package = await ContextService(db_session, settings).build("Which tea do I prefer?")
+    package = await ContextService(db_session, settings, scope=ADMIN_SCOPE).build("Which tea do I prefer?")
     contents = [m.content for m in package.memories]
     assert len(contents) <= 10 and contents[0] == TEA
 
@@ -227,7 +228,7 @@ async def test_the_relevant_memory_survives_the_unchanged_budget(db_session, set
 async def test_the_prompt_carries_the_relevant_memory_and_not_the_generic_ones(
     library, settings
 ) -> None:
-    package = await ContextService(library, settings).build("Which tea do I prefer?")
+    package = await ContextService(library, settings, scope=ADMIN_SCOPE).build("Which tea do I prefer?")
     block = knowledge_block(PromptFormatter(settings.MAI_SYSTEM_PROMPT).format(package).messages)
     assert TEA in block
     for text, _ in DECOYS:

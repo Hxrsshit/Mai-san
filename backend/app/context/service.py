@@ -23,6 +23,7 @@ from app.context.budget import BudgetLimits
 from app.context.schemas import ContextPackage
 from app.retrieval.schemas import RetrievalResult
 from app.retrieval.service import RetrievalService
+from app.identity.scope import KnowledgeScope
 from app.services.conversation_service import ConversationService
 
 logger = get_logger(__name__)
@@ -35,13 +36,18 @@ class ContextService:
         settings: Optional[Settings] = None,
         retrieval_service: Optional[RetrievalService] = None,
         conversation_service: Optional[ConversationService] = None,
+        *,
+        scope: Optional[KnowledgeScope] = None,
     ) -> None:
         self._session = session
         self._settings = settings or get_settings()
         self._retrieval = retrieval_service or RetrievalService(
             session, self._settings
         )
-        self._conversations = conversation_service or ConversationService(session)
+        # Stage 7B unit 4: history is read only within a scope. Without a
+        # scoped conversation service, one is built from `scope`, which then
+        # must be a KnowledgeScope (ConversationService refuses anything else).
+        self._conversations = conversation_service or ConversationService(session, scope)
         self._assembler = ContextAssembler(self.limits)
 
     @property

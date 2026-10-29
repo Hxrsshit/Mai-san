@@ -24,6 +24,7 @@ from app.tasks.service import TaskService
 from app.tasks.states import TaskState
 from tests.support.stub_transport import gmail_list_payload
 from tests.test_monitor_runtime import gmail  # noqa: F401  (the stubbed Gmail path)
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -44,7 +45,7 @@ def now():
 
 
 async def conversation(session):
-    return (await ConversationService(session).create_conversation()).id
+    return (await ConversationService(session, ADMIN_SCOPE).create_conversation()).id
 
 
 def monitors(session, settings, owner=OWNER):

@@ -15,11 +15,12 @@ from app.relationships.models import (
     RelationshipType,
 )
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 
 @pytest.fixture
 async def conversation(db_session):
-    return await ConversationService(db_session).create_conversation()
+    return await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
 
 
 async def seed_knowledge(db_session, conversation):
@@ -64,14 +65,14 @@ async def seed_knowledge(db_session, conversation):
 async def add_messages(db_session, conversation, count):
     from app.database.models import MessageRole
 
-    service = ConversationService(db_session)
+    service = ConversationService(db_session, ADMIN_SCOPE)
     for index in range(count):
         role = MessageRole.USER if index % 2 == 0 else MessageRole.ASSISTANT
         await service.add_message(conversation.id, role, f"turn {index}")
 
 
 def service(db_session, settings) -> ContextService:
-    return ContextService(session=db_session, settings=settings)
+    return ContextService(session=db_session, settings=settings, scope=ADMIN_SCOPE)
 
 
 # --- Real end-to-end assembly -----------------------------------------------

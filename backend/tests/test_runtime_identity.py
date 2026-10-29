@@ -28,6 +28,7 @@ from app.runtime import RuntimeFacts, build, database_dialect
 from app.runtime.facts import UNKNOWN
 
 from tests.conftest import FakeLLMProvider
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
@@ -355,7 +356,7 @@ async def test_a_memory_claiming_a_different_provider_does_not_outrank_the_facts
 
     stale = "Mai uses a different inference provider entirely."
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         session.add(
             Memory(
                 content=stale,

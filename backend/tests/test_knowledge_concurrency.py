@@ -23,6 +23,7 @@ from app.memory.models import Memory, MemoryStatus
 from app.relationships.models import Relationship, RelationshipStatus
 
 from tests.conftest import AUTH_HEADERS, FakeLLMProvider
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -410,7 +411,7 @@ async def test_a_partial_failure_does_not_stop_the_other_decisions(
     from tests.test_knowledge_lifecycle import make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     a = await make_memory(db_session, conversation, "Memory A.", day=0)
     b = await make_memory(db_session, conversation, "Memory B.", day=1)

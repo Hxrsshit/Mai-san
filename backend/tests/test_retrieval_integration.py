@@ -23,6 +23,7 @@ from app.relationships.models import (
 from app.prompt.formatter import REFERENCE_HEADER
 from app.prompt.formatter import knowledge_block as reference_block
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -39,7 +40,7 @@ def knowledge_block(provider):
 async def seed_knowledge(session_factory):
     """A small knowledge base spanning memories, entities and relationships."""
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
 
         def entity(name, kind, aliases=()):
             e = Entity(

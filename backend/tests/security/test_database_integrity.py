@@ -29,6 +29,7 @@ from app.relationships.models import (
 )
 from app.services.conversation_service import ConversationService
 from tests.conftest import AUTH_HEADERS
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -99,7 +100,7 @@ async def test_deleting_a_conversation_cascades_to_everything_derived(
     db_session,
 ) -> None:
     """No orphaned message, memory, entity link, evidence or lifecycle row."""
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     db_session.add(
         Message(conversation_id=conversation.id, role="user", content="hello")
     )
@@ -163,7 +164,7 @@ async def test_deleting_a_conversation_cascades_to_everything_derived(
 
 
 async def test_evidence_cannot_reference_a_missing_relationship(db_session) -> None:
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     memory = Memory(
         content="M.", normalized_content="m", memory_type=MemoryType.SEMANTIC,
         status=MemoryStatus.ACTIVE, importance_score=8, confidence_score=0.9,
@@ -183,7 +184,7 @@ async def test_evidence_cannot_reference_a_missing_relationship(db_session) -> N
 async def test_a_lifecycle_link_cannot_reference_a_missing_memory(
     db_session,
 ) -> None:
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     memory = Memory(
         content="M.", normalized_content="m", memory_type=MemoryType.SEMANTIC,
         status=MemoryStatus.ACTIVE, importance_score=8, confidence_score=0.9,
@@ -232,7 +233,7 @@ async def test_out_of_range_scores_are_refused_by_the_database(
     db_session, importance, confidence
 ) -> None:
     """The last line of defence against bad model output."""
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     db_session.add(
         Memory(
             content="M.", normalized_content=f"m{importance}{confidence}",

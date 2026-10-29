@@ -21,6 +21,7 @@ from app.synthesis.execution_truth import (
     validate,
 )
 from app.tasks.requests import MonitorOutcome, MonitorResult
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -143,8 +144,8 @@ async def test_a_turn_the_grammar_declines_cannot_claim_monitoring(
     from app.tasks.models import Task
 
     fake_provider.reply = "Sure! I'll let you know as soon as an email from Apple arrives."
-    conversation = await ConversationService(db_session).create_conversation()
-    chat = ChatService(session=db_session, provider=fake_provider, settings=settings)
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
+    chat = ChatService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE)
     _user, assistant, *_, monitor = await chat.send_message(
         conversation.id, "can you keep tabs on apple emails for me?",
         owner_id=uuid.UUID(int=1),
@@ -163,8 +164,8 @@ async def test_a_turn_that_abandoned_a_proposal_tells_the_model_so(
     from app.services.chat_service import ChatService
     from app.services.conversation_service import ConversationService
 
-    conversation = await ConversationService(db_session).create_conversation()
-    chat = ChatService(session=db_session, provider=fake_provider, settings=settings)
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
+    chat = ChatService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE)
     owner = uuid.UUID(int=1)
     await chat.send_message(
         conversation.id,

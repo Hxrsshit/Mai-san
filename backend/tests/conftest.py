@@ -58,6 +58,7 @@ from app.identity.constants import (  # noqa: E402
     Role,
 )
 from app.identity.models import Organisation, OrganisationMember, User  # noqa: E402
+from tests.scopes import ADMIN_SCOPE
 
 
 @event.listens_for(OrganisationMember.__table__, "after_create")
@@ -762,6 +763,7 @@ async def research_client(
                 executions=executions,
                 integrations=integrations,
             ),
+            scope=ADMIN_SCOPE,
         )
 
     from app.api.deps import get_chat_service
@@ -916,6 +918,7 @@ async def calendar_client(
                 executions=executions,
                 integrations=integrations,
             ),
+            scope=ADMIN_SCOPE,
         )
 
     from app.api.deps import get_chat_service
@@ -1060,6 +1063,7 @@ async def briefing_client(
                 session, settings=calendar_settings,
                 executions=executions, integrations=integrations,
             ),
+            scope=ADMIN_SCOPE,
         )
 
     from app.api.deps import get_chat_service
@@ -1222,6 +1226,7 @@ async def gmail_client(
                 session, settings=calendar_settings,
                 executions=executions, integrations=integrations,
             ),
+            scope=ADMIN_SCOPE,
         )
 
     from app.api.deps import get_chat_service

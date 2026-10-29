@@ -78,6 +78,7 @@ from app.llm.base import LLMProvider
 from app.prompt.formatter import PromptFormatter
 from app.prompt.schemas import FormattedPrompt
 from app.services.conversation_service import ConversationService
+from app.identity.scope import InvalidScope, KnowledgeScope
 
 logger = get_logger(__name__)
 
@@ -88,6 +89,8 @@ class ChatService:
         session: AsyncSession,
         provider: LLMProvider,
         settings: Optional[Settings] = None,
+        *,
+        scope: KnowledgeScope,
         conversation_service: Optional[ConversationService] = None,
         context_service: Optional[ContextService] = None,
         prompt_formatter: Optional[PromptFormatter] = None,
@@ -102,8 +105,18 @@ class ChatService:
         self._session = session
         self._provider = provider
         self._settings = settings or get_settings()
-        self._conversations = conversation_service or ConversationService(session)
-        self._context = context_service or ContextService(session, self._settings)
+        # Stage 7B unit 4: one scope for the whole turn. The defaults share
+        # this scoped conversation service; none of them can build an
+        # unscoped one.
+        if not isinstance(scope, KnowledgeScope):
+            raise InvalidScope("ChatService needs a KnowledgeScope")
+        if conversation_service is not None and conversation_service.scope != scope:
+            raise InvalidScope("the conversation service is bound to another scope")
+        self._scope = scope
+        self._conversations = conversation_service or ConversationService(session, scope)
+        self._context = context_service or ContextService(
+            session, self._settings, scope=scope, conversation_service=self._conversations
+        )
         self._formatter = prompt_formatter or PromptFormatter(
             self._settings.MAI_SYSTEM_PROMPT
         )
@@ -123,7 +136,11 @@ class ChatService:
             session, settings=self._settings
         )
         self._intent = intent_service or IntentService(
-            session=session, provider=provider, settings=self._settings
+            session=session,
+            provider=provider,
+            settings=self._settings,
+            scope=scope,
+            conversation_service=self._conversations,
         )
         self._planning = planning_service or PlanningService(
             provider=provider, settings=self._settings
@@ -131,6 +148,11 @@ class ChatService:
         self._orchestration = orchestration_service or OrchestrationService(
             settings=self._settings
         )
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        """The scope every part of this turn runs in."""
+        return self._scope
 
     async def send_message(
         self,

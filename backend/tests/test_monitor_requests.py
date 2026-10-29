@@ -39,6 +39,7 @@ from app.tasks.schemas import RunnerOutcome, TaskOutcome
 from app.tasks.service import TaskService
 from app.tasks.states import TaskState
 from app.tools.schemas import RiskLevel
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -289,7 +290,7 @@ def test_a_long_or_symbolic_reply_never_confirms() -> None:
 
 
 async def conversation(session):
-    return (await ConversationService(session).create_conversation()).id
+    return (await ConversationService(session, ADMIN_SCOPE).create_conversation()).id
 
 
 def service(session, settings, owner=OWNER):

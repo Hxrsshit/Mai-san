@@ -18,6 +18,7 @@ from app.core.errors import (
 )
 from app.entities.models import Entity
 from app.relationships.models import Relationship, RelationshipEvidence
+from tests.scopes import ADMIN_SCOPE
 
 
 def memory_payload(*memories) -> str:
@@ -250,7 +251,7 @@ async def test_database_failure_never_leaves_a_relationship_without_evidence(
     from app.services.conversation_service import ConversationService
 
     async with session_factory() as setup:
-        conversation = await ConversationService(setup).create_conversation()
+        conversation = await ConversationService(setup, ADMIN_SCOPE).create_conversation()
         await setup.commit()
         conversation_id = conversation.id
 
@@ -279,6 +280,7 @@ async def test_database_failure_never_leaves_a_relationship_without_evidence(
         settings=settings,
         provider=fake_provider,
         session_factory=session_factory,
+        scope=ADMIN_SCOPE,
     )
 
     monkeypatch.undo()
@@ -307,7 +309,7 @@ async def test_a_mid_relationship_failure_stores_nothing(
     from app.services.conversation_service import ConversationService
 
     async with session_factory() as setup:
-        conversation = await ConversationService(setup).create_conversation()
+        conversation = await ConversationService(setup, ADMIN_SCOPE).create_conversation()
         await setup.commit()
         conversation_id = conversation.id
 
@@ -337,6 +339,7 @@ async def test_a_mid_relationship_failure_stores_nothing(
         settings=settings,
         provider=fake_provider,
         session_factory=session_factory,
+        scope=ADMIN_SCOPE,
     )
 
     monkeypatch.undo()

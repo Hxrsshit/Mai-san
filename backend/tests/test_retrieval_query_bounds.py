@@ -36,6 +36,7 @@ from app.retrieval.query_normalizer import (
 from app.retrieval.retrievers import MemoryRetriever
 from app.retrieval.service import RetrievalService
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -236,7 +237,7 @@ async def test_message_words_are_bound_parameters_not_sql_text() -> None:
 
 
 async def store(session, items):
-    conversation = (await ConversationService(session).create_conversation()).id
+    conversation = (await ConversationService(session, ADMIN_SCOPE).create_conversation()).id
     now = datetime.now(timezone.utc)
     for i, (text, importance) in enumerate(items):
         created = now - timedelta(days=i + 1)
@@ -295,7 +296,7 @@ async def test_the_debug_view_is_bounded_when_its_sources_disagree(
     100 candidates here, at committed HEAD too. It must show what chat ranks:
     the same bound, the same order, so the same memories."""
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         for index in range(150):
             entity = Entity(canonical_name=f"Tool{index}", normalized_name=f"tool{index}",
                             entity_type=EntityType.TECHNOLOGY, status=EntityStatus.ACTIVE)

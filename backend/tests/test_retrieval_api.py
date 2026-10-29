@@ -15,13 +15,14 @@ from app.relationships.models import (
     RelationshipType,
 )
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
 
 async def seed(session_factory, memory_count: int = 4):
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         mai = Entity(canonical_name="Mai", normalized_name="mai",
                      entity_type=EntityType.PROJECT, status=EntityStatus.ACTIVE)
         postgres = Entity(canonical_name="PostgreSQL", normalized_name="postgresql",

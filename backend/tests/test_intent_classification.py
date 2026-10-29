@@ -26,6 +26,7 @@ from app.intent.service import DISABLED_REASON, IntentService
 from app.llm.base import LLMResponse
 
 from tests.conftest import FakeLLMProvider
+from tests.scopes import ADMIN_SCOPE
 
 
 def answer(intent, **overrides) -> str:
@@ -427,7 +428,7 @@ async def test_recent_context_is_bounded(db_session, provider, settings) -> None
     from app.services.conversation_service import ConversationService
     from app.database.models import MessageRole
 
-    conversations = ConversationService(db_session)
+    conversations = ConversationService(db_session, ADMIN_SCOPE)
     conversation = await conversations.create_conversation()
     for index in range(20):
         await conversations.add_message(
@@ -437,7 +438,7 @@ async def test_recent_context_is_bounded(db_session, provider, settings) -> None
 
     provider.intent_reply = answer("question")
     service = IntentService(
-        session=db_session, provider=provider, settings=settings
+        session=db_session, provider=provider, settings=settings, scope=ADMIN_SCOPE
     )
     await service.understand("And that one?", conversation.id)
 

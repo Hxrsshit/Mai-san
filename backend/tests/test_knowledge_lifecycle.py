@@ -28,6 +28,7 @@ from app.relationships.models import (
     RelationshipStatus,
     RelationshipType,
 )
+from tests.scopes import ADMIN_SCOPE
 
 BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -101,7 +102,7 @@ async def make_relationship(session, source, kind, target, evidence=()):
 async def conversation(db_session):
     from app.services.conversation_service import ConversationService
 
-    created = await ConversationService(db_session).create_conversation()
+    created = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     return created.id
 
 

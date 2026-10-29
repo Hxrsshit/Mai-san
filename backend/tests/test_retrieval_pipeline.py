@@ -15,11 +15,12 @@ from app.relationships.models import (
 )
 from app.retrieval.service import RetrievalService
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 
 @pytest.fixture
 async def conversation(db_session):
-    return await ConversationService(db_session).create_conversation()
+    return await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
 
 
 async def make_entity(db_session, name, kind=EntityType.TECHNOLOGY, aliases=()) -> Entity:

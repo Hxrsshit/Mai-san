@@ -26,6 +26,7 @@ from app.entities.service import EntityService
 from app.memory.models import Memory
 from app.knowledge.service import KnowledgeService
 from app.relationships.service import RelationshipService
+from app.identity.scope import KnowledgeScope
 from app.memory.service import MemoryService
 
 logger = get_logger(__name__)
@@ -39,8 +40,14 @@ async def run_memory_extraction(
     settings: Optional[Settings] = None,
     provider: Optional[LLMProvider] = None,
     session_factory=None,
+    *,
+    scope: KnowledgeScope,
 ) -> None:
     """Extract and store memories for one completed turn.
+
+    `scope` is the scope of the authenticated turn (Stage 7B unit 4): a frozen
+    value handed over by the route, so the background task needs no request
+    and trusts nothing it reads.
 
     `provider` and `session_factory` are passed in by the route from its own
     dependencies rather than resolved here. Resolving them internally would
@@ -79,6 +86,7 @@ async def run_memory_extraction(
                 user_message=user_message,
                 assistant_message=assistant_message,
                 source_message_id=source_message_id,
+                scope=scope,
             )
             if stored:
                 await session.commit()

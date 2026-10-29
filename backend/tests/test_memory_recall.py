@@ -33,6 +33,7 @@ from app.prompt.formatter import (
 from app.retrieval.service import RetrievalService
 from app.services.conversation_service import ConversationService
 from app.synthesis.execution_truth import Channel, claims, validate, record_for_turn
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -69,7 +70,7 @@ async def store_memory(session, content, kind=MemoryType.PREFERENCE, importance=
     created = datetime.now(timezone.utc) - timedelta(days=age_days)
     if conversation_id is None:
         # Live memories must name their source conversation (provenance check).
-        conversation_id = (await ConversationService(session).create_conversation()).id
+        conversation_id = (await ConversationService(session, ADMIN_SCOPE).create_conversation()).id
     memory = Memory(
         content=content, normalized_content=normalize(content), memory_type=kind,
         status=status, importance_score=importance, confidence_score=0.95,
@@ -88,7 +89,7 @@ async def test_extraction_sees_the_question_a_short_answer_responds_to(
 ) -> None:
     """Root cause. Without the earlier turns the extractor read "tall, wears
     glasses" as a description of the user. It must receive the question."""
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     base = datetime.now(timezone.utc) - timedelta(minutes=5)
     rows = [
         (MessageRole.USER, "Please remember my type."),
@@ -111,6 +112,7 @@ async def test_extraction_sees_the_question_a_short_answer_responds_to(
         user_message=rows[2][1],
         assistant_message="Got it.",
         source_message_id=stored[2].id,
+        scope=ADMIN_SCOPE,
     )
 
     prompt = fake_provider.extraction_calls[-1][-1].content
@@ -127,7 +129,7 @@ async def test_extraction_context_is_bounded_and_excludes_the_turn_itself(
 ) -> None:
     settings.MEMORY_EXTRACTION_CONTEXT_MESSAGES = 2
     settings.MEMORY_EXTRACTION_CONTEXT_CHARS = 60
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     base = datetime.now(timezone.utc) - timedelta(minutes=5)
     messages = []
     for i in range(6):
@@ -141,7 +143,7 @@ async def test_extraction_context_is_bounded_and_excludes_the_turn_itself(
     fake_provider.extraction_reply = NOTHING
     await MemoryService(session=db_session, provider=fake_provider, settings=settings
                         ).extract_and_store(conversation.id, "now", "ok",
-                                            source_message_id=messages[4].id)
+                                            source_message_id=messages[4].id, scope=ADMIN_SCOPE)
     earlier = fake_provider.extraction_calls[-1][-1].content.partition("USER MESSAGE")[0]
     assert "message number 2" in earlier and "message number 3" in earlier
     assert "message number 1" not in earlier       # bounded to 2
@@ -208,7 +210,7 @@ async def _extract(session, fake_provider, settings, conversation, source, reply
     return await MemoryService(session=session, provider=fake_provider, settings=settings
                                ).extract_and_store(
         conversation_id=conversation.id, user_message=source.content,
-        assistant_message="Thanks.", source_message_id=source.id)
+        assistant_message="Thanks.", source_message_id=source.id, scope=ADMIN_SCOPE)
 
 
 def _sent_context(fake_provider) -> str:
@@ -229,7 +231,7 @@ async def test_a_short_answer_is_extracted_with_its_question(
     """The extractor receives the question; what is stored is exactly what
     extraction returned, persisted and readable from a fresh query. (The
     model's interpretation is mocked here; only a live run proves it.)"""
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     _, source = await _turns(db_session, conversation, [
         (MessageRole.ASSISTANT, question), (MessageRole.USER, answer)])
     stored = await _extract(db_session, fake_provider, settings, conversation, source,
@@ -245,7 +247,7 @@ async def test_a_short_answer_is_extracted_with_its_question(
 async def test_a_short_answer_with_nothing_before_it_gets_no_context(
     db_session, fake_provider, settings
 ) -> None:
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     (source,) = await _turns(db_session, conversation, [(MessageRole.USER, "Python.")])
     await _extract(db_session, fake_provider, settings, conversation, source, NOTHING)
     prompt = fake_provider.extraction_calls[-1][-1].content
@@ -255,11 +257,11 @@ async def test_a_short_answer_with_nothing_before_it_gets_no_context(
 async def test_another_conversations_turns_never_enter_the_context(
     db_session, fake_provider, settings
 ) -> None:
-    other = await ConversationService(db_session).create_conversation()
+    other = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     await _turns(db_session, other, [
         (MessageRole.ASSISTANT, "OTHER-CONVERSATION question?"),
         (MessageRole.USER, "OTHER-CONVERSATION answer.")])
-    mine = await ConversationService(db_session).create_conversation()
+    mine = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     (source,) = await _turns(db_session, mine, [(MessageRole.USER, "Python.")],
                              start=datetime.now(timezone.utc))
     await _extract(db_session, fake_provider, settings, mine, source, NOTHING)
@@ -269,27 +271,25 @@ async def test_another_conversations_turns_never_enter_the_context(
 async def test_a_source_message_from_another_conversation_yields_no_context(
     db_session, fake_provider, settings
 ) -> None:
-    """A mismatched (conversation, message) pair is refused, not trusted:
-    the window is keyed on the message *within* the given conversation."""
-    mine = await ConversationService(db_session).create_conversation()
+    """A mismatched (conversation, message) pair is refused, not trusted.
+    Since Stage 7B unit 4 the whole turn is refused before extraction: the
+    source message must be a message of the given conversation, so neither
+    conversation's text reaches the model and nothing is stored."""
+    mine = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     await _turns(db_session, mine, [(MessageRole.ASSISTANT, "MINE-EARLIER question?")],
                  start=datetime.now(timezone.utc) - timedelta(minutes=30))
-    other = await ConversationService(db_session).create_conversation()
+    other = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     _, foreign = await _turns(db_session, other, [
         (MessageRole.ASSISTANT, "FOREIGN question?"), (MessageRole.USER, "Answer.")])
-    await _extract(db_session, fake_provider, settings, mine, foreign, NOTHING)
-    prompt = fake_provider.extraction_calls[-1][-1].content
-    assert "FOREIGN" not in prompt
-    # Anchoring the window on a message from elsewhere would pull in this
-    # conversation's history on a false premise; no window is built at all.
-    assert "MINE-EARLIER" not in prompt
-    assert "EARLIER CONTEXT (for understanding only" not in prompt
+    stored = await _extract(db_session, fake_provider, settings, mine, foreign, NOTHING)
+    assert fake_provider.extraction_calls == []
+    assert not stored
 
 
 async def test_a_failed_extraction_stores_nothing(
     db_session, fake_provider, settings
 ) -> None:
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     _, source = await _turns(db_session, conversation, [
         (MessageRole.ASSISTANT, "Which language do you prefer?"), (MessageRole.USER, "Python.")])
     fake_provider.extraction_error = RuntimeError("synthetic provider failure")
@@ -303,7 +303,7 @@ async def test_a_failed_database_write_stores_nothing_and_reports_nothing(
 ) -> None:
     from sqlalchemy.exc import SQLAlchemyError
 
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     _, source = await _turns(db_session, conversation, [
         (MessageRole.ASSISTANT, "Which language do you prefer?"), (MessageRole.USER, "Python.")])
     await db_session.commit()
@@ -501,7 +501,7 @@ async def test_a_failed_inner_source_is_recorded_on_the_context_package(
         raise RuntimeError("synthetic")
 
     monkeypatch.setattr("app.retrieval.retrievers.MemoryRetriever.collect", broken)
-    package = await ContextService(db_session, settings).build("What is my favorite tea?")
+    package = await ContextService(db_session, settings, scope=ADMIN_SCOPE).build("What is my favorite tea?")
     assert "retrieval:memories" in package.metadata.degraded_sources
 
 

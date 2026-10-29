@@ -23,6 +23,7 @@ from app.knowledge.service import KnowledgeService
 from app.memory.models import Memory, MemoryStatus, MemoryType
 from app.prompt.formatter import REFERENCE_HEADER, knowledge_block
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -61,7 +62,7 @@ async def seed(session_factory, *contents, day_offset=0):
 
     ids = []
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         for index, content in enumerate(contents):
             created = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(
                 days=day_offset + index
@@ -195,7 +196,7 @@ async def test_a_broad_replacement_phrase_retires_nothing(
     from tests.test_knowledge_lifecycle import make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     for content in (
         "Mai uses PostgreSQL for storage.",
@@ -222,7 +223,7 @@ async def test_supersession_is_bounded_even_when_it_does_fire(
     from tests.test_knowledge_lifecycle import make_entity, make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     await make_entity(db_session, "OpenRouter", EntityType.COMPANY)
     await make_entity(db_session, "Groq", EntityType.COMPANY)
@@ -264,7 +265,7 @@ async def test_a_lookalike_entity_name_does_not_retire_the_real_one(
     from tests.test_knowledge_lifecycle import make_entity, make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     await make_entity(db_session, "Groq", EntityType.COMPANY)
     await make_entity(db_session, "Groq Inc", EntityType.COMPANY)
@@ -310,7 +311,7 @@ async def test_abandonment_only_affects_the_named_subject(
     from tests.test_knowledge_lifecycle import make_entity, make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     await make_entity(db_session, "OpenRouter", EntityType.COMPANY)
 
@@ -454,7 +455,7 @@ async def test_retrieval_stays_bounded_with_many_entities(
 ) -> None:
     """A wide entity graph must not produce an unbounded candidate pool."""
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         for index in range(150):
             entity = Entity(
                 canonical_name=f"Tool{index}",

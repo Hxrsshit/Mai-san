@@ -30,7 +30,7 @@ before substantial work and updates it after completing work (see
 | Previous stages | 6P harden monitoring concurrency and truthfulness, the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; Stage 6O was an inspection-only audit with no commit of its own); 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main`. Nothing is pushed: on 2026-10-29, after Stage 7B L0 (`e1e8b55`), local `main` was 18 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording it adds one more. |
 | Latest migration | Committed head: `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020` and `0021` (security review H1; changing that needs a separate approved plan). |
-| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: unit **L0 completed** (`e1e8b55`); the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
+| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`) and **4** (scoped conversations; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
 | Uncommitted work (2026-10-29) | Only the untracked `MAi branding .png`. Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. What is running was last checked on 2026-10-16 (see Stage 0 C5): `mai-backend` started 2026-10-14 09:48 UTC and was still unchanged on 2026-10-29 (same ID and start time, 0 restarts). |
 
 ### Uncommitted / in progress (NOT completed)
@@ -333,6 +333,93 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 7B unit 4: scoped conversations, messages and extraction context (this commit, 2026-10-29)
+
+- **Status:** completed (a Stage 7B unit). Design:
+  `docs/stage7b_ownership_design.md`; progress: `docs/stage7b_progress.md`.
+  No migration, no dependency change.
+- **What:**
+  - `KnowledgeScope.clause(model)` (`app/identity/scope.py`): the read filter
+    on all three scope columns, personal visibility only. With
+    `write_columns()` it is the only way application code names the scope
+    columns.
+  - `ConversationService(session, scope)`: the scope is required and must be
+    a `KnowledgeScope`. Create writes the scope; get, list, count, rename and
+    delete filter by it (get uses a filtered SELECT, never `session.get`,
+    which would bypass the filter through the identity map). Messages are
+    read and written only after their conversation is found in the scope.
+    A conversation of another member, another organisation, or an
+    unattributed legacy row is "not found", exactly like a missing id.
+  - Request path: `get_knowledge_scope` derives the scope only from
+    `get_principal` (which re-reads the active membership on every request);
+    the conversation, context, intent and chat services are built with it.
+    `ChatService`, `ContextService` and `IntentService` no longer build an
+    unscoped conversation service by default.
+  - Telegram's Admin chat no longer takes the bearer-dependent `Chat`
+    dependency: it builds the turn with `build_chat_service` from the Admin
+    principal it has just loaded from the database (the same composition as
+    the dependency chain).
+  - Memory extraction: `run_memory_extraction` and `extract_and_store` take
+    the turn's scope (a frozen value from the route). The earlier-turn
+    context is read only if the source message belongs to a conversation of
+    that scope. A model-named `source_message_id` is now trusted only if it
+    is a message of the turn's own conversation (before, any existing
+    message id anywhere was accepted -- model output could point a memory's
+    provenance at another conversation).
+- **Not yet scoped (units 5-6, by design):** memories, entities, aliases,
+  relationships, evidence, conflicts, retrieval and context assembly. New
+  memories are still written unattributed. **Do not deploy** between unit 4
+  and the completion of units 5-6: memory writes trigger conflict
+  detection and supersession across all memories.
+- **Consequence (design section 7, review F4):** existing (legacy,
+  unattributed) conversations -- the Admin's web conversations and the
+  Telegram ones -- are no longer listed or reachable until they are
+  attributed by an explicit, owner-approved operation. A Telegram message in
+  such a conversation gets the generic reply and runs no model call.
+- **Tests:** `tests/test_conversation_scope.py` (17): the scope written on
+  create; a colleague and an outsider refused get, messages, list, count,
+  rename, add-message and delete (and the row unchanged); a conversation
+  already in the identity map still refused; a legacy conversation
+  quarantined; each scope sees only its own; the extraction context empty
+  outside the scope; the API 404s another member's conversation and does not
+  list it; a model-named foreign source message not trusted; over HTTP,
+  rename, read and post-message refused with no model call, and the context
+  preview and the context/prompt debug endpoints read no foreign history; a
+  turn whose scope differs from its chat service refused before anything
+  runs; extraction stores nothing for a turn outside its scope; a Telegram
+  message in an unattributed conversation gets the generic reply and runs
+  no model call. `tests/test_memory_recall.py`: a source message from
+  another conversation now refuses extraction outright (no model call)
+  instead of extracting without context.
+  `tests/scopes.py` holds the shared trusted test scopes (made with
+  `KnowledgeScope.personal`). The scope tripwire now allows `write_columns`
+  only in an approved writer list (the conversation service), checks the
+  list is not stale, and forbids `session.get` of conversations or messages
+  anywhere in the application. A new AST checker (review F2) requires every
+  function that selects, updates or deletes conversations or messages to
+  bind the query to a scope (`clause`, `_in_scope` or a prior
+  `_require_conversation`), with one reviewed child query. 35 test files updated mechanically to pass the Admin
+  scope; one test that built an intent service with a session and no scope
+  now passes the scope (it failed closed, as intended).
+- **Mutation check:** four defects each caught -- get unscoped (6 tests
+  failed), add-message without the parent check (2), the extraction context
+  unscoped (1), any message id trusted (1); sources restored byte for byte.
+- **Verification (SQLite + disposable PostgreSQL 16, 2026-10-29), unit 4
+  alone in a clean worktree at `2d2e41e`:** full suite ordered **7165
+  passed, 1 xfailed, 0 failed, 0 skipped**; shuffled (seed 2093554871)
+  **7165 passed, 1 xfailed, 0 failed**. `tests/security/test_secrets.py` excluded as before. (A
+  first run after the review fixes failed one test, the foreign-source-message
+  recall test, which expected the old weaker behaviour; it was updated.)
+- **Independent review** (the `security-reviewer` agent, read-only): no
+  cross-scope read or write path found. Fixed: F1 (Medium) the turn's scope
+  is now checked against the chat service's scope, and extraction refuses
+  before any model call unless the conversation and source message are in the
+  scope; F2 (Medium) the AST query checker above; F3 context-preview and the
+  debug endpoints covered by tests; F5 the Telegram path tested; F6 shared
+  conversation service between chat, context and intent; F7
+  `touch_conversation` and `maybe_autotitle` also require the conversation
+  in scope. F4 (by design, tested): see the consequence above.
 
 ### Stage 7B L0: tenant-scope foundation (`e1e8b55`, 2026-10-29)
 

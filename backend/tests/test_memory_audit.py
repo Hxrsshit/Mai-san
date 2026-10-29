@@ -15,6 +15,7 @@ from app.core.config import Settings
 from app.memory.models import Memory, MemoryStatus, MemoryType
 from app.memory.service import MemoryService
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 
 def payload(*memories) -> str:
@@ -34,7 +35,7 @@ def candidate(content, memory_type="preference", importance=8, confidence=0.9) -
 
 @pytest.fixture
 async def conversation(db_session):
-    return await ConversationService(db_session).create_conversation()
+    return await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
 
 
 def service(db_session, fake_provider, settings) -> MemoryService:
@@ -55,17 +56,17 @@ async def test_exact_duplicate_is_caught_beyond_the_dedup_window(
     target = "User strongly prefers detailed written documentation."
 
     fake_provider.extraction_reply = payload(candidate(target))
-    assert len(await memory_service.extract_and_store(conversation.id, "a", "b")) == 1
+    assert len(await memory_service.extract_and_store(conversation.id, "a", "b", scope=ADMIN_SCOPE)) == 1
 
     # Push it well outside the window with unrelated same-type memories.
     for index in range(7):
         fake_provider.extraction_reply = payload(
             candidate(f"User owns gadget number {index} of some kind.")
         )
-        await memory_service.extract_and_store(conversation.id, "a", "b")
+        await memory_service.extract_and_store(conversation.id, "a", "b", scope=ADMIN_SCOPE)
 
     fake_provider.extraction_reply = payload(candidate(target))
-    stored = await memory_service.extract_and_store(conversation.id, "a", "b")
+    stored = await memory_service.extract_and_store(conversation.id, "a", "b", scope=ADMIN_SCOPE)
 
     assert stored == []
     copies = [
@@ -82,9 +83,9 @@ async def test_exact_duplicate_lookup_is_scoped_to_the_same_type(
     text = "User values shipping software quickly."
 
     fake_provider.extraction_reply = payload(candidate(text, "preference"))
-    await memory_service.extract_and_store(conversation.id, "a", "b")
+    await memory_service.extract_and_store(conversation.id, "a", "b", scope=ADMIN_SCOPE)
     fake_provider.extraction_reply = payload(candidate(text, "goal"))
-    await memory_service.extract_and_store(conversation.id, "a", "b")
+    await memory_service.extract_and_store(conversation.id, "a", "b", scope=ADMIN_SCOPE)
 
     assert await memory_service.count_memories() == 2
 
@@ -97,7 +98,8 @@ async def test_normalized_content_is_persisted_for_lookup(
         candidate("User Prefers   Practical, Explanations!")
     )
     stored = await service(db_session, fake_provider, settings).extract_and_store(
-        conversation.id, "a", "b"
+        conversation.id, "a", "b",
+        scope=ADMIN_SCOPE,
     )
 
     assert stored[0].normalized_content == "user prefers practical explanations"
@@ -115,7 +117,8 @@ async def test_identical_candidates_in_one_turn_store_once(
     fake_provider.extraction_reply = payload(candidate(text), candidate(text))
 
     stored = await service(db_session, fake_provider, settings).extract_and_store(
-        conversation.id, "a", "b"
+        conversation.id, "a", "b",
+        scope=ADMIN_SCOPE,
     )
     assert len(stored) == 1
 
@@ -129,7 +132,8 @@ async def test_reworded_candidates_in_one_turn_store_once(
     )
 
     stored = await service(db_session, fake_provider, settings).extract_and_store(
-        conversation.id, "a", "b"
+        conversation.id, "a", "b",
+        scope=ADMIN_SCOPE,
     )
     assert len(stored) == 1
 
@@ -143,7 +147,8 @@ async def test_distinct_candidates_in_one_turn_are_both_stored(
     )
 
     stored = await service(db_session, fake_provider, settings).extract_and_store(
-        conversation.id, "a", "b"
+        conversation.id, "a", "b",
+        scope=ADMIN_SCOPE,
     )
     assert len(stored) == 2
 
@@ -189,7 +194,7 @@ async def test_database_failure_during_storage_persists_nothing(
     from app.memory.tasks import run_memory_extraction
 
     async with session_factory() as setup_session:
-        conversation = await ConversationService(setup_session).create_conversation()
+        conversation = await ConversationService(setup_session, ADMIN_SCOPE).create_conversation()
         await setup_session.commit()
         conversation_id = conversation.id
 
@@ -210,6 +215,7 @@ async def test_database_failure_during_storage_persists_nothing(
         settings=settings,
         provider=fake_provider,
         session_factory=session_factory,
+        scope=ADMIN_SCOPE,
     )
 
     monkeypatch.undo()
@@ -230,7 +236,7 @@ async def test_a_failed_candidate_leaves_no_half_written_batch(
     from app.memory.tasks import run_memory_extraction
 
     async with session_factory() as setup_session:
-        conversation = await ConversationService(setup_session).create_conversation()
+        conversation = await ConversationService(setup_session, ADMIN_SCOPE).create_conversation()
         await setup_session.commit()
         conversation_id = conversation.id
 
@@ -257,6 +263,7 @@ async def test_a_failed_candidate_leaves_no_half_written_batch(
         settings=settings,
         provider=fake_provider,
         session_factory=session_factory,
+        scope=ADMIN_SCOPE,
     )
 
     monkeypatch.undo()
@@ -307,6 +314,7 @@ async def test_extraction_task_is_a_noop_when_memory_disabled(
         settings=settings,
         provider=fake_provider,
         session_factory=None,
+        scope=ADMIN_SCOPE,
     )
 
     assert fake_provider.extraction_calls == []
@@ -320,7 +328,8 @@ async def test_new_memories_default_to_active(
 ) -> None:
     fake_provider.extraction_reply = payload(candidate("User prefers active status."))
     stored = await service(db_session, fake_provider, settings).extract_and_store(
-        conversation.id, "a", "b"
+        conversation.id, "a", "b",
+        scope=ADMIN_SCOPE,
     )
     assert stored[0].status is MemoryStatus.ACTIVE
 
@@ -338,7 +347,8 @@ async def test_invalid_memory_types_cannot_be_stored(
         }
     )
     stored = await service(db_session, fake_provider, settings).extract_and_store(
-        conversation.id, "a", "b"
+        conversation.id, "a", "b",
+        scope=ADMIN_SCOPE,
     )
     assert stored == []
 

@@ -30,6 +30,7 @@ from app.tasks.requests import MonitorOutcome, MonitorRequestService
 from app.tasks.service import TaskService
 from app.tasks.states import TaskState
 from tests.support.stub_transport import GmailTransport, gmail_list_payload, gmail_message_payload
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -85,7 +86,7 @@ def gmail(calendar_settings, gmail_tokens, monkeypatch):
 async def monitor(session_factory, settings, message=REQUEST):
     """Propose and confirm, as two committed chat turns would."""
     async with session_factory() as session:
-        conv = (await ConversationService(session).create_conversation()).id
+        conv = (await ConversationService(session, ADMIN_SCOPE).create_conversation()).id
         proposal = await MonitorRequestService(session, settings, OWNER).handle(conv, message)
         assert proposal.outcome is MonitorOutcome.PROPOSED
         await session.commit()

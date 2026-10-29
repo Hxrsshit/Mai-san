@@ -35,6 +35,7 @@ from app.tasks.service import TaskService
 from app.tasks.states import TaskState
 from tests.support.stub_transport import gmail_list_payload
 from tests.test_monitor_runtime import gmail  # noqa: F401  (the stubbed Gmail path)
+from tests.scopes import ADMIN_SCOPE
 
 ADMIN_URL = os.environ.get("TEST_POSTGRES_ADMIN_URL", "")
 
@@ -92,7 +93,7 @@ def now():
 
 async def new_conversation(F):
     async with F() as session:
-        cid = (await ConversationService(session).create_conversation()).id
+        cid = (await ConversationService(session, ADMIN_SCOPE).create_conversation()).id
         await session.commit()
         return cid
 

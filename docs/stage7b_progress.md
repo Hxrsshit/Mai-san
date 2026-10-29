@@ -20,7 +20,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 | 1 | L0 tenant-scope foundation + review remediation (M1, M3, M4, L1, L2, L5) | **Completed, `e1e8b55`** (see CHANGELOG, Stage 7B L0) | SQLite and live PostgreSQL, ordered and shuffled |
 | 2 | Remaining L0 findings | L1, L2 done. **M2** (foreign keys from a scope to a membership) belongs to unit 10. **H1** is an operational boundary (below) | -- |
 | 3 | Ownership model and enforcement-migration design (foreign keys, orphan checks, legacy-row policy) | **Completed** (design: `docs/stage7b_ownership_design.md`) | Repository inventory, 2026-10-29 |
-| 4 | Scope conversations, messages, memory-extraction context | Not started | -- |
+| 4 | Scope conversations, messages, memory-extraction context | **Completed** (see CHANGELOG, Stage 7B unit 4) | SQLite and live PostgreSQL, ordered and shuffled; security review F1-F7 |
 | 5 | Personal-memory isolation, scoped deduplication | Not started | -- |
 | 6 | Tenant-aware entities, relationships, knowledge, retrieval, context | Not started | -- |
 | 7 | Background membership gates, revocation races | Not started | -- |
@@ -93,5 +93,8 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 
 ## Next action
 
-Unit 4: scope conversations and messages and the memory-extraction context,
-following `docs/stage7b_ownership_design.md` sections 1-4 and 8.
+Units 5-6 together (they must land together: do not deploy between unit 4
+and their completion): scope memories, entities, aliases, relationships,
+evidence, conflicts, retrieval and context, with migration
+`0022_scoped_uniqueness` (per-scope unique indexes), following
+`docs/stage7b_ownership_design.md` sections 2-5.

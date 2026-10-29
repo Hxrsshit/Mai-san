@@ -47,10 +47,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.deps import AppSettings, Chat, DbSession, Provider, SessionFactory
+from app.api.deps import AppSettings, DbSession, Provider, SessionFactory, build_chat_service
 from app.api.routes.conversations import send_conversation_turn
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.identity.scope import KnowledgeScope
 from app.identity.constants import LEGACY_ADMIN_MEMBER_ID, TELEGRAM_PROVIDER
 from app.identity.schemas import RedeemResult
 from app.identity.service import MembershipService
@@ -292,7 +293,6 @@ async def _admin_turn(
     classified: ClassifiedUpdate,
     update_id: int,
     settings: Settings,
-    chat: Chat,
     session: DbSession,
     provider: Provider,
     session_factory: SessionFactory,
@@ -310,11 +310,14 @@ async def _admin_turn(
     service = MembershipService(session, settings)
     refusal: Optional[str] = None
     check_failed = False
+    admin = None
     try:
         if await service.has_attached_identity(TELEGRAM_PROVIDER, str(classified.sender_id)):
             refusal = "member_identity"
-        elif await service.active_principal(LEGACY_ADMIN_MEMBER_ID) is None:
-            refusal = "admin_unavailable"
+        else:
+            admin = await service.active_principal(LEGACY_ADMIN_MEMBER_ID)
+            if admin is None:
+                refusal = "admin_unavailable"
     except _DATABASE_FAILURES:
         # Only a flag here; the rollback and the log run below, outside any
         # `except`, for the same reason as in `_link`.
@@ -334,6 +337,11 @@ async def _admin_turn(
         logger.warning("Rejected Telegram webhook", extra={"category": "invalid_text"})
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"detail": "Invalid message"})
 
+    # Stage 7B unit 4: the turn runs in the Admin's own scope, derived from
+    # the principal just read from the database -- this adapter cannot use
+    # the bearer seam, so it does not take the `Chat` dependency.
+    scope = KnowledgeScope.personal(admin)
+    chat = build_chat_service(session, provider, settings, scope)
     tasks = BackgroundTasks()
     try:
         result = await send_conversation_turn(
@@ -349,6 +357,7 @@ async def _admin_turn(
             # by the owner seam, so a monitor is never set up from here --
             # the request is explained and nothing is persisted.
             owner_id=None,
+            scope=scope,
         )
     except Exception:  # Existing API handlers classify the underlying failure.
         # The normal HTTP route lets its dependency roll this transaction
@@ -379,7 +388,6 @@ async def _admin_turn(
 async def telegram_webhook(
     request: Request,
     settings: AppSettings,
-    chat: Chat,
     session: DbSession,
     provider: Provider,
     session_factory: SessionFactory,
@@ -413,6 +421,6 @@ async def telegram_webhook(
         return await _link(request, classified, update.update_id, settings, session, sender)
     if classified.kind is UpdateKind.PRIVATE_TEXT:
         return await _admin_turn(
-            classified, update.update_id, settings, chat, session, provider, session_factory, sender
+            classified, update.update_id, settings, session, provider, session_factory, sender
         )
     return _ignored(update.update_id, classified.reason)
