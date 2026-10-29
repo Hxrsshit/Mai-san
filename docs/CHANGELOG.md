@@ -30,7 +30,7 @@ before substantial work and updates it after completing work (see
 | Previous stages | 6P harden monitoring concurrency and truthfulness, the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; Stage 6O was an inspection-only audit with no commit of its own); 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main`. Nothing is pushed: on 2026-10-29, after Stage 7B L0 (`e1e8b55`), local `main` was 18 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording it adds one more. |
 | Latest migration | Committed head: `0022_scoped_uniqueness.py` (Stage 7B units 5-6; per-scope unique indexes; verified on SQLite and disposable PostgreSQL 16 by `tests/test_scoped_uniqueness_migration_pg.py`). Before it, `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020`, `0021` and `0022` (security review H1; changing that needs a separate approved plan). |
-| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (scoped knowledge; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
+| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (`1cb1e94`, scoped knowledge) and **7** (background membership gates; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
 | Uncommitted work (2026-10-29) | Only the untracked `MAi branding .png`. Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. What is running was last checked on 2026-10-16 (see Stage 0 C5): `mai-backend` started 2026-10-14 09:48 UTC and was still unchanged on 2026-10-29 (same ID and start time, 0 restarts). |
 
 ### Uncommitted / in progress (NOT completed)
@@ -334,7 +334,64 @@ not commit them as part of other work, and do not describe them as done.
 
 ## Completed (newest first)
 
-### Stage 7B units 5-6: scoped knowledge -- memories, entities, relationships, conflicts and retrieval (this commit, 2026-10-29)
+### Stage 7B unit 7: background membership gates and revocation races (this commit, 2026-10-29)
+
+- **Status:** completed (a Stage 7B unit). No migration, no dependency
+  change. Progress: `docs/stage7b_progress.md`.
+- **What:**
+  - `lock_active_principal` (`app/identity/principal.py`): the one
+    active-membership read, holding a share lock (`FOR SHARE OF
+    organisation_members` on PostgreSQL) until the caller's transaction ends.
+    `load_active_principal` and it now share one statement builder.
+    `KnowledgeScope.member_id` names the member a personal scope belongs to
+    (refused for the organisation scope).
+  - The background knowledge pipeline (`app/memory/tasks.py`): every step's
+    transaction -- memory, entities (per memory), relationships (per memory),
+    conflicts (per memory) -- starts by re-reading the member behind the
+    turn's frozen scope under that lock. Unless the member is still active, in
+    an active organisation, with exactly that scope, the step does nothing
+    and the chain stops. Revocation (`mark_revoked`) takes the same row FOR
+    UPDATE, so a step either sees the revocation or finishes before it
+    commits: nothing is written for a member after their revocation. A
+    failed check is a stop, never a pass.
+- **Not changed, already covered:** the task runtime. Revocation cancels
+  every non-terminal task of the member in its own transaction (Stage 7A),
+  and a task cancelled between discovery and claim, or after the claim, is
+  never executed (existing tests, Stages 6M/6P). `app.background`, `tasks`,
+  `authorization` and `execution` must not import identity (a Stage 7A
+  structure test), so no gate was added there. Notification delivery only
+  ever targets the configured Admin chat; who receives a member's
+  notifications is Telegram binding (unit 11).
+- **Tests:** `tests/test_background_membership_gates.py` (9): an active
+  member is served (not vacuous); a revoked or invited member, a member with
+  no membership row, and a suspended organisation get no model call and no
+  write; a revocation between the memory and entity steps stops the rest of
+  the chain; a member moved to another organisation no longer matches the
+  turn's scope; a failing membership read stops the work; the gate's
+  statement is FOR SHARE OF the membership row. Gated PostgreSQL
+  (`tests/test_background_membership_races_pg.py`, 2, forced races): a
+  revocation started while a step holds the gate waits for the step's
+  commit and then wins (the step's write stands, nothing after); a step
+  started while a revocation holds the row waits and then does nothing.
+  One unit 5-6 isolation test now gives the colleague a real active
+  membership, so it still tests the scoped read rather than the gate.
+- **Mutation check:** four defects, each caught: the memory step ungated (6
+  failed), the entity step ungated (1), the scope match dropped (1), the
+  share lock dropped (both PostgreSQL races); sources restored byte for
+  byte.
+- **Verification (SQLite + disposable PostgreSQL 16, 2026-10-29):** full
+  suite ordered **7250 passed, 1 xfailed, 0 failed, 0 skipped**; shuffled
+  (seed 803511492) **7250 passed, 1 xfailed, 0 failed**.
+  `tests/security/test_secrets.py` excluded as before. (A first run failed
+  one test: the scope-write tripwire caught the gate naming the scope's
+  `scope_id` directly; it now uses the new `KnowledgeScope.member_id`,
+  which refuses a non-personal scope.)
+- **Consequence:** a step holds the share lock for its own duration,
+  including its model call, so a revocation can wait up to one step's
+  model timeout. Accepted: bounded, and it is what makes "nothing after
+  revocation" true.
+
+### Stage 7B units 5-6: scoped knowledge -- memories, entities, relationships, conflicts and retrieval (`1cb1e94`, 2026-10-29)
 
 - **Status:** completed (two Stage 7B units, landed together so that no
   deployable state has scoped conversations but shared knowledge). Design:

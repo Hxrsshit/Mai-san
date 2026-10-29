@@ -94,6 +94,15 @@ class KnowledgeScope:
             principal.organisation_id, principal.organisation_id, ScopeVisibility.ORGANISATION
         )
 
+    @property
+    def member_id(self) -> uuid.UUID:
+        """The member a personal scope belongs to (Stage 7B unit 7: the
+        background gate re-reads that member). Refused for any other
+        visibility -- the organisation scope belongs to no one member."""
+        if self.visibility is not ScopeVisibility.PERSONAL:
+            raise InvalidScope("only a personal scope belongs to a member")
+        return self.scope_id
+
     def clause(self, model) -> ColumnElement[bool]:
         """The read filter for a scoped `model`: its rows in this scope only.
 

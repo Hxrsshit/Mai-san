@@ -17,6 +17,14 @@ Stage 7B units 4-6: every step runs in the turn's scope, a frozen value the
 route hands over. Each step re-reads its memories with a scoped SELECT (never
 `session.get`), so a memory id outside the scope is simply not found, and
 builds its service with the same scope.
+
+Stage 7B unit 7: the turn's member may be revoked while this runs. Every
+step's transaction therefore starts by re-reading the member behind the
+scope with a share lock (`lock_active_principal`), and does nothing -- and
+stops the chain -- unless that member is still active with exactly this
+scope. Revocation locks the same row, so a step either sees the revocation
+or finishes before it commits; nothing is written for a member after their
+revocation. A failed check is a stop, never a pass.
 """
 
 import uuid
@@ -33,6 +41,7 @@ from app.entities.service import EntityService
 from app.memory.models import Memory
 from app.knowledge.service import KnowledgeService
 from app.relationships.service import RelationshipService
+from app.identity.principal import lock_active_principal
 from app.identity.scope import KnowledgeScope
 from app.memory.service import MemoryService
 
@@ -85,6 +94,8 @@ async def run_memory_extraction(
     stored_memory_ids: List[uuid.UUID] = []
     try:
         async with session_factory() as session:
+            if not await _member_still_active(session, scope, "memory"):
+                return
             service = MemoryService(
                 session=session, provider=provider, settings=settings, scope=scope
             )
@@ -119,6 +130,22 @@ async def run_memory_extraction(
             session_factory=session_factory,
             scope=scope,
         )
+
+
+async def _member_still_active(session, scope: KnowledgeScope, step: str) -> bool:
+    """Whether the member behind `scope` is still active with exactly this
+    scope, holding the membership row's share lock for the rest of the
+    step's transaction. False rolls the transaction back and is logged with
+    the step and the member id only."""
+    principal = await lock_active_principal(session, scope.member_id)
+    if principal is not None and KnowledgeScope.personal(principal) == scope:
+        return True
+    await session.rollback()
+    logger.info(
+        "Background knowledge step stopped: the member is no longer active",
+        extra={"step": step, "member_id": str(scope.member_id)},
+    )
+    return False
 
 
 async def _scoped_memory(session, memory_id: uuid.UUID, scope: KnowledgeScope) -> Optional[Memory]:
@@ -164,6 +191,8 @@ async def run_entity_extraction(
     for memory_id in memory_ids:
         try:
             async with session_factory() as session:
+                if not await _member_still_active(session, scope, "entities"):
+                    return
                 memory = await _scoped_memory(session, memory_id, scope)
                 if memory is None:
                     # Deleted between the two steps, or not in the scope.
@@ -228,6 +257,8 @@ async def run_relationship_extraction(
     for memory_id in memory_ids:
         try:
             async with session_factory() as session:
+                if not await _member_still_active(session, scope, "relationships"):
+                    return
                 memory = await _scoped_memory(session, memory_id, scope)
                 if memory is None:
                     continue
@@ -293,6 +324,8 @@ async def run_conflict_evaluation(
     for memory_id in memory_ids:
         try:
             async with session_factory() as session:
+                if not await _member_still_active(session, scope, "conflicts"):
+                    return
                 memory = await _scoped_memory(session, memory_id, scope)
                 if memory is None:
                     continue

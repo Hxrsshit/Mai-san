@@ -23,7 +23,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 | 4 | Scope conversations, messages, memory-extraction context | **Completed** (see CHANGELOG, Stage 7B unit 4) | SQLite and live PostgreSQL, ordered and shuffled; security review F1-F7 |
 | 5 | Personal-memory isolation, scoped deduplication | **Completed with unit 6** (see CHANGELOG, Stage 7B units 5-6) | SQLite and live PostgreSQL, ordered and shuffled; security review M1-M2, L1-L6 |
 | 6 | Tenant-aware entities, relationships, knowledge, retrieval, context | **Completed with unit 5** (migration `0022_scoped_uniqueness`) | as unit 5 |
-| 7 | Background membership gates, revocation races | Not started | -- |
+| 7 | Background membership gates, revocation races | **Completed** (see CHANGELOG, Stage 7B unit 7) | SQLite and live PostgreSQL (forced races), ordered and shuffled |
 | 8 | Ownership on reminders, executions, workflows, other revocable work | Not started | -- |
 | 9 | Scope history imports, protect integration state | Not started | -- |
 | 10 | Final non-null and relational enforcement migration | Not started | -- |
@@ -96,8 +96,8 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 - **Attributing legacy rows** must merge, not plain-UPDATE: the per-scope
   unique indexes (0022) will collide with scoped rows that restate legacy
   facts, and the seeded legacy "User" with each scope's own User.
-- **Background scope is frozen at the route** and not re-checked against
-  membership when the task runs: unit 7.
+- *(Resolved by unit 7)* the background knowledge steps now re-check the
+  member under a share lock at the start of each step.
 - **0022 on the real database** takes ordinary (non-concurrent) index locks:
   apply it with the application stopped, within the approved migration plan.
 
@@ -109,8 +109,19 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 
 ## Next action
 
-Unit 7: background membership gates and revocation races -- re-check the
-member's active membership when each background step (memory, entity,
-relationship, conflict extraction; reminders and monitors as they reach
-knowledge) starts, and settle what happens to work in flight when a member
-is revoked. Then units 8-14 in order.
+Unit 8: ownership on reminders, executions, workflows and the remaining
+revocable work -- write and filter their scope (reminders, executions,
+workflows carry the L0 columns), give the reminder scheduler and execution
+paths the owner's scope, and make revocation cover them (design sections 3
+and 4). Then units 9-14 in order.
+
+Design constraint for unit 8 (recorded 2026-10-29): `app.execution`,
+`app.tasks`, `app.authorization` and `app.background` must never import
+`app.identity` (a Stage 7A structure test). They should therefore depend on a
+structural protocol in the database layer (`app.database.models.scope`,
+e.g. `ScopeBinding` with `clause(model)` and `write_columns()`), which
+`KnowledgeScope` satisfies without either side importing the other; the
+composition root (`app/api/deps.py`, the reminder scheduler's start-up)
+hands them the trusted scope. The scope-write tripwire and allowlist extend
+to them. Execution and workflows have their own owner and approval model
+(Stage 4/6), so read `docs/` for those stages before changing them.

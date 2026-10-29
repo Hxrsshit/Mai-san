@@ -241,8 +241,23 @@ async def test_extraction_refuses_another_scopes_memory(db_session, fake_provide
 async def test_a_background_step_never_loads_another_scopes_memory(
     session_factory, fake_provider, settings
 ) -> None:
+    from datetime import datetime, timezone
+
+    from app.identity.constants import MemberStatus, Role
+    from app.identity.models import OrganisationMember, User
+
     async with session_factory() as session:
         ids = await _seed(session, ADMIN_SCOPE)
+        # An active colleague (unit 7's gate passes), so what refuses the
+        # Admin's memory is the scoped read itself.
+        user = User(display_name="Synthetic colleague")
+        session.add(user)
+        await session.flush()
+        session.add(OrganisationMember(
+            id=COLLEAGUE_SCOPE.scope_id, organisation_id=COLLEAGUE_SCOPE.organisation_id,
+            user_id=user.id, role=Role.MEMBER.value, status=MemberStatus.ACTIVE.value,
+            activated_at=datetime.now(timezone.utc)))
+        await session.commit()
     fake_provider.entity_reply = json.dumps({"entities": [
         {"name": "Redis", "entity_type": "technology", "confidence_score": 0.95}]})
     await run_entity_extraction([ids["memory"]], settings=settings, provider=fake_provider,
