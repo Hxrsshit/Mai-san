@@ -23,7 +23,7 @@ from app.context.budget import BudgetLimits
 from app.context.schemas import ContextPackage
 from app.retrieval.schemas import RetrievalResult
 from app.retrieval.service import RetrievalService
-from app.identity.scope import KnowledgeScope
+from app.identity.scope import InvalidScope, KnowledgeScope
 from app.services.conversation_service import ConversationService
 
 logger = get_logger(__name__)
@@ -41,14 +41,23 @@ class ContextService:
     ) -> None:
         self._session = session
         self._settings = settings or get_settings()
+        # Stage 7B units 4 and 6: history and knowledge are read only within
+        # a scope. Without injected services, both are built from `scope`,
+        # which then must be a KnowledgeScope (each refuses anything else).
+        # Injected services must agree on the scope: a turn whose history is
+        # one member's and whose retrieval is another's is refused.
         self._retrieval = retrieval_service or RetrievalService(
-            session, self._settings
+            session, self._settings, scope=scope
         )
-        # Stage 7B unit 4: history is read only within a scope. Without a
-        # scoped conversation service, one is built from `scope`, which then
-        # must be a KnowledgeScope (ConversationService refuses anything else).
         self._conversations = conversation_service or ConversationService(session, scope)
+        if self._retrieval.scope != self._conversations.scope:
+            raise InvalidScope("ContextService needs one scope for history and retrieval")
         self._assembler = ContextAssembler(self.limits)
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        """The one scope of both history and retrieval (checked equal above)."""
+        return self._conversations.scope
 
     @property
     def limits(self) -> BudgetLimits:

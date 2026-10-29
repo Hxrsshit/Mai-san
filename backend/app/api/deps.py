@@ -76,9 +76,9 @@ def get_context_service(
 
 
 def get_retrieval_service(
-    session: DbSession, settings: AppSettings
+    session: DbSession, settings: AppSettings, scope: "Scope"
 ) -> RetrievalService:
-    return RetrievalService(session=session, settings=settings)
+    return RetrievalService(session=session, settings=settings, scope=scope)
 
 
 def get_prompt_formatter(
@@ -191,28 +191,28 @@ def build_chat_service(
 
 
 def get_knowledge_service(
-    session: DbSession, settings: AppSettings
+    session: DbSession, settings: AppSettings, scope: "Scope"
 ) -> KnowledgeService:
     """Stage 3C lifecycle reads. Takes no provider: conflict handling makes
     no model call anywhere."""
-    return KnowledgeService(session=session, settings=settings)
+    return KnowledgeService(session=session, settings=settings, scope=scope)
 
 
 def get_memory_service(
-    session: DbSession, provider: Provider, settings: AppSettings
+    session: DbSession, provider: Provider, settings: AppSettings, scope: "Scope"
 ) -> MemoryService:
-    return MemoryService(session=session, provider=provider, settings=settings)
+    return MemoryService(session=session, provider=provider, settings=settings, scope=scope)
 
 
 def get_history_import_service(
-    session: DbSession, provider: Provider, settings: AppSettings
+    session: DbSession, provider: Provider, settings: AppSettings, scope: "Scope"
 ) -> HistoryImportService:
     """Stage 5C. Takes the memory service so derived knowledge goes through
     the one pipeline that deduplicates and conflict-resolves it."""
     return HistoryImportService(
         session=session,
         memory_service=MemoryService(
-            session=session, provider=provider, settings=settings
+            session=session, provider=provider, settings=settings, scope=scope
         ),
         settings=settings,
     )
@@ -414,15 +414,17 @@ def get_delivery_status_reader(session: DbSession, owner_id: OwnerId) -> Deliver
 
 
 def get_entity_service(
-    session: DbSession, provider: Provider, settings: AppSettings
+    session: DbSession, provider: Provider, settings: AppSettings, scope: Scope
 ) -> EntityService:
-    return EntityService(session=session, provider=provider, settings=settings)
+    return EntityService(session=session, provider=provider, settings=settings, scope=scope)
 
 
 def get_relationship_service(
-    session: DbSession, provider: Provider, settings: AppSettings
+    session: DbSession, provider: Provider, settings: AppSettings, scope: Scope
 ) -> RelationshipService:
-    return RelationshipService(session=session, provider=provider, settings=settings)
+    return RelationshipService(
+        session=session, provider=provider, settings=settings, scope=scope
+    )
 
 
 Conversations = Annotated[ConversationService, Depends(get_conversation_service)]

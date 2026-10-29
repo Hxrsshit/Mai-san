@@ -5,6 +5,12 @@ Pipeline, in order:
     turn -> extract candidates -> threshold filter -> deduplicate -> store
 
 Only this module writes memories. The LLM proposes; the application decides.
+
+Stage 7B unit 5: the service belongs to one knowledge scope, given at
+construction. Memories are written with `scope.write_columns()`, and every
+read -- deduplication included -- is filtered by `scope.clause`, so one
+member's fact is never a "duplicate" of another's and never listed, read or
+deleted through another member's service.
 """
 
 import uuid
@@ -22,7 +28,7 @@ from app.core.logging import get_logger
 from app.database.models.base import utcnow
 from app.database.models.conversation import Conversation
 from app.database.models.message import Message
-from app.identity.scope import KnowledgeScope
+from app.identity.scope import KnowledgeScope, require_scope
 from app.llm.base import LLMProvider
 from app.memory.deduplication import DuplicateMatch, find_duplicate, normalize
 from app.memory.extractor import MemoryExtractor
@@ -90,13 +96,20 @@ class MemoryService:
         provider: Optional[LLMProvider] = None,
         settings: Optional[Settings] = None,
         extractor: Optional[MemoryExtractor] = None,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "MemoryService")
         self._settings = settings or get_settings()
         self._provider = provider
         self._extractor = extractor or (
             MemoryExtractor(provider, self._settings) if provider else None
         )
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        return self._scope
 
     # --- Extraction pipeline ------------------------------------------------
 
@@ -107,7 +120,7 @@ class MemoryService:
         assistant_message: str,
         source_message_id: Optional[uuid.UUID] = None,
         *,
-        scope: KnowledgeScope,
+        scope: Optional[KnowledgeScope] = None,
     ) -> List[Memory]:
         """Analyse one completed turn and store whatever survives validation.
 
@@ -119,12 +132,23 @@ class MemoryService:
         conversation, the messages or the model's output. The scope bounds
         the write too: unless the conversation (and the source message, when
         given) is found inside it, nothing is extracted or stored.
+
+        Since unit 5 the scope is the service's own. `scope`, when given, is a
+        cross-check only: a turn scope that differs from the service's stores
+        nothing.
         """
         if not self._settings.MEMORY_EXTRACTION_ENABLED:
             return []
         if self._extractor is None:
             logger.warning("Memory extraction skipped: no provider configured")
             return []
+        if scope is not None and scope != self._scope:
+            logger.warning(
+                "Memory extraction refused: the turn scope is not the service's",
+                extra={"conversation_id": str(conversation_id)},
+            )
+            return []
+        scope = self._scope
         if not await self._turn_in_scope(conversation_id, source_message_id, scope):
             logger.warning(
                 "Memory extraction refused: the turn is not in its scope",
@@ -435,6 +459,7 @@ class MemoryService:
             # memory's provenance into another scope. Imported memories have no live message
             # to point at, so the lookup is skipped entirely rather than
             # resolving a live id against archived content.
+            **self._scope.write_columns(),
             source_message_id=(
                 await self._resolve_source_message(
                     candidate.source_message_id,
@@ -507,6 +532,7 @@ class MemoryService:
             Memory.normalized_content == normalized[:NORMALIZED_CONTENT_LENGTH],
             Memory.memory_type == candidate.memory_type,
             Memory.status == MemoryStatus.ACTIVE,
+            self._scope.clause(Memory),
         )
         try:
             result = await self._session.execute(statement)
@@ -532,6 +558,7 @@ class MemoryService:
             .where(
                 Memory.memory_type == memory_type,
                 Memory.status == MemoryStatus.ACTIVE,
+                self._scope.clause(Memory),
             )
             .order_by(Memory.created_at.desc())
             .limit(self._settings.MEMORY_DEDUP_CANDIDATES)
@@ -551,7 +578,7 @@ class MemoryService:
         limit: int = 50,
         offset: int = 0,
     ) -> Sequence[Memory]:
-        statement = select(Memory)
+        statement = select(Memory).where(self._scope.clause(Memory))
         if memory_type is not None:
             statement = statement.where(Memory.memory_type == memory_type)
         if status is not None:
@@ -571,7 +598,9 @@ class MemoryService:
         memory_type: Optional[MemoryType] = None,
         status: Optional[MemoryStatus] = None,
     ) -> int:
-        statement = select(func.count()).select_from(Memory)
+        statement = select(func.count()).select_from(Memory).where(
+            self._scope.clause(Memory)
+        )
         if memory_type is not None:
             statement = statement.where(Memory.memory_type == memory_type)
         if status is not None:
@@ -583,8 +612,14 @@ class MemoryService:
             raise self._wrap_db_error("count memories", exc)
 
     async def get_memory(self, memory_id: uuid.UUID) -> Memory:
+        # A filtered SELECT, never `session.get` (the identity map bypasses
+        # the filter).
         try:
-            memory = await self._session.get(Memory, memory_id)
+            memory = (
+                await self._session.execute(
+                    select(Memory).where(Memory.id == memory_id, self._scope.clause(Memory))
+                )
+            ).scalars().first()
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("get memory", exc)
         if memory is None:
@@ -594,7 +629,7 @@ class MemoryService:
     async def delete_memory(self, memory_id: uuid.UUID) -> None:
         try:
             result = await self._session.execute(
-                delete(Memory).where(Memory.id == memory_id)
+                delete(Memory).where(Memory.id == memory_id, self._scope.clause(Memory))
             )
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("delete memory", exc)

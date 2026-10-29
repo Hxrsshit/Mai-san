@@ -171,7 +171,7 @@ async def seed_memory(import_session_factory, content, origin, stated_at, conver
                 confidence_score=0.9,
                 origin=origin,
                 stated_at=stated_at,
-                source_conversation_id=conversation.id,
+                source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
             )
         else:
             from app.history.models import (
@@ -216,7 +216,7 @@ async def seed_memory(import_session_factory, content, origin, stated_at, conver
                 confidence_score=0.9,
                 origin=origin,
                 stated_at=stated_at,
-                source_imported_message_id=message.id,
+                source_imported_message_id=message.id, **ADMIN_SCOPE.write_columns(),
             )
         session.add(memory)
         await session.commit()
@@ -249,7 +249,7 @@ async def test_an_imported_memory_cannot_supersede_a_live_one(
 
     async with import_session_factory() as session:
         trigger = await session.get(Memory, imported_id)
-        outcomes = await ConflictDetector(session).detect(trigger)
+        outcomes = await ConflictDetector(session, scope=ADMIN_SCOPE).detect(trigger)
         live = await session.get(Memory, live_id)
 
     assert live.status is MemoryStatus.ACTIVE, "history overruled the present"
@@ -280,7 +280,7 @@ async def test_a_live_memory_can_still_supersede_an_imported_one(
             importance_score=5,
             confidence_score=0.9,
             origin=MemoryOrigin.LIVE,
-            stated_at=datetime.now(timezone.utc),
+            stated_at=datetime.now(timezone.utc), **ADMIN_SCOPE.write_columns(),
         )
         assert _origin_guard(live_probe) == ()
         assert _origin_guard(imported) != ()
@@ -344,7 +344,7 @@ async def test_a_later_live_statement_supersedes_imported_knowledge(
                     canonical_name=canonical,
                     normalized_name=normalized,
                     entity_type=EntityType.TECHNOLOGY,
-                    status=EntityStatus.ACTIVE,
+                    status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
                 )
             )
         conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
@@ -357,12 +357,12 @@ async def test_a_later_live_statement_supersedes_imported_knowledge(
             confidence_score=0.9,
             origin=MemoryOrigin.LIVE,
             stated_at=datetime.now(timezone.utc),
-            source_conversation_id=conversation.id,
+            source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
         )
         session.add(live)
         await session.commit()
 
-        await KnowledgeService(session).evaluate_memory(live)
+        await KnowledgeService(session, scope=ADMIN_SCOPE).evaluate_memory(live)
         await session.commit()
 
     async with import_session_factory() as session:
@@ -751,7 +751,7 @@ async def test_the_extractor_is_called_with_no_assistant_text_at_all(
             return []
 
     async with import_session_factory() as session:
-        service = MemoryService(session=session, extractor=SpyExtractor())
+        service = MemoryService(session=session, extractor=SpyExtractor(), scope=ADMIN_SCOPE)
         await service.store_imported(
             user_text="I decided to use PostgreSQL.",
             provenance=MemoryProvenance.imported(
@@ -772,7 +772,7 @@ async def test_store_imported_refuses_live_provenance(import_session_factory) ->
             raise AssertionError("extraction should not have run")
 
     async with import_session_factory() as session:
-        service = MemoryService(session=session, extractor=SpyExtractor())
+        service = MemoryService(session=session, extractor=SpyExtractor(), scope=ADMIN_SCOPE)
         with pytest.raises(ValueError):
             await service.store_imported(
                 user_text="x" * 300,

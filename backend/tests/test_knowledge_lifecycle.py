@@ -41,14 +41,14 @@ async def make_entity(session, name, kind=EntityType.TECHNOLOGY, aliases=()):
         canonical_name=name,
         normalized_name=name.lower(),
         entity_type=kind,
-        status=EntityStatus.ACTIVE,
+        status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     session.add(entity)
     await session.flush()
     for alias in aliases:
         session.add(
             EntityAlias(
-                entity_id=entity.id, alias=alias, normalized_alias=alias.lower()
+                entity_id=entity.id, alias=alias, normalized_alias=alias.lower(), **ADMIN_SCOPE.write_columns()
             )
         )
     await session.flush()
@@ -68,7 +68,7 @@ async def make_memory(
         confidence_score=0.95,
         source_conversation_id=conversation_id,
         created_at=created,
-        updated_at=created,
+        updated_at=created, **ADMIN_SCOPE.write_columns(),
     )
     session.add(memory)
     await session.flush()
@@ -84,7 +84,7 @@ async def make_relationship(session, source, kind, target, evidence=()):
         relationship_type=kind,
         target_entity_id=target.id,
         confidence_score=0.95,
-        status=RelationshipStatus.ACTIVE,
+        status=RelationshipStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     session.add(relationship)
     await session.flush()
@@ -140,7 +140,7 @@ async def test_an_explicit_switch_supersedes_the_old_memory(
         db_session, user, RelationshipType.USES, groq, evidence=[new]
     )
 
-    report = await KnowledgeService(db_session, settings).evaluate_memory(new)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new)
 
     assert report.memories_superseded == 1
     assert report.relationships_superseded == 1
@@ -178,7 +178,7 @@ async def test_the_original_text_is_never_modified(
     new = await make_memory(
         db_session, conversation, "User switched from OpenRouter to Groq.", day=10
     )
-    await KnowledgeService(db_session, settings).evaluate_memory(new)
+    await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new)
 
     refreshed = await db_session.get(Memory, old.id)
     await db_session.refresh(refreshed)
@@ -203,7 +203,7 @@ async def test_nothing_is_ever_deleted(db_session, settings, conversation) -> No
         db_session, conversation, "User switched from OpenRouter to Groq.", day=10
     )
 
-    await KnowledgeService(db_session, settings).evaluate_memory(new)
+    await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new)
 
     total = (await db_session.execute(select(Memory))).scalars().all()
     assert len(total) == 2
@@ -221,7 +221,7 @@ async def test_supersession_is_traceable(
         db_session, conversation, "User switched from OpenRouter to Groq.", day=10
     )
 
-    await KnowledgeService(db_session, settings).evaluate_memory(new)
+    await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new)
 
     link = (
         await db_session.execute(
@@ -251,7 +251,7 @@ async def test_abandonment_retires_without_naming_a_successor(
     new = await make_memory(
         db_session, conversation, "User no longer uses OpenRouter.", day=5
     )
-    report = await KnowledgeService(db_session, settings).evaluate_memory(new)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new)
 
     assert report.memories_superseded == 1
     assert report.relationships_superseded == 1
@@ -281,7 +281,7 @@ async def test_an_alias_resolves_to_the_canonical_entity(
         db_session, conversation, "Mai switched from Postgres to SQLite.", day=5
     )
 
-    await KnowledgeService(db_session, settings).evaluate_memory(new)
+    await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new)
 
     assert (await db_session.get(Memory, old.id)).status is MemoryStatus.SUPERSEDED
 
@@ -308,7 +308,7 @@ async def test_two_interests_both_stay_active(
         db_session, user, RelationshipType.INTERESTED_IN, robotics, evidence=[second]
     )
 
-    report = await KnowledgeService(db_session, settings).evaluate_memory(second)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(second)
 
     assert report.conflicts_detected == 0
     assert all(
@@ -339,7 +339,7 @@ async def test_two_tools_used_together_do_not_conflict(
         db_session, mai, RelationshipType.USES, groq, evidence=[second]
     )
 
-    report = await KnowledgeService(db_session, settings).evaluate_memory(second)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(second)
 
     assert report.conflicts_detected == 0
     assert (await db_session.get(Memory, first.id)).status is MemoryStatus.ACTIVE
@@ -356,7 +356,7 @@ async def test_compatible_preferences_in_free_text_do_not_conflict(
         db_session, conversation, "User enjoys JavaScript.", day=5
     )
 
-    report = await KnowledgeService(db_session, settings).evaluate_memory(second)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(second)
 
     assert report.conflicts_detected == 0
     assert (await db_session.get(Memory, first.id)).status is MemoryStatus.ACTIVE
@@ -380,7 +380,7 @@ async def test_temporal_progress_is_not_treated_as_contradiction(
         kind=MemoryType.EPISODIC,
     )
 
-    report = await KnowledgeService(db_session, settings).evaluate_memory(second)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(second)
 
     assert report.conflicts_detected == 0
     assert (await db_session.get(Memory, first.id)).status is MemoryStatus.ACTIVE
@@ -395,7 +395,7 @@ async def test_an_unresolvable_name_supersedes_nothing(
         db_session, conversation, "User switched from Fooware to Barware.", day=5
     )
 
-    report = await KnowledgeService(db_session, settings).evaluate_memory(new)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new)
 
     assert report.conflicts_detected == 0
     assert (await db_session.get(Memory, old.id)).status is MemoryStatus.ACTIVE
@@ -414,7 +414,7 @@ async def test_a_newer_memory_cannot_be_retired_by_an_older_one(
         db_session, conversation, "User reviewed OpenRouter pricing.", day=30
     )
 
-    await KnowledgeService(db_session, settings).evaluate_memory(new_switch)
+    await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new_switch)
 
     assert (await db_session.get(Memory, later.id)).status is MemoryStatus.ACTIVE
 
@@ -434,7 +434,7 @@ async def test_a_memory_describing_the_change_is_left_alone(
         db_session, conversation, "User switched from OpenRouter to Groq.", day=5
     )
 
-    await KnowledgeService(db_session, settings).evaluate_memory(new)
+    await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(new)
 
     assert (await db_session.get(Memory, both.id)).status is MemoryStatus.ACTIVE
 
@@ -459,7 +459,7 @@ async def test_two_locations_are_recorded_as_unresolved_not_decided(
         db_session, user, RelationshipType.LOCATED_IN, bangalore, evidence=[second]
     )
 
-    report = await KnowledgeService(db_session, settings).evaluate_memory(second)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(second)
 
     assert report.unresolved == 1
     assert report.memories_superseded == 0
@@ -499,7 +499,7 @@ async def test_an_explicit_present_tense_preference_does_supersede(
         db_session, user, RelationshipType.PREFERS, hybrid, evidence=[second]
     )
 
-    report = await KnowledgeService(db_session, settings).evaluate_memory(second)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(second)
 
     assert report.relationships_superseded == 1
     assert report.unresolved == 0
@@ -516,7 +516,7 @@ async def test_an_explicit_present_tense_preference_does_supersede(
 async def test_a_memory_cannot_supersede_itself(db_session, conversation) -> None:
     memory = await make_memory(db_session, conversation, "Only memory.", day=0)
 
-    report = await LifecycleWriter(db_session).apply(
+    report = await LifecycleWriter(db_session, scope=ADMIN_SCOPE).apply(
         [
             ConflictOutcome(
                 resolution=ConflictResolution.SUPERSEDED,
@@ -536,7 +536,7 @@ async def test_a_supersession_cycle_is_refused(db_session, conversation) -> None
     """A superseded B; B may not then supersede A."""
     a = await make_memory(db_session, conversation, "Memory A.", day=0)
     b = await make_memory(db_session, conversation, "Memory B.", day=5)
-    writer = LifecycleWriter(db_session)
+    writer = LifecycleWriter(db_session, scope=ADMIN_SCOPE)
 
     forward = ConflictOutcome(
         resolution=ConflictResolution.SUPERSEDED,
@@ -564,7 +564,7 @@ async def test_a_longer_supersession_cycle_is_refused(
     a = await make_memory(db_session, conversation, "Memory A.", day=0)
     b = await make_memory(db_session, conversation, "Memory B.", day=5)
     c = await make_memory(db_session, conversation, "Memory C.", day=10)
-    writer = LifecycleWriter(db_session)
+    writer = LifecycleWriter(db_session, scope=ADMIN_SCOPE)
 
     for older, newer in ((a, b), (b, c)):
         await writer.apply([
@@ -591,7 +591,7 @@ async def test_a_duplicate_link_is_not_written_twice(
 ) -> None:
     a = await make_memory(db_session, conversation, "Memory A.", day=0)
     b = await make_memory(db_session, conversation, "Memory B.", day=5)
-    writer = LifecycleWriter(db_session)
+    writer = LifecycleWriter(db_session, scope=ADMIN_SCOPE)
     outcome = ConflictOutcome(
         resolution=ConflictResolution.SUPERSEDED,
         reason=ConflictReason.EXPLICIT_REPLACEMENT,
@@ -614,7 +614,7 @@ async def test_deleting_a_memory_removes_its_lifecycle_links(
     """No orphaned lifecycle references."""
     a = await make_memory(db_session, conversation, "Memory A.", day=0)
     b = await make_memory(db_session, conversation, "Memory B.", day=5)
-    await LifecycleWriter(db_session).apply([
+    await LifecycleWriter(db_session, scope=ADMIN_SCOPE).apply([
         ConflictOutcome(
             resolution=ConflictResolution.SUPERSEDED,
             reason=ConflictReason.EXPLICIT_REPLACEMENT,
@@ -637,7 +637,7 @@ async def test_deleting_the_trigger_keeps_the_decision(
     b = await make_memory(db_session, conversation, "Memory B.", day=5)
     trigger = await make_memory(db_session, conversation, "Trigger.", day=6)
 
-    await LifecycleWriter(db_session).apply(
+    await LifecycleWriter(db_session, scope=ADMIN_SCOPE).apply(
         [
             ConflictOutcome(
                 resolution=ConflictResolution.SUPERSEDED,
@@ -674,7 +674,7 @@ async def test_a_link_cannot_mix_memories_and_relationships(
             older_memory_id=memory.id,
             older_relationship_id=relationship.id,
             resolution=ConflictResolution.SUPERSEDED,
-            reason=ConflictReason.EXPLICIT_REPLACEMENT,
+            reason=ConflictReason.EXPLICIT_REPLACEMENT, **ADMIN_SCOPE.write_columns(),
         )
     )
     with pytest.raises(IntegrityError):

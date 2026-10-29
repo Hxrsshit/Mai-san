@@ -121,7 +121,7 @@ async def test_extraction_context_is_empty_outside_the_scope(db_session, fake_pr
     await service.add_message(conversation.id, MessageRole.ASSISTANT, "earlier reply")
     source = await service.add_message(conversation.id, MessageRole.USER, "now")
     await db_session.commit()
-    memory = MemoryService(session=db_session, provider=fake_provider, settings=settings)
+    memory = MemoryService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE)
 
     own = await memory._earlier_context(conversation.id, source.id, ADMIN_SCOPE)
     assert any("earlier secret" in line for line in own)
@@ -168,7 +168,7 @@ async def test_a_model_named_source_message_from_another_conversation_is_not_tru
         "source_message_id": str(foreign.id),
     }]})
 
-    stored = await MemoryService(session=db_session, provider=fake_provider, settings=settings) \
+    stored = await MemoryService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE) \
         .extract_and_store(conversation_id=mine.id, user_message="I prefer tea.",
                            assistant_message="Noted.", source_message_id=own.id, scope=ADMIN_SCOPE)
 
@@ -255,7 +255,7 @@ async def test_extraction_stores_nothing_for_a_turn_outside_its_scope(
         "content": "User prefers tea.", "memory_type": "preference",
         "importance_score": 8, "confidence_score": 0.9}]})
     settings.MEMORY_EXTRACTION_CONTEXT_MESSAGES = 0
-    stored = await MemoryService(session=db_session, provider=fake_provider, settings=settings) \
+    stored = await MemoryService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE) \
         .extract_and_store(conversation_id=theirs.id, user_message="I prefer tea.",
                            assistant_message="Noted.", scope=ADMIN_SCOPE)
     assert stored == []

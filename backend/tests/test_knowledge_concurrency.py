@@ -345,7 +345,8 @@ async def test_conflict_evaluation_failure_does_not_break_chat(
 
     # The earlier stages still committed their work.
     assert (await client.get("/api/memories")).json()["total"] == 1
-    assert (await client.get("/api/entities")).json()["total"] == 3
+    # Three extracted, plus the scope's own User (Stage 7B unit 5).
+    assert (await client.get("/api/entities")).json()["total"] == 4
 
     # And the failure is visible rather than swallowed.
     assert any(
@@ -417,7 +418,7 @@ async def test_a_partial_failure_does_not_stop_the_other_decisions(
     b = await make_memory(db_session, conversation, "Memory B.", day=1)
     c = await make_memory(db_session, conversation, "Memory C.", day=2)
 
-    writer = LifecycleWriter(db_session)
+    writer = LifecycleWriter(db_session, scope=ADMIN_SCOPE)
     report = await writer.apply(
         [
             # Self-supersession: refused.

@@ -52,6 +52,13 @@ SCOPED_TABLES = (
     "knowledge_conflicts", "reminders", "executions", "workflows", "imported_archives",
 )
 SCOPE_COLUMNS = ("organisation_id", "scope_id", "scope_visibility")
+#: Migration 0022's per-scope unique indexes (the legacy partial ones carry no
+#: "scope" in their name). table -> (name stem, key columns).
+SCOPED_UNIQUE_STEMS = {
+    "memories": ("type_normalized_content", ("memory_type", "normalized_content")),
+    "entities": ("normalized_name", ("normalized_name",)),
+    "entity_aliases": ("normalized_alias", ("normalized_alias",)),
+}
 
 
 # ============================================================================
@@ -293,7 +300,7 @@ async def _delete_with_dependents(connection, table: str, column: str, value) ->
 async def test_the_upgrade_adds_exactly_the_scope_schema() -> None:
     async with legacy_at_0020() as url:
         before = await schema(url)
-        alembic(url, "head")
+        alembic(url, "0021")
         assert await version(url) == "0021"
         after = await schema(url)
 
@@ -318,7 +325,7 @@ async def test_the_upgrade_adds_exactly_the_scope_schema() -> None:
 async def test_legacy_rows_survive_and_only_the_organisation_is_backfilled() -> None:
     async with legacy_at_0020() as url:
         before = await rows(url)
-        alembic(url, "head")
+        alembic(url, "0021")
         assert await rows(url, drop_scope=True) == before
         for table in SCOPED_TABLES:
             [(wrong,)] = await fetch(url,
@@ -347,7 +354,7 @@ async def test_every_check_accepts_and_refuses_as_declared() -> None:
     """On all ten tables; each attempt in a transaction that is rolled back."""
     wrong = []
     async with legacy_at_0020() as url:
-        alembic(url, "head")
+        alembic(url, "0021")
         eng = engine(url)
         try:
             async with eng.connect() as connection:
@@ -383,7 +390,7 @@ async def test_the_upgrade_refuses_without_the_default_organisation_and_changes_
             await eng.dispose()
         before_schema, before_rows = await schema(url), await rows(url)
 
-        result = alembic_attempt(url, "upgrade", "head")
+        result = alembic_attempt(url, "upgrade", "0021")
         assert result.returncode != 0
         assert "0021 refused" in result.stdout + result.stderr
         assert await version(url) == "0020"
@@ -402,7 +409,7 @@ async def test_a_failure_part_way_through_rolls_back_every_table() -> None:
         await execute(url, "CREATE INDEX ix_workflows_scope_id ON conversations (title)")
         before_schema, before_rows = await schema(url), await rows(url)
 
-        result = alembic_attempt(url, "upgrade", "head")
+        result = alembic_attempt(url, "upgrade", "0021")
         assert result.returncode != 0
         assert "ix_workflows_scope_id" in result.stdout + result.stderr
         assert await version(url) == "0020"
@@ -450,7 +457,7 @@ async def test_the_downgrade_refuses_a_scoped_row_in_any_table() -> None:
     shared = [("memories", "UPDATE {table} SET scope_id = :o, scope_visibility = 'organisation'"
                            " WHERE id = :id", {"o": DEFAULT_ORG})]
     async with legacy_at_0020() as url:
-        alembic(url, "head")
+        alembic(url, "0021")
         await _assert_each_downgrade_refused(url, personal + shared)
 
 
@@ -460,7 +467,7 @@ async def test_the_downgrade_refuses_a_row_of_another_organisation_in_any_table(
     other = [(t, "UPDATE {table} SET organisation_id = :other WHERE id = :id",
               {"other": uuid.uuid4()}) for t in SCOPED_TABLES]
     async with legacy_at_0020() as url:
-        alembic(url, "head")
+        alembic(url, "0021")
         await _assert_each_downgrade_refused(url, other)
 
 
@@ -469,7 +476,7 @@ async def test_the_downgrade_refuses_a_row_of_another_organisation_in_any_table(
 async def test_a_clean_downgrade_restores_0020_and_the_upgrade_repeats_exactly() -> None:
     async with legacy_at_0020() as url:
         at_0020_schema, at_0020_rows = await schema(url), await rows(url)
-        alembic(url, "head")
+        alembic(url, "0021")
         at_0021_schema, at_0021_rows = await schema(url), await rows(url)
 
         result = alembic_attempt(url, "downgrade", "0020")
@@ -478,7 +485,7 @@ async def test_a_clean_downgrade_restores_0020_and_the_upgrade_repeats_exactly()
         assert await schema(url) == at_0020_schema
         assert await rows(url) == at_0020_rows
 
-        alembic(url, "head")
+        alembic(url, "0021")
         assert await version(url) == "0021"
         assert await schema(url) == at_0021_schema
         assert await rows(url) == at_0021_rows        # the backfill, recreated exactly
@@ -523,16 +530,21 @@ async def test_the_migrated_scope_schema_is_the_models_scope_schema() -> None:
                 "SELECT conname FROM pg_constraint WHERE conrelid = CAST(:t AS regclass)"
                 " AND contype = 'c' AND conname LIKE '%knowledge_scope%'", {"t": table_name})
             ] == [checks[0].name]
-            declared_indexes = {(i.name, tuple(c.name for c in i.columns), bool(i.unique))
+            # Column sets, not order: pg_index lists them by attribute number.
+            declared_indexes = {(i.name, tuple(sorted(c.name for c in i.columns)), bool(i.unique))
                                 for i in table.indexes if "scope" in i.name}
-            migrated_indexes = {(r[0], tuple(r[2]), r[1]) for r in await fetch(url,
+            migrated_indexes = {(r[0], tuple(sorted(r[2])), r[1]) for r in await fetch(url,
                 "SELECT i.relname, ix.indisunique, array_agg(a.attname ORDER BY a.attnum)"
                 " FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid"
                 " JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = ANY(ix.indkey)"
                 " WHERE ix.indrelid = CAST(:t AS regclass) AND i.relname LIKE '%scope%'"
                 " GROUP BY i.relname, ix.indisunique", {"t": table_name})}
-            assert migrated_indexes == declared_indexes == {
-                (f"ix_{table_name}_scope_id", ("scope_id",), False)}
+            expected = {(f"ix_{table_name}_scope_id", ("scope_id",), False)}
+            if table_name in SCOPED_UNIQUE_STEMS:          # migration 0022
+                stem, columns = SCOPED_UNIQUE_STEMS[table_name]
+                expected.add((f"uq_{table_name}_scoped_{stem}",
+                              tuple(sorted(("scope_id", *columns))), True))
+            assert migrated_indexes == declared_indexes == expected
 
         # Alembic's own comparison, ORM against the migrated database: nothing
         # about the scope may differ. (Unrelated, pre-existing differences are

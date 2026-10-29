@@ -111,6 +111,20 @@ class KnowledgeScope:
             model.scope_visibility == self.visibility.value,
         )
 
+    def owns(self, row: object) -> bool:
+        """True when an already-loaded scoped `row` belongs to this scope.
+
+        For objects handed in rather than read (a stored memory passed to
+        entity extraction, say): the same three-column test as `clause`, so a
+        legacy row (NULL scope) or another scope's row is never owned."""
+        if self.visibility not in WRITABLE_VISIBILITIES:
+            return False
+        return (
+            getattr(row, "organisation_id", None) == self.organisation_id
+            and getattr(row, "scope_id", None) == self.scope_id
+            and getattr(row, "scope_visibility", None) == self.visibility.value
+        )
+
     def write_columns(self) -> Dict[str, object]:
         """The scope-column values for a row being written -- the only way a
         scope should reach a model. Refuses a visibility that is not writable."""
@@ -121,6 +135,16 @@ class KnowledgeScope:
             "scope_id": self.scope_id,
             "scope_visibility": self.visibility.value,
         }
+
+
+def require_scope(value: object, owner: str) -> KnowledgeScope:
+    """`value` itself if it is a `KnowledgeScope`; otherwise `InvalidScope`.
+    Every scoped service checks its constructor argument with this, so a
+    missing scope fails closed at construction rather than at the first
+    query."""
+    if not isinstance(value, KnowledgeScope):
+        raise InvalidScope(f"{owner} needs a KnowledgeScope")
+    return value
 
 
 def _principal(principal: Optional[Principal]) -> None:
@@ -139,4 +163,5 @@ __all__ = [
     "ScopeNotWritable",
     "ScopeVisibility",
     "WRITABLE_VISIBILITIES",
+    "require_scope",
 ]

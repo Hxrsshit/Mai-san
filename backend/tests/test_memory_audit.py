@@ -39,7 +39,7 @@ async def conversation(db_session):
 
 
 def service(db_session, fake_provider, settings) -> MemoryService:
-    return MemoryService(session=db_session, provider=fake_provider, settings=settings)
+    return MemoryService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE)
 
 
 # --- BUG: exact duplicates escaped the bounded deduplication window ---------
@@ -412,6 +412,7 @@ async def test_foreign_key_integrity_is_enforced(
         importance_score=7,
         confidence_score=0.9,
         source_conversation_id=uuid.uuid4(),  # nonexistent
+        **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(memory)
 

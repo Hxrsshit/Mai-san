@@ -475,7 +475,8 @@ async def test_the_background_learning_loop_still_runs(
 
     assert (await client.get("/api/memories")).json()["total"] == 1
     entities = (await client.get("/api/entities")).json()["items"]
-    assert {e["canonical_name"] for e in entities} == {"Mai", "PostgreSQL"}
+    # The two extracted, plus the scope's own User (Stage 7B unit 5).
+    assert {e["canonical_name"] for e in entities} == {"Mai", "PostgreSQL", "User"}
     relationships = (await client.get("/api/relationships")).json()["items"]
     assert len(relationships) == 1
     assert relationships[0]["relationship_type"] == "USES"

@@ -34,7 +34,7 @@ async def conversation(db_session):
 
 def service(db_session, fake_provider, settings) -> MemoryService:
     return MemoryService(
-        session=db_session, provider=fake_provider, settings=settings
+        session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE
     )
 
 

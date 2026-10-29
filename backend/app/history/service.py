@@ -316,7 +316,7 @@ class HistoryImportService:
             return []
 
         knowledge = (
-            KnowledgeService(self._session, self._settings)
+            KnowledgeService(self._session, self._settings, scope=self._memories.scope)
             if self._settings.CONFLICT_DETECTION_ENABLED
             else None
         )

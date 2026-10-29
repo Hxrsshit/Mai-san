@@ -24,17 +24,17 @@ async def seed(session_factory, memory_count: int = 4):
     async with session_factory() as session:
         conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         mai = Entity(canonical_name="Mai", normalized_name="mai",
-                     entity_type=EntityType.PROJECT, status=EntityStatus.ACTIVE)
+                     entity_type=EntityType.PROJECT, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns())
         postgres = Entity(canonical_name="PostgreSQL", normalized_name="postgresql",
-                          entity_type=EntityType.TECHNOLOGY, status=EntityStatus.ACTIVE)
+                          entity_type=EntityType.TECHNOLOGY, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns())
         session.add_all([mai, postgres])
         await session.flush()
         session.add(EntityAlias(entity_id=postgres.id, alias="Postgres",
-                                normalized_alias="postgres"))
+                                normalized_alias="postgres", **ADMIN_SCOPE.write_columns()))
         session.add(Relationship(
             source_entity_id=mai.id, relationship_type=RelationshipType.USES,
             target_entity_id=postgres.id, confidence_score=0.95,
-            status=RelationshipStatus.ACTIVE))
+            status=RelationshipStatus.ACTIVE, **ADMIN_SCOPE.write_columns()))
 
         for index in range(memory_count):
             memory = Memory(
@@ -42,7 +42,7 @@ async def seed(session_factory, memory_count: int = 4):
                 normalized_content=f"mai uses postgresql for purpose {index}",
                 memory_type=MemoryType.SEMANTIC, status=MemoryStatus.ACTIVE,
                 importance_score=7, confidence_score=0.9,
-                source_conversation_id=conversation.id,
+                source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
             )
             session.add(memory)
             await session.flush()
@@ -213,7 +213,7 @@ async def test_retrieval_issues_a_bounded_number_of_queries(
             statements.append(statement)
 
     try:
-        await RetrievalService(db_session, settings).retrieve(
+        await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve(
             "What database does Mai use for purpose 3?"
         )
     finally:
@@ -232,7 +232,7 @@ async def test_a_large_knowledge_base_stays_bounded(
     settings.RETRIEVAL_CANDIDATE_POOL_SIZE = 25
     await seed(session_factory, memory_count=150)
 
-    package = await RetrievalService(db_session, settings).retrieve(
+    package = await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve(
         "Mai PostgreSQL purpose"
     )
 
@@ -255,7 +255,7 @@ async def add_memories(session_factory, conversation_id, start: int, count: int)
                 normalized_content=f"mai uses postgresql for extra purpose {index}",
                 memory_type=MemoryType.SEMANTIC, status=MemoryStatus.ACTIVE,
                 importance_score=7, confidence_score=0.9,
-                source_conversation_id=conversation_id,
+                source_conversation_id=conversation_id, **ADMIN_SCOPE.write_columns(),
             )
             session.add(memory)
             await session.flush()
@@ -283,7 +283,7 @@ async def test_query_count_does_not_grow_with_the_knowledge_base(
                 statements.append(statement)
 
         try:
-            await RetrievalService(db_session, settings).retrieve(
+            await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve(
                 "What database does Mai use?"
             )
         finally:

@@ -112,6 +112,10 @@ class ChatService:
             raise InvalidScope("ChatService needs a KnowledgeScope")
         if conversation_service is not None and conversation_service.scope != scope:
             raise InvalidScope("the conversation service is bound to another scope")
+        # Units 5-6: the context service retrieves knowledge, so it must be
+        # bound to the same scope too (review L1).
+        if context_service is not None and getattr(context_service, "scope", None) != scope:
+            raise InvalidScope("the context service is bound to another scope")
         self._scope = scope
         self._conversations = conversation_service or ConversationService(session, scope)
         self._context = context_service or ContextService(

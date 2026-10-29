@@ -20,6 +20,11 @@ Concurrency is handled by the database, not by application checks. Two
 background evaluations cannot see each other's uncommitted rows, so the
 uniqueness of a conflict link is enforced by a UNIQUE index and a duplicate
 surfaces as `IntegrityError` -- expected, counted, and not an error.
+
+Stage 7B unit 5: the writer belongs to one knowledge scope. Conflict links
+are written with `scope.write_columns()`, a status moves only on a row of the
+scope (the UPDATE is filtered by `scope.clause`), and cycle checks walk only
+the scope's own links.
 """
 
 import uuid
@@ -30,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
+from app.identity.scope import KnowledgeScope, require_scope
 from app.knowledge.models import (
     ConflictResolution,
     KnowledgeConflict,
@@ -49,8 +55,9 @@ MAX_CHAIN_DEPTH = 32
 class LifecycleWriter:
     """Applies `ConflictOutcome` decisions to the knowledge base."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, scope: KnowledgeScope) -> None:
         self._session = session
+        self._scope = require_scope(scope, "LifecycleWriter")
 
     async def apply(
         self,
@@ -87,6 +94,17 @@ class LifecycleWriter:
             )
             return
 
+        if not await self._all_in_scope(outcome, triggering_memory_id):
+            # Defence in depth (review L2): the scoped detector never names
+            # another scope's rows, but `apply` is public. A link naming a
+            # row outside the scope would expose its id; refuse it whole.
+            report.status_updates_failed += 1
+            logger.warning(
+                "Lifecycle decision refused: it names a row outside the scope",
+                extra={"resolution": outcome.resolution.value},
+            )
+            return
+
         try:
             # SAVEPOINT: this one decision commits or vanishes. Without it a
             # constraint violation would poison the whole transaction and take
@@ -102,6 +120,7 @@ class LifecycleWriter:
                         resolution=outcome.resolution,
                         reason=outcome.reason,
                         triggering_memory_id=triggering_memory_id,
+                        **self._scope.write_columns(),
                     )
                 )
                 await self._session.flush()
@@ -144,6 +163,29 @@ class LifecycleWriter:
         else:
             report.relationships_superseded += 1
 
+    async def _all_in_scope(
+        self, outcome: ConflictOutcome, triggering_memory_id: Optional[uuid.UUID]
+    ) -> bool:
+        """Every memory and relationship the decision names is in the scope."""
+        memory_ids = {i for i in (outcome.older_memory_id, outcome.newer_memory_id,
+                                  triggering_memory_id) if i is not None}
+        relationship_ids = {i for i in (outcome.older_relationship_id,
+                                        outcome.newer_relationship_id) if i is not None}
+        if memory_ids:
+            found = (await self._session.execute(
+                select(Memory.id).where(Memory.id.in_(memory_ids), self._scope.clause(Memory))
+            )).scalars().all()
+            if set(found) != memory_ids:
+                return False
+        if relationship_ids:
+            found = (await self._session.execute(
+                select(Relationship.id).where(
+                    Relationship.id.in_(relationship_ids), self._scope.clause(Relationship))
+            )).scalars().all()
+            if set(found) != relationship_ids:
+                return False
+        return True
+
     async def _mark_superseded(self, outcome: ConflictOutcome) -> None:
         """Move one row's status. Content is never touched.
 
@@ -159,6 +201,7 @@ class LifecycleWriter:
                 .where(
                     Memory.id == outcome.older_memory_id,
                     Memory.status == MemoryStatus.ACTIVE,
+                    self._scope.clause(Memory),
                 )
                 .values(status=MemoryStatus.SUPERSEDED)
                 .execution_options(synchronize_session="fetch")
@@ -174,6 +217,7 @@ class LifecycleWriter:
             .where(
                 Relationship.id == outcome.older_relationship_id,
                 Relationship.status == RelationshipStatus.ACTIVE,
+                self._scope.clause(Relationship),
             )
             .values(status=RelationshipStatus.SUPERSEDED)
             .execution_options(synchronize_session="fetch")
@@ -235,6 +279,7 @@ class LifecycleWriter:
                 older_column.in_(frontier),
                 newer_column.isnot(None),
                 KnowledgeConflict.resolution == ConflictResolution.SUPERSEDED,
+                self._scope.clause(KnowledgeConflict),
             )
             rows = (await self._session.execute(statement)).scalars().all()
 

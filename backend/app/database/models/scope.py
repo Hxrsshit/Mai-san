@@ -27,9 +27,9 @@ later units will write from; its visibilities must equal
 """
 
 import uuid
-from typing import Optional
+from typing import Optional, Tuple
 
-from sqlalchemy import CheckConstraint, String, Uuid
+from sqlalchemy import CheckConstraint, Index, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 #: The only visibilities a scoped row may carry.
@@ -68,10 +68,28 @@ def knowledge_scope_check() -> CheckConstraint:
     return CheckConstraint(KNOWLEDGE_SCOPE_CHECK_SQL, name=KNOWLEDGE_SCOPE_CHECK_NAME)
 
 
+def scoped_unique_indexes(table: str, stem: str, *columns: str) -> Tuple[Index, Index]:
+    """Uniqueness per knowledge scope (Stage 7B, migration 0022).
+
+    Replaces a global unique index, which let one member's row collide with
+    another's: `(scope_id, *columns)` unique among attributed rows, and
+    `(*columns)` unique among unattributed (legacy) rows -- the old guarantee,
+    kept for them alone. Both partial, so no NOT NULL is needed."""
+    attributed = text("scope_id IS NOT NULL")
+    unattributed = text("scope_id IS NULL")
+    return (
+        Index(f"uq_{table}_scoped_{stem}", "scope_id", *columns, unique=True,
+              sqlite_where=attributed, postgresql_where=attributed),
+        Index(f"uq_{table}_legacy_{stem}", *columns, unique=True,
+              sqlite_where=unattributed, postgresql_where=unattributed),
+    )
+
+
 __all__ = [
     "KNOWLEDGE_SCOPE_CHECK_NAME",
     "KNOWLEDGE_SCOPE_CHECK_SQL",
     "KNOWLEDGE_SCOPE_VISIBILITIES",
     "KnowledgeScopeColumns",
     "knowledge_scope_check",
+    "scoped_unique_indexes",
 ]

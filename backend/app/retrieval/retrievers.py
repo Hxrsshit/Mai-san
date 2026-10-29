@@ -13,6 +13,10 @@ they may return, defaulting to ACTIVE alone -- the behaviour every earlier
 stage relied on. A query with explicit historical intent widens that set to
 include SUPERSEDED, which is the only way retired knowledge ever reaches a
 prompt. ARCHIVED is never included by either path.
+
+Stage 7B unit 6: every retriever belongs to one knowledge scope. Memories and
+relationships are filtered by `scope.clause`; links and evidence, which have
+no scope of their own, are read only joined to a scoped parent on both ends.
 """
 
 import operator
@@ -27,6 +31,7 @@ from sqlalchemy.orm import noload
 
 from app.core.logging import get_logger
 from app.entities.models import Entity, MemoryEntity
+from app.identity.scope import KnowledgeScope, require_scope
 from app.memory.models import Memory, MemoryStatus
 from app.retrieval.query_normalizer import (
     PREFERENCE_TERMS,
@@ -94,8 +99,11 @@ class MemoryRetriever:
         session: AsyncSession,
         pool_size: int,
         statuses: Sequence[MemoryStatus] = DEFAULT_MEMORY_STATUSES,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "MemoryRetriever")
         self._pool_size = pool_size
         # Materialised once: the same list is reused across three queries, and
         # an exhausted generator would silently empty the later two.
@@ -132,6 +140,7 @@ class MemoryRetriever:
             .where(
                 MemoryEntity.entity_id.in_(list(entity_ids)),
                 Memory.status.in_(self._statuses),
+                self._scope.clause(Memory),
             )
             .order_by(Memory.importance_score.desc(), Memory.created_at.desc())
             .limit(self._pool_size)
@@ -154,6 +163,7 @@ class MemoryRetriever:
             .where(
                 RelationshipEvidence.relationship_id.in_(list(relationship_ids)),
                 Memory.status.in_(self._statuses),
+                self._scope.clause(Memory),
             )
             .limit(self._pool_size)
         )
@@ -221,7 +231,11 @@ class MemoryRetriever:
             prefers = literal(0)
         statement = (
             select(Memory)
-            .where(Memory.status.in_(self._statuses), or_(*conditions))
+            .where(
+                Memory.status.in_(self._statuses),
+                or_(*conditions),
+                self._scope.clause(Memory),
+            )
             .order_by(
                 matched_keywords.desc(),
                 prefers.desc(),
@@ -257,8 +271,11 @@ class RelationshipRetriever:
         session: AsyncSession,
         limit: int,
         statuses: Sequence[RelationshipStatus] = DEFAULT_RELATIONSHIP_STATUSES,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "RelationshipRetriever")
         self._limit = limit
         self._statuses = list(statuses) or list(DEFAULT_RELATIONSHIP_STATUSES)
 
@@ -282,6 +299,7 @@ class RelationshipRetriever:
                     Relationship.source_entity_id.in_(list(matched)),
                     Relationship.target_entity_id.in_(list(matched)),
                 ),
+                self._scope.clause(Relationship),
             )
             .order_by(Relationship.confidence_score.desc(), Relationship.created_at.desc())
             .limit(self._limit)
@@ -316,7 +334,7 @@ class RelationshipRetriever:
         rows = (
             await self._session.execute(
                 select(Entity.id, Entity.canonical_name).where(
-                    Entity.id.in_(list(endpoint_ids))
+                    Entity.id.in_(list(endpoint_ids)), self._scope.clause(Entity)
                 )
             )
         ).all()
@@ -324,7 +342,9 @@ class RelationshipRetriever:
 
 
 async def evidence_map(
-    session: AsyncSession, relationship_ids: Sequence[uuid.UUID]
+    session: AsyncSession,
+    relationship_ids: Sequence[uuid.UUID],
+    scope: KnowledgeScope,
 ) -> Tuple[Dict[uuid.UUID, Set[uuid.UUID]], Set[uuid.UUID]]:
     """Which memories support which relationships.
 
@@ -332,14 +352,22 @@ async def evidence_map(
     the caller can pull those memories into the candidate pool without a
     second round trip.
     """
+    scope = require_scope(scope, "evidence_map")
     if not relationship_ids:
         return {}, set()
 
+    # Evidence has no scope of its own: read only where both the relationship
+    # and the memory belong to the scope.
     rows = (
         await session.execute(
-            select(
-                RelationshipEvidence.relationship_id, RelationshipEvidence.memory_id
-            ).where(RelationshipEvidence.relationship_id.in_(list(relationship_ids)))
+            select(RelationshipEvidence.relationship_id, RelationshipEvidence.memory_id)
+            .join(Relationship, Relationship.id == RelationshipEvidence.relationship_id)
+            .join(Memory, Memory.id == RelationshipEvidence.memory_id)
+            .where(
+                RelationshipEvidence.relationship_id.in_(list(relationship_ids)),
+                scope.clause(Relationship),
+                scope.clause(Memory),
+            )
         )
     ).all()
 

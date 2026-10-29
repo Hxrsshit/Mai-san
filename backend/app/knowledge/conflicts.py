@@ -22,6 +22,10 @@ The three rules, in the order they run:
    changes nothing.
 
 Anything else produces no conflict, which is the common and correct outcome.
+
+Stage 7B unit 5: detection is within one knowledge scope. Every query is
+filtered by `scope.clause`, and a memory outside the scope causes no conflict
+at all -- one member's statement can never retire another member's knowledge.
 """
 
 import uuid
@@ -32,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.entities.models import Entity, EntityAlias, EntityStatus, MemoryEntity
+from app.identity.scope import KnowledgeScope, require_scope
 from app.knowledge import policies
 from app.knowledge.models import ConflictReason, ConflictResolution
 from app.knowledge.schemas import ConflictOutcome
@@ -52,8 +57,9 @@ MAX_CANDIDATES = 100
 class ConflictDetector:
     """Finds conflicts caused by one newly stored memory."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, scope: KnowledgeScope) -> None:
         self._session = session
+        self._scope = require_scope(scope, "ConflictDetector")
 
     async def detect(self, memory: Memory) -> List[ConflictOutcome]:
         """Every conflict the arrival of `memory` creates.
@@ -62,6 +68,8 @@ class ConflictDetector:
         whenever the evidence is not explicit, because a false conflict hides
         true knowledge and a missed one merely leaves it un-ranked.
         """
+        if not self._scope.owns(memory):
+            return []
         text = memory.normalized_content or ""
         outcomes: List[ConflictOutcome] = []
 
@@ -205,6 +213,7 @@ class ConflictDetector:
             .where(
                 Relationship.status == RelationshipStatus.ACTIVE,
                 Relationship.target_entity_id == old_entity.id,
+                self._scope.clause(Relationship),
             )
             .limit(MAX_CANDIDATES)
         )
@@ -273,7 +282,7 @@ class ConflictDetector:
         # both routes are used and the results unioned.
         linked = select(MemoryEntity.memory_id).where(
             MemoryEntity.entity_id == old_entity.id
-        )
+        )  # narrowed to the scope by the outer query's clause
 
         statement = (
             select(Memory)
@@ -282,6 +291,7 @@ class ConflictDetector:
                 Memory.id != trigger.id,
                 Memory.stated_at <= trigger.stated_at,
                 or_(text_match, Memory.id.in_(linked)),
+                self._scope.clause(Memory),
                 *_origin_guard(trigger),
             )
             .order_by(Memory.stated_at.desc())
@@ -323,6 +333,7 @@ class ConflictDetector:
             statement = select(Entity).where(
                 Entity.normalized_name == name,
                 Entity.status == EntityStatus.ACTIVE,
+                self._scope.clause(Entity),
             )
             entity = (await self._session.execute(statement)).scalars().first()
             if entity is not None:
@@ -334,6 +345,8 @@ class ConflictDetector:
                 .where(
                     EntityAlias.normalized_alias == name,
                     Entity.status == EntityStatus.ACTIVE,
+                    self._scope.clause(EntityAlias),
+                    self._scope.clause(Entity),
                 )
             )
             entity = (await self._session.execute(statement)).scalars().first()
@@ -347,7 +360,7 @@ class ConflictDetector:
         Longest first so a containment check prefers the most specific form.
         """
         statement = select(EntityAlias.normalized_alias).where(
-            EntityAlias.entity_id == entity.id
+            EntityAlias.entity_id == entity.id, self._scope.clause(EntityAlias)
         )
         aliases = (await self._session.execute(statement)).scalars().all()
         forms = {entity.normalized_name, *aliases}
@@ -364,6 +377,7 @@ class ConflictDetector:
             .where(
                 RelationshipEvidence.memory_id == memory.id,
                 Relationship.status == RelationshipStatus.ACTIVE,
+                self._scope.clause(Relationship),
             )
             .limit(MAX_CANDIDATES)
         )
@@ -381,6 +395,7 @@ class ConflictDetector:
                 Relationship.relationship_type == relationship.relationship_type,
                 Relationship.target_entity_id != relationship.target_entity_id,
                 Relationship.id != relationship.id,
+                self._scope.clause(Relationship),
             )
             .limit(MAX_CANDIDATES)
         )
@@ -404,6 +419,7 @@ class ConflictDetector:
             .where(
                 Relationship.status == RelationshipStatus.ACTIVE,
                 Relationship.target_entity_id == new_entity.id,
+                self._scope.clause(Relationship),
             )
             .limit(MAX_CANDIDATES)
         )

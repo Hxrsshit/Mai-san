@@ -23,7 +23,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.models.base import Base, utcnow
-from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    scoped_unique_indexes,
+)
 
 
 def _enum_values(enum_cls) -> list:
@@ -100,7 +104,8 @@ class Entity(Base, KnowledgeScopeColumns):
         # thing inconsistently ("Groq" as company or technology), and forking
         # an entity on every reclassification is the common failure. The first
         # classification wins.
-        Index("uq_entities_normalized_name", "normalized_name", unique=True),
+        # Since Stage 7B (0022) per knowledge scope.
+        *scoped_unique_indexes("entities", "normalized_name", "normalized_name"),
         Index("ix_entities_entity_type", "entity_type"),
         Index("ix_entities_status_created_at", "status", "created_at"),
         knowledge_scope_check(),
@@ -134,9 +139,10 @@ class EntityAlias(Base, KnowledgeScopeColumns):
     entity: Mapped["Entity"] = relationship(back_populates="aliases")
 
     __table_args__ = (
-        # Globally unique: an alias that points at two entities makes
+        # Unique within a scope: an alias that points at two entities makes
         # resolution ambiguous, which is worse than having no alias at all.
-        Index("uq_entity_aliases_normalized_alias", "normalized_alias", unique=True),
+        # Since Stage 7B (0022) per knowledge scope, not global.
+        *scoped_unique_indexes("entity_aliases", "normalized_alias", "normalized_alias"),
         Index("ix_entity_aliases_entity_id", "entity_id"),
         knowledge_scope_check(),
     )

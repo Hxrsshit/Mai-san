@@ -74,7 +74,7 @@ async def store_memory(session, content, kind=MemoryType.PREFERENCE, importance=
     memory = Memory(
         content=content, normalized_content=normalize(content), memory_type=kind,
         status=status, importance_score=importance, confidence_score=0.95,
-        source_conversation_id=conversation_id, created_at=created, updated_at=created,
+        source_conversation_id=conversation_id, created_at=created, updated_at=created, **ADMIN_SCOPE.write_columns(),
     )
     session.add(memory)
     await session.flush()
@@ -106,7 +106,7 @@ async def test_extraction_sees_the_question_a_short_answer_responds_to(
     fake_provider.extraction_reply = remember(
         "User's ideal partner is tall, wears glasses and has a slender build.")
 
-    await MemoryService(session=db_session, provider=fake_provider, settings=settings
+    await MemoryService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE
                         ).extract_and_store(
         conversation_id=conversation.id,
         user_message=rows[2][1],
@@ -141,7 +141,7 @@ async def test_extraction_context_is_bounded_and_excludes_the_turn_itself(
         messages.append(m)
     await db_session.flush()
     fake_provider.extraction_reply = NOTHING
-    await MemoryService(session=db_session, provider=fake_provider, settings=settings
+    await MemoryService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE
                         ).extract_and_store(conversation.id, "now", "ok",
                                             source_message_id=messages[4].id, scope=ADMIN_SCOPE)
     earlier = fake_provider.extraction_calls[-1][-1].content.partition("USER MESSAGE")[0]
@@ -207,7 +207,7 @@ async def _turns(session, conversation, rows, start=None):
 
 async def _extract(session, fake_provider, settings, conversation, source, reply):
     fake_provider.extraction_reply = reply
-    return await MemoryService(session=session, provider=fake_provider, settings=settings
+    return await MemoryService(session=session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE
                                ).extract_and_store(
         conversation_id=conversation.id, user_message=source.content,
         assistant_message="Thanks.", source_message_id=source.id, scope=ADMIN_SCOPE)
@@ -453,7 +453,7 @@ async def test_a_committed_memory_is_retrievable_from_a_fresh_session(
         await store_memory(writer, "User's favorite tea is genmaicha.")
         await writer.commit()
     async with session_factory() as reader:   # new session, empty identity map
-        result = await RetrievalService(reader, settings).retrieve("Which tea is my favorite?")
+        result = await RetrievalService(reader, settings, scope=ADMIN_SCOPE).retrieve("Which tea is my favorite?")
     assert [m.content for m in result.memories] == ["User's favorite tea is genmaicha."]
 
 

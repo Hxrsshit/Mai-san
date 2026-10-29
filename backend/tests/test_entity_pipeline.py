@@ -41,7 +41,7 @@ async def make_memory(db_session, conversation, content="User decided to use Pos
         status=MemoryStatus.ACTIVE,
         importance_score=7,
         confidence_score=0.95,
-        source_conversation_id=conversation.id,
+        source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(memory)
     await db_session.flush()
@@ -49,7 +49,7 @@ async def make_memory(db_session, conversation, content="User decided to use Pos
 
 
 def service(db_session, fake_provider, settings) -> EntityService:
-    return EntityService(session=db_session, provider=fake_provider, settings=settings)
+    return EntityService(session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE)
 
 
 # --- Creation and linking ---------------------------------------------------
@@ -105,7 +105,9 @@ async def test_case_and_descriptor_variants_reuse_one_entity(
     second = (await service(db_session, fake_provider, settings).extract_for_memory(memory_two))[0]
 
     assert second.id == first.id
-    total = (await db_session.execute(select(func.count()).select_from(Entity))).scalar_one()
+    # The scope's own User (Stage 7B unit 5) is not an extracted entity.
+    total = (await db_session.execute(
+        select(func.count()).select_from(Entity).where(Entity.normalized_name != "user"))).scalar_one()
     assert total == 1
 
 

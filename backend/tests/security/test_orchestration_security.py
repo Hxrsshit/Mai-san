@@ -235,7 +235,7 @@ async def test_a_poisoned_memory_cannot_change_orchestration(
                 status=MemoryStatus.ACTIVE,
                 importance_score=10,
                 confidence_score=1.0,
-                source_conversation_id=conversation.id,
+                source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
             )
         )
         await session.commit()

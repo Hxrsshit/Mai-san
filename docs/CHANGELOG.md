@@ -29,8 +29,8 @@ before substantial work and updates it after completing work (see
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only); then the Stage 0 consolidation checkpoints (not stages), each committing work that had been uncommitted: C1 `fc80592`, C2 `30a1342`, C3 `7ac52b4`, C4 `4b8d407`, C5 `d4f8339` (documentation only); then the multi-agent workflow configuration, `5c7801c` (tooling and docs, no application code); then the tab accessibility fix, the commit titled `fix: link only the selected tab to its panel` (frontend only) |
 | Previous stages | 6P harden monitoring concurrency and truthfulness, the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; Stage 6O was an inspection-only audit with no commit of its own); 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main`. Nothing is pushed: on 2026-10-29, after Stage 7B L0 (`e1e8b55`), local `main` was 18 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording it adds one more. |
-| Latest migration | Committed head: `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020` and `0021` (security review H1; changing that needs a separate approved plan). |
-| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`) and **4** (scoped conversations; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
+| Latest migration | Committed head: `0022_scoped_uniqueness.py` (Stage 7B units 5-6; per-scope unique indexes; verified on SQLite and disposable PostgreSQL 16 by `tests/test_scoped_uniqueness_migration_pg.py`). Before it, `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020`, `0021` and `0022` (security review H1; changing that needs a separate approved plan). |
+| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (scoped knowledge; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
 | Uncommitted work (2026-10-29) | Only the untracked `MAi branding .png`. Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. What is running was last checked on 2026-10-16 (see Stage 0 C5): `mai-backend` started 2026-10-14 09:48 UTC and was still unchanged on 2026-10-29 (same ID and start time, 0 restarts). |
 
 ### Uncommitted / in progress (NOT completed)
@@ -334,7 +334,135 @@ not commit them as part of other work, and do not describe them as done.
 
 ## Completed (newest first)
 
-### Stage 7B unit 4: scoped conversations, messages and extraction context (this commit, 2026-10-29)
+### Stage 7B units 5-6: scoped knowledge -- memories, entities, relationships, conflicts and retrieval (this commit, 2026-10-29)
+
+- **Status:** completed (two Stage 7B units, landed together so that no
+  deployable state has scoped conversations but shared knowledge). Design:
+  `docs/stage7b_ownership_design.md` sections 2-5; progress:
+  `docs/stage7b_progress.md`. One migration (0022, below); no dependency
+  change. **Not applied to the real database** (still at 0019): that is an
+  owner-approval boundary.
+- **What:**
+  - Every knowledge service takes its `KnowledgeScope` at construction,
+    required and validated (`require_scope`): `MemoryService`,
+    `EntityService`, `EntityResolver`, `RelationshipService`,
+    `KnowledgeService` with its `ConflictDetector` and `LifecycleWriter`,
+    `RetrievalService` with its `EntityMatcher`, `MemoryRetriever`,
+    `RelationshipRetriever` and `evidence_map`. Request-path factories take the
+    `Scope` dependency (derived only from `get_principal`); the background
+    pipeline (`run_memory_extraction` -> entities -> relationships ->
+    conflicts) carries the turn's frozen scope through every step and
+    re-reads each memory with a scoped SELECT.
+  - Writes use `scope.write_columns()` (memories, entities, aliases,
+    relationships, conflict links); every read, deduplication lookup,
+    resolution, conflict query, lifecycle UPDATE and retrieval query is
+    filtered by `scope.clause(...)`. `get_*` use a filtered SELECT, never
+    `session.get`. Memory links and relationship evidence have no scope of
+    their own: they are written only between rows the scope owns
+    (`KnowledgeScope.owns`) and read only joined to scoped parents.
+  - Entity and relationship extraction refuse a memory the scope does not
+    own; conflict detection finds nothing for one. `extract_and_store`'s
+    `scope` argument is now a cross-check: a turn scope that differs from the
+    service's stores nothing.
+  - Each scope has its own "User" entity (the implicit subject of every
+    memory), created by the entity service the first time a memory of the
+    scope links an entity. The migration-seeded singleton is unattributed and
+    never matched.
+  - **Migration `0022_scoped_uniqueness`:** the global unique indexes on
+    memories `(memory_type, normalized_content)`, entities
+    `(normalized_name)` and entity aliases `(normalized_alias)` -- which made
+    one member's fact a "duplicate" of another's -- are each replaced by two
+    partial unique indexes: `(scope_id, ...)` where `scope_id IS NOT NULL`,
+    and `(...)` where `scope_id IS NULL` (legacy rows keep exactly their old
+    guarantee). No data change. The downgrade refuses, changing nothing, when
+    a key is shared across scopes; offline (`--sql`) downgrade is refused.
+- **Consequences:** legacy (unattributed) memories, entities and
+  relationships are no longer listed, retrieved, matched, deduplicated
+  against or superseded until they are attributed by an approved
+  operation (design section 7). Entity lists now include the scope's User
+  entity, as they always included the seeded one in a real deployment.
+- **Tests:** `tests/test_knowledge_scope_isolation.py` (31): every knowledge
+  service refuses a non-scope; a colleague and an outsider cannot read,
+  list, count, delete, follow links or evidence, or read the lifecycle of
+  another scope's knowledge (rows unchanged), even with the rows already in
+  the identity map; each scope sees only its own; legacy rows quarantined;
+  the same fact stored once per scope, not once globally; entity resolution
+  never reuses another scope's entity or alias; extraction and conflict
+  evaluation refuse another scope's memory, with no model call; a
+  background step never loads another scope's memory; a mismatched turn
+  scope stores nothing; one member's replacement supersedes nothing of
+  another's and writes no conflict link naming it; retrieval and
+  `evidence_map` return nothing of another scope; over HTTP every memory,
+  entity, relationship, evidence and lifecycle endpoint 404s another
+  member's ids, lists show nothing, the retrieval debug endpoint leaks
+  nothing, and a chat turn's prompt contains none of it; each scope gets its
+  own User entity and the legacy one is never offered; a model alias "User"
+  cannot capture it and a model-proposed "User" reuses it; a turn refuses a
+  context service of another scope; the lifecycle writer refuses a decision
+  naming another scope's rows; the history API refuses a non-Admin.
+  Migration 0022:
+  SQLite (`tests/test_migration_compatibility.py`, 6) and gated PostgreSQL
+  (`tests/test_scoped_uniqueness_migration_pg.py`, 6). Structure
+  (`tests/security/test_knowledge_scope_structure.py`): the per-scope
+  indexes pinned in models and migration; four new approved scope writers; a
+  new statement-level AST checker -- every select/update/delete of a
+  knowledge model or child table must carry `scope.clause` in the same
+  statement, with two reviewed child-table exemptions -- and no
+  `session.get` of a knowledge row anywhere. 0021's PostgreSQL tests now
+  target 0021 itself; the approved-migration regression tests moved to the
+  new head. Mechanical: 26 test files pass `ADMIN_SCOPE` to the services
+  and write it on raw rows; four entity-count assertions include the
+  scope's User; one relationship-skip test now uses a memory with no
+  entities.
+- **Mutation check:** nine defects, each caught by the behaviour tests and
+  (all but the `owns` check, which is not a query) by the structure checker.
+  Defects: `get_memory` unscoped (4 failed),
+  exact dedup unscoped (1), resolver name lookup unscoped (1),
+  `evidence_map` unscoped (2), conflict candidates unscoped (1, after the
+  test was strengthened to check conflict links and the checker's reviewed
+  exemption narrowed to child-table statements), entity extraction trusting
+  any memory (2), keyword retrieval unscoped (5), linked memories filtered
+  on the entity only (1), `count_memories` unscoped (4); after the review
+  fixes the resolver, conflict-detector and link mutants are caught by
+  direct tests under the defence in depth; sources restored byte for byte.
+- **Verification (SQLite + disposable PostgreSQL 16, 2026-10-29, after the
+  review fixes):** full suite ordered **7238 passed, 1 xfailed, 0 failed, 0
+  skipped**; shuffled (seed 1418306627) **7238 passed, 1 xfailed, 0
+  failed**. The PostgreSQL migration modules for 0021 and 0022: 23 passed.
+  `tests/security/test_secrets.py` excluded as before.
+- **Independent review** (the `security-reviewer` agent, read-only): no
+  cross-scope read, write, supersede, link or enumeration path found in the
+  code units 5-6 cover. Fixed:
+  - **M1** (Medium, latent): history import's archives, runs and duplicate
+    check are still global (unit 9), while its memories now go to the
+    caller's scope -- the whole `/api/history` router is Admin-only until
+    unit 9 (a member gets 403; tested);
+  - **M2** (Medium): the structure checker missed `select_from`/`join`
+    shapes, compound-statement headers, a clause on the wrong model, and
+    qualified `session.get` -- rewritten to require `clause(<Model>)` for
+    every scoped model a query statement names, wherever it is named, with
+    negative cases for each shape;
+  - **L1** `ChatService` refuses a context service of another scope
+    (`ContextService.scope`);
+  - **L2** `LifecycleWriter` refuses a decision naming any memory or
+    relationship outside its scope, before writing a link;
+  - **L4** the scope's User is looked up by exact scoped name (not the
+    resolver, whose alias step could let another entity stand in), is
+    provisioned before candidates are stored, and "user" is a reserved
+    alias;
+  - **L5** a mechanical test edit that had put the scope inside a comment;
+  - **L6** a new log line now records the exception class only.
+  Deferred, with reason: **L3** `Entity.aliases` and `Relationship.evidence`
+  load without a scope filter; safe while aliases and evidence are written
+  only within one scope (all writers check), made structural by unit 10's
+  same-scope composite foreign keys (design section 4) -- the legacy
+  attribution operation must not run before them. Noted: the background
+  scope is frozen at the route and not re-checked against membership (unit
+  7); attributing legacy rows later must merge, not plain-UPDATE, because
+  of the per-scope unique indexes; 0022 takes ordinary (non-concurrent)
+  index locks, so it runs with the application stopped.
+
+### Stage 7B unit 4: scoped conversations, messages and extraction context (`6ecb048`, 2026-10-29)
 
 - **Status:** completed (a Stage 7B unit). Design:
   `docs/stage7b_ownership_design.md`; progress: `docs/stage7b_progress.md`.

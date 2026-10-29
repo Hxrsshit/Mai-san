@@ -365,7 +365,7 @@ async def test_a_memory_claiming_a_different_provider_does_not_outrank_the_facts
                 status=MemoryStatus.ACTIVE,
                 importance_score=10,
                 confidence_score=1.0,
-                source_conversation_id=conversation.id,
+                source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
             )
         )
         await session.commit()

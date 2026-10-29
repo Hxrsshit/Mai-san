@@ -21,8 +21,8 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 | 2 | Remaining L0 findings | L1, L2 done. **M2** (foreign keys from a scope to a membership) belongs to unit 10. **H1** is an operational boundary (below) | -- |
 | 3 | Ownership model and enforcement-migration design (foreign keys, orphan checks, legacy-row policy) | **Completed** (design: `docs/stage7b_ownership_design.md`) | Repository inventory, 2026-10-29 |
 | 4 | Scope conversations, messages, memory-extraction context | **Completed** (see CHANGELOG, Stage 7B unit 4) | SQLite and live PostgreSQL, ordered and shuffled; security review F1-F7 |
-| 5 | Personal-memory isolation, scoped deduplication | Not started | -- |
-| 6 | Tenant-aware entities, relationships, knowledge, retrieval, context | Not started | -- |
+| 5 | Personal-memory isolation, scoped deduplication | **Completed with unit 6** (see CHANGELOG, Stage 7B units 5-6) | SQLite and live PostgreSQL, ordered and shuffled; security review M1-M2, L1-L6 |
+| 6 | Tenant-aware entities, relationships, knowledge, retrieval, context | **Completed with unit 5** (migration `0022_scoped_uniqueness`) | as unit 5 |
 | 7 | Background membership gates, revocation races | Not started | -- |
 | 8 | Ownership on reminders, executions, workflows, other revocable work | Not started | -- |
 | 9 | Scope history imports, protect integration state | Not started | -- |
@@ -77,13 +77,29 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 ## Approval boundaries (stop here; never cross autonomously)
 
 - **H1:** the backend container runs `alembic upgrade head` on start-up over
-  the mounted working tree. Any restart applies `0020` and `0021` to the real
+  the mounted working tree. Any restart applies `0020`, `0021` and `0022` to the real
   `mai` database (still at `0019`, as last recorded). Do not restart
   `mai-backend`. Changing the start-up behaviour, or migrating the real
   database, needs the owner's approval with a backup and rollback plan.
 - Real-database migrations or data changes; public deployment; pushing;
   live credential rotation; removing the four Stage 7A agent worktrees and
   branches under `.claude/worktrees/`.
+
+## Open items carried forward (from the units 5-6 review)
+
+- **History import is Admin-only** (`/api/history`, router dependency) until
+  unit 9 scopes archives, runs and the duplicate-file check.
+- **L3 (deferred to unit 10):** `Entity.aliases` and `Relationship.evidence`
+  load without a scope filter; safe while every writer keeps aliases and
+  evidence within one scope. Unit 10's same-scope composite foreign keys make
+  it structural. The legacy-attribution operation must not run before them.
+- **Attributing legacy rows** must merge, not plain-UPDATE: the per-scope
+  unique indexes (0022) will collide with scoped rows that restate legacy
+  facts, and the seeded legacy "User" with each scope's own User.
+- **Background scope is frozen at the route** and not re-checked against
+  membership when the task runs: unit 7.
+- **0022 on the real database** takes ordinary (non-concurrent) index locks:
+  apply it with the application stopped, within the approved migration plan.
 
 ## Decisions recorded
 
@@ -93,8 +109,8 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 
 ## Next action
 
-Units 5-6 together (they must land together: do not deploy between unit 4
-and their completion): scope memories, entities, aliases, relationships,
-evidence, conflicts, retrieval and context, with migration
-`0022_scoped_uniqueness` (per-scope unique indexes), following
-`docs/stage7b_ownership_design.md` sections 2-5.
+Unit 7: background membership gates and revocation races -- re-check the
+member's active membership when each background step (memory, entity,
+relationship, conflict extraction; reminders and monitors as they reach
+knowledge) starts, and settle what happens to work in flight when a member
+is revoked. Then units 8-14 in order.

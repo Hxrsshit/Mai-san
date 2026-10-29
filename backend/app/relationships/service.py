@@ -11,6 +11,12 @@ Pipeline, per stored memory:
 
 Only this module writes relationships. The model proposes; the application
 decides. Entity creation is never performed here -- that belongs to Stage 2B.
+
+Stage 7B unit 5: the service belongs to one knowledge scope, given at
+construction. Both ends resolve only within the scope, relationships are
+written with `scope.write_columns()`, evidence is attached only between a
+relationship and a memory of the scope, and every read is filtered by
+`scope.clause`.
 """
 
 import uuid
@@ -24,7 +30,8 @@ from app.core.config import Settings, get_settings
 from app.core.errors import DatabaseError, NotFoundError
 from app.core.logging import get_logger
 from app.entities.models import Entity, MemoryEntity
-from app.entities.resolver import EntityResolver
+from app.entities.resolver import USER_ENTITY_NORMALIZED_NAME, EntityResolver
+from app.identity.scope import KnowledgeScope, require_scope
 from app.llm.base import LLMProvider
 from app.memory.models import Memory
 from app.relationships.extractor import RelationshipExtractor
@@ -39,12 +46,13 @@ logger = get_logger(__name__)
 
 _DB_ERRORS = (SQLAlchemyError, OSError)
 
-#: The implicit subject of every memory. Memories are written in the third
-#: person about "User", and Stage 2B deliberately does not extract the user as
-#: an entity, so this singleton is seeded by migration and always offered to
-#: relationship extraction. Relationships like INTERESTED_IN and HAS_GOAL are
-#: meaningless without it.
-USER_ENTITY_NORMALIZED_NAME = "user"
+#: `USER_ENTITY_NORMALIZED_NAME` (imported above) names the implicit subject
+#: of every memory. Memories are written in the third person about "User",
+#: and Stage 2B deliberately does not extract the user as an entity, so the
+#: user entity is always offered to relationship extraction. Relationships
+#: like INTERESTED_IN and HAS_GOAL are meaningless without it. Since Stage 7B
+#: unit 5 each scope has its own, provisioned by the entity service; the
+#: migration-seeded singleton is unattributed and never matched.
 
 
 class RelationshipNotFoundError(NotFoundError):
@@ -59,14 +67,21 @@ class RelationshipService:
         provider: Optional[LLMProvider] = None,
         settings: Optional[Settings] = None,
         extractor: Optional[RelationshipExtractor] = None,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "RelationshipService")
         self._settings = settings or get_settings()
         self._provider = provider
         self._extractor = extractor or (
             RelationshipExtractor(provider, self._settings) if provider else None
         )
-        self._resolver = EntityResolver(session)
+        self._resolver = EntityResolver(session, self._scope)
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        return self._scope
 
     # --- Extraction pipeline ------------------------------------------------
 
@@ -79,6 +94,12 @@ class RelationshipService:
             return []
         if self._extractor is None:
             logger.warning("Relationship extraction skipped: no provider configured")
+            return []
+        if not self._scope.owns(memory):
+            logger.warning(
+                "Relationship extraction refused: the memory is not in its scope",
+                extra={"memory_id": str(memory.id)},
+            )
             return []
 
         entities = await self._available_entities(memory)
@@ -149,7 +170,7 @@ class RelationshipService:
         statement = (
             select(Entity)
             .join(MemoryEntity, MemoryEntity.entity_id == Entity.id)
-            .where(MemoryEntity.memory_id == memory.id)
+            .where(MemoryEntity.memory_id == memory.id, self._scope.clause(Entity))
         )
         try:
             linked = list((await self._session.execute(statement)).scalars().all())
@@ -162,11 +183,13 @@ class RelationshipService:
         return linked
 
     async def _user_entity(self) -> Optional[Entity]:
-        """The seeded singleton representing the system's owner."""
+        """This scope's "User" entity, if the entity service has provisioned
+        one. Never another scope's, and never the unattributed legacy one."""
         try:
             result = await self._session.execute(
                 select(Entity).where(
-                    Entity.normalized_name == USER_ENTITY_NORMALIZED_NAME
+                    Entity.normalized_name == USER_ENTITY_NORMALIZED_NAME,
+                    self._scope.clause(Entity),
                 )
             )
             return result.scalars().first()
@@ -245,6 +268,7 @@ class RelationshipService:
             target_entity_id=target.id,
             confidence_score=candidate.confidence_score,
             status=RelationshipStatus.ACTIVE,
+            **self._scope.write_columns(),
         )
         try:
             # The relationship and its first evidence row are written in one
@@ -298,6 +322,7 @@ class RelationshipService:
                 Relationship.relationship_type == relationship_type,
                 Relationship.target_entity_id == target_id,
                 Relationship.status == RelationshipStatus.ACTIVE,
+                self._scope.clause(Relationship),
             )
         )
         return result.scalars().first()
@@ -305,7 +330,12 @@ class RelationshipService:
     async def _add_evidence(
         self, relationship: Relationship, memory: Memory
     ) -> bool:
-        """Attach a memory as evidence, ignoring a duplicate pairing."""
+        """Attach a memory as evidence, ignoring a duplicate pairing.
+
+        Evidence is a child row with no scope of its own: it is written only
+        between a relationship and a memory of this scope."""
+        if not (self._scope.owns(relationship) and self._scope.owns(memory)):
+            return False
         existing = await self._session.execute(
             select(RelationshipEvidence.id).where(
                 RelationshipEvidence.relationship_id == relationship.id,
@@ -345,7 +375,7 @@ class RelationshipService:
         limit: int = 50,
         offset: int = 0,
     ) -> Sequence[Relationship]:
-        statement = select(Relationship)
+        statement = select(Relationship).where(self._scope.clause(Relationship))
         statement = self._apply_filters(
             statement, relationship_type, source_entity_id, target_entity_id, status
         )
@@ -365,7 +395,9 @@ class RelationshipService:
         target_entity_id: Optional[uuid.UUID] = None,
         status=None,
     ) -> int:
-        statement = select(func.count()).select_from(Relationship)
+        statement = select(func.count()).select_from(Relationship).where(
+            self._scope.clause(Relationship)
+        )
         statement = self._apply_filters(
             statement, relationship_type, source_entity_id, target_entity_id, status
         )
@@ -396,8 +428,17 @@ class RelationshipService:
         return statement
 
     async def get_relationship(self, relationship_id: uuid.UUID) -> Relationship:
+        # A filtered SELECT, never `session.get` (the identity map bypasses
+        # the filter).
         try:
-            relationship = await self._session.get(Relationship, relationship_id)
+            relationship = (
+                await self._session.execute(
+                    select(Relationship).where(
+                        Relationship.id == relationship_id,
+                        self._scope.clause(Relationship),
+                    )
+                )
+            ).scalars().first()
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("get relationship", exc)
         if relationship is None:
@@ -410,8 +451,12 @@ class RelationshipService:
         """Minimal entity view for rendering a relationship's two ends."""
         from app.relationships.schemas import EntityRef
 
-        entity = await self._session.get(Entity, entity_id)
-        if entity is None:  # pragma: no cover - FK makes this unreachable
+        entity = (
+            await self._session.execute(
+                select(Entity).where(Entity.id == entity_id, self._scope.clause(Entity))
+            )
+        ).scalars().first()
+        if entity is None:  # pragma: no cover - same-scope ends by construction
             raise RelationshipNotFoundError("Relationship references a missing entity.")
         return EntityRef(
             id=entity.id,
@@ -424,7 +469,13 @@ class RelationshipService:
             result = await self._session.execute(
                 select(func.count())
                 .select_from(RelationshipEvidence)
-                .where(RelationshipEvidence.relationship_id == relationship_id)
+                .join(Relationship, Relationship.id == RelationshipEvidence.relationship_id)
+                .join(Memory, Memory.id == RelationshipEvidence.memory_id)
+                .where(
+                    RelationshipEvidence.relationship_id == relationship_id,
+                    self._scope.clause(Relationship),
+                    self._scope.clause(Memory),
+                )
             )
             return int(result.scalar_one())
         except _DB_ERRORS as exc:
@@ -436,7 +487,12 @@ class RelationshipService:
         statement = (
             select(Memory, RelationshipEvidence)
             .join(RelationshipEvidence, RelationshipEvidence.memory_id == Memory.id)
-            .where(RelationshipEvidence.relationship_id == relationship_id)
+            .join(Relationship, Relationship.id == RelationshipEvidence.relationship_id)
+            .where(
+                RelationshipEvidence.relationship_id == relationship_id,
+                self._scope.clause(Relationship),
+                self._scope.clause(Memory),
+            )
             .order_by(RelationshipEvidence.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -467,7 +523,9 @@ class RelationshipService:
         """
         try:
             result = await self._session.execute(
-                delete(Relationship).where(Relationship.id == relationship_id)
+                delete(Relationship).where(
+                    Relationship.id == relationship_id, self._scope.clause(Relationship)
+                )
             )
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("delete relationship", exc)

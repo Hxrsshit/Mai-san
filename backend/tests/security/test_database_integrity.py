@@ -108,15 +108,15 @@ async def test_deleting_a_conversation_cascades_to_everything_derived(
         content="A memory.", normalized_content="a memory",
         memory_type=MemoryType.SEMANTIC, status=MemoryStatus.ACTIVE,
         importance_score=8, confidence_score=0.9,
-        source_conversation_id=conversation.id,
+        source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
     )
     entity = Entity(
         canonical_name="Thing", normalized_name="thing",
-        entity_type=EntityType.OTHER, status=EntityStatus.ACTIVE,
+        entity_type=EntityType.OTHER, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     other = Entity(
         canonical_name="Other", normalized_name="other",
-        entity_type=EntityType.OTHER, status=EntityStatus.ACTIVE,
+        entity_type=EntityType.OTHER, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add_all([memory, entity, other])
     await db_session.flush()
@@ -124,7 +124,7 @@ async def test_deleting_a_conversation_cascades_to_everything_derived(
     relationship = Relationship(
         source_entity_id=entity.id, relationship_type=RelationshipType.USES,
         target_entity_id=other.id, confidence_score=0.9,
-        status=RelationshipStatus.ACTIVE,
+        status=RelationshipStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add_all([
         MemoryEntity(memory_id=memory.id, entity_id=entity.id),
@@ -138,7 +138,7 @@ async def test_deleting_a_conversation_cascades_to_everything_derived(
         content="Second.", normalized_content="second",
         memory_type=MemoryType.SEMANTIC, status=MemoryStatus.ACTIVE,
         importance_score=8, confidence_score=0.9,
-        source_conversation_id=conversation.id,
+        source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(second)
     await db_session.flush()
@@ -146,7 +146,7 @@ async def test_deleting_a_conversation_cascades_to_everything_derived(
         KnowledgeConflict(
             older_memory_id=memory.id, newer_memory_id=second.id,
             resolution=ConflictResolution.SUPERSEDED,
-            reason=ConflictReason.EXPLICIT_REPLACEMENT,
+            reason=ConflictReason.EXPLICIT_REPLACEMENT, **ADMIN_SCOPE.write_columns(),
         )
     )
     await db_session.flush()
@@ -168,7 +168,7 @@ async def test_evidence_cannot_reference_a_missing_relationship(db_session) -> N
     memory = Memory(
         content="M.", normalized_content="m", memory_type=MemoryType.SEMANTIC,
         status=MemoryStatus.ACTIVE, importance_score=8, confidence_score=0.9,
-        source_conversation_id=conversation.id,
+        source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(memory)
     await db_session.flush()
@@ -188,7 +188,7 @@ async def test_a_lifecycle_link_cannot_reference_a_missing_memory(
     memory = Memory(
         content="M.", normalized_content="m", memory_type=MemoryType.SEMANTIC,
         status=MemoryStatus.ACTIVE, importance_score=8, confidence_score=0.9,
-        source_conversation_id=conversation.id,
+        source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(memory)
     await db_session.flush()
@@ -198,7 +198,7 @@ async def test_a_lifecycle_link_cannot_reference_a_missing_memory(
             older_memory_id=memory.id,
             newer_memory_id=uuid.uuid4(),  # no such memory
             resolution=ConflictResolution.SUPERSEDED,
-            reason=ConflictReason.EXPLICIT_REPLACEMENT,
+            reason=ConflictReason.EXPLICIT_REPLACEMENT, **ADMIN_SCOPE.write_columns(),
         )
     )
     with pytest.raises(IntegrityError):
@@ -209,7 +209,7 @@ async def test_a_lifecycle_link_cannot_reference_a_missing_memory(
 async def test_a_relationship_cannot_point_at_itself(db_session) -> None:
     entity = Entity(
         canonical_name="Solo", normalized_name="solo",
-        entity_type=EntityType.OTHER, status=EntityStatus.ACTIVE,
+        entity_type=EntityType.OTHER, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(entity)
     await db_session.flush()
@@ -218,7 +218,7 @@ async def test_a_relationship_cannot_point_at_itself(db_session) -> None:
         Relationship(
             source_entity_id=entity.id, relationship_type=RelationshipType.USES,
             target_entity_id=entity.id, confidence_score=0.9,
-            status=RelationshipStatus.ACTIVE,
+            status=RelationshipStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
         )
     )
     with pytest.raises(IntegrityError):
@@ -239,7 +239,7 @@ async def test_out_of_range_scores_are_refused_by_the_database(
             content="M.", normalized_content=f"m{importance}{confidence}",
             memory_type=MemoryType.SEMANTIC, status=MemoryStatus.ACTIVE,
             importance_score=importance, confidence_score=confidence,
-            source_conversation_id=conversation.id,
+            source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
         )
     )
     with pytest.raises(IntegrityError):

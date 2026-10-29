@@ -42,7 +42,7 @@ async def make_entity(db_session, name, kind=EntityType.TECHNOLOGY) -> Entity:
         canonical_name=name,
         normalized_name=name.lower(),
         entity_type=kind,
-        status=EntityStatus.ACTIVE,
+        status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(entity)
     await db_session.flush()
@@ -57,7 +57,7 @@ async def make_memory(db_session, conversation, content, entities=()) -> Memory:
         status=MemoryStatus.ACTIVE,
         importance_score=8,
         confidence_score=0.95,
-        source_conversation_id=conversation.id,
+        source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(memory)
     await db_session.flush()
@@ -69,7 +69,7 @@ async def make_memory(db_session, conversation, content, entities=()) -> Memory:
 
 def service(db_session, fake_provider, settings) -> RelationshipService:
     return RelationshipService(
-        session=db_session, provider=fake_provider, settings=settings
+        session=db_session, provider=fake_provider, settings=settings, scope=ADMIN_SCOPE
     )
 
 

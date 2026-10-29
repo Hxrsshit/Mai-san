@@ -78,10 +78,19 @@ partial unique indexes:
 
 Partial indexes work on SQLite and PostgreSQL and need no NOT NULL. The
 affected indexes: `uq_memories_type_normalized_content`,
-`uq_entities_normalized_name`, `uq_entity_aliases_normalized_alias`,
-`uq_imported_archives_source_sha256`. `uq_executions_idempotency_key` is
-already per call; unit 8 decides whether it is scoped. Deduplication looks
-only inside the caller's scope.
+`uq_entities_normalized_name`, `uq_entity_aliases_normalized_alias`
+(migration `0022_scoped_uniqueness`, units 5-6), and
+`uq_imported_archives_source_sha256`, which moves with the history-import
+scoping in unit 9 (an archive's duplicate check is part of that flow).
+`uq_executions_idempotency_key` is already per call; unit 8 decides whether
+it is scoped. Deduplication looks only inside the caller's scope.
+
+**The "User" entity (units 5-6).** Memories are written about "User", and
+relationship extraction always offers that entity. Migration 0005 seeded one
+global row; it is unattributed, so it is quarantined like any legacy row and
+never matched. Each scope gets its own, created by the entity service (the
+only entity writer) the first time a memory of the scope links an entity;
+relationship extraction only looks it up.
 
 ## 6. The enforcement migration (unit 10)
 

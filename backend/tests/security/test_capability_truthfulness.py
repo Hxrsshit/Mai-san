@@ -112,7 +112,7 @@ async def test_a_maximum_confidence_memory_cannot_grant_a_capability(
                 status=MemoryStatus.ACTIVE,
                 importance_score=10,
                 confidence_score=1.0,
-                source_conversation_id=conversation.id,
+                source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
             )
         )
         await session.commit()

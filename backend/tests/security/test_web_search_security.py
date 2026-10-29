@@ -415,7 +415,7 @@ async def test_unrelated_memories_are_not_sent_to_the_provider(
             status=MemoryStatus.ACTIVE,
             importance_score=10,
             confidence_score=1.0,
-            source_conversation_id=conversation.id,
+            source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
         )
     )
     await db_session.flush()

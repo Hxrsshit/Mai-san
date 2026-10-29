@@ -94,7 +94,7 @@ async def keyword_statement(message: str):
     """The statement the keyword search sends for `message`, or None."""
     session = CapturingSession()
     keywords = extract_keywords(normalize_query(message))
-    await MemoryRetriever(session, pool_size=50)._collect_by_keyword({}, keywords)
+    await MemoryRetriever(session, pool_size=50, scope=ADMIN_SCOPE)._collect_by_keyword({}, keywords)
     return session.statements[0] if session.statements else None
 
 
@@ -245,7 +245,7 @@ async def store(session, items):
             content=text, normalized_content=normalize(text),
             memory_type=MemoryType.PREFERENCE, status=MemoryStatus.ACTIVE,
             importance_score=importance, confidence_score=0.95,
-            source_conversation_id=conversation, created_at=created, updated_at=created,
+            source_conversation_id=conversation, created_at=created, updated_at=created, **ADMIN_SCOPE.write_columns(),
         ))
     await session.flush()
 
@@ -257,7 +257,7 @@ async def test_a_maximum_length_message_still_retrieves_and_is_not_degraded(
                              ("User likes hiking on weekends.", 7)])
     message = LONG_MESSAGES["distinct words"]       # opens with "Which tea do I prefer?"
 
-    result = await RetrievalService(db_session, settings).retrieve(message)
+    result = await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve(message)
 
     assert result.metadata.degraded_sources == []
     assert [m.content for m in result.memories][:1] == [TEA]
@@ -272,8 +272,8 @@ async def test_ranking_scores_a_long_message_against_the_keywords_searched(
     message = LONG_MESSAGES["distinct words"]
     searched = " ".join(query_keywords(extract_keywords(normalize_query(message))))
 
-    long_result = await RetrievalService(db_session, settings).retrieve(message)
-    short_result = await RetrievalService(db_session, settings).retrieve(searched)
+    long_result = await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve(message)
+    short_result = await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve(searched)
 
     def scores(result):
         # Rounded: recency moves by microseconds between the two calls.
@@ -299,13 +299,13 @@ async def test_the_debug_view_is_bounded_when_its_sources_disagree(
         conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         for index in range(150):
             entity = Entity(canonical_name=f"Tool{index}", normalized_name=f"tool{index}",
-                            entity_type=EntityType.TECHNOLOGY, status=EntityStatus.ACTIVE)
+                            entity_type=EntityType.TECHNOLOGY, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns())
             session.add(entity)
             await session.flush()
             memory = Memory(content=f"Mai uses Tool{index}.", normalized_content=f"mai uses tool{index}",
                             memory_type=MemoryType.SEMANTIC, status=MemoryStatus.ACTIVE,
                             importance_score=8, confidence_score=0.9,
-                            source_conversation_id=conversation.id)
+                            source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns())
             session.add(memory)
             await session.flush()
             session.add(MemoryEntity(memory_id=memory.id, entity_id=entity.id))
@@ -316,7 +316,7 @@ async def test_the_debug_view_is_bounded_when_its_sources_disagree(
                                normalized_content=f"user saw a zebra {index}",
                                memory_type=MemoryType.SEMANTIC, status=MemoryStatus.ACTIVE,
                                importance_score=10, confidence_score=0.9,
-                               source_conversation_id=conversation.id))
+                               source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns()))
         await session.commit()
 
     query = "zebra " + " ".join(f"Tool{index}" for index in range(150))

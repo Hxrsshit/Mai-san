@@ -628,7 +628,7 @@ def test_0021_downgrades_cleanly_when_only_the_backfill_is_present(legacy_at_002
 ])
 def test_0021_downgrade_refuses_when_it_would_lose_ownership(legacy_at_0020, ownership_sql) -> None:
     url, database = legacy_at_0020
-    alembic(url, "head")
+    alembic(url, "0021")
     _execute(database, ownership_sql, {"member": ADMIN_MEMBER_HEX, "other": uuid.uuid4().hex})
     before = _row_counts(database)
     result = alembic_attempt(url, "downgrade", "0020")
@@ -721,3 +721,110 @@ def test_the_migrated_scope_schema_is_the_models_scope_schema(tmp_path) -> None:
     assert actual == expected
     for table in SCOPED_TABLES:      # not vacuous
         assert len(actual[table]["columns"]) == 3 and len(actual[table]["checks"]) == 1, table
+
+
+# --- Stage 7B units 5-6: uniqueness per scope (0022) ---------------------------
+
+SCOPED_INDEXES_0022 = {
+    "memories": "type_normalized_content",
+    "entities": "normalized_name",
+    "entity_aliases": "normalized_alias",
+}
+OLD_INDEXES_0022 = {
+    "memories": "uq_memories_type_normalized_content",
+    "entities": "uq_entities_normalized_name",
+    "entity_aliases": "uq_entity_aliases_normalized_alias",
+}
+COLLEAGUE_MEMBER_HEX = uuid.UUID("00000000-0000-0000-0000-0000000c0111").hex
+
+
+def _index_names(database, table: str) -> set:
+    return {row[1] for row in _rows(database, f"PRAGMA index_list({table})")}
+
+
+def _rows(database, sql: str, params=None) -> list:
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.connect() as connection:
+        found = list(connection.execute(text(sql), params or {}))
+    engine.dispose()
+    return found
+
+
+def _insert_entity(database, normalized: str, member_hex=None) -> None:
+    scope = (", :org, :member, 'personal'" if member_hex else ", :org, NULL, NULL")
+    _execute(database, "INSERT INTO entities (id, canonical_name, normalized_name, entity_type, "
+                       "status, created_at, updated_at, organisation_id, scope_id, scope_visibility) "
+                       "VALUES (:id, :name, :name, 'technology', 'active', :now, :now" + scope + ")",
+             {"id": uuid.uuid4().hex, "name": normalized, "now": BASE,
+              "org": DEFAULT_ORG_HEX, "member": member_hex})
+
+
+def test_0022_replaces_each_global_index_with_two_partial_ones(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    before = _row_counts(database)
+    alembic(url, "head")
+    assert _row_counts(database) == before                 # no data change
+    for table, stem in SCOPED_INDEXES_0022.items():
+        names = _index_names(database, table)
+        assert {f"uq_{table}_scoped_{stem}", f"uq_{table}_legacy_{stem}"} <= names, table
+        assert OLD_INDEXES_0022[table] not in names, table
+
+
+def test_0022_lets_two_scopes_hold_the_same_name_but_not_one_scope_twice(legacy_at_0020) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    url, database = legacy_at_0020
+    alembic(url, "head")
+    _insert_entity(database, "postgresql", ADMIN_MEMBER_HEX)
+    _insert_entity(database, "postgresql", COLLEAGUE_MEMBER_HEX)   # another member: allowed
+    with pytest.raises(IntegrityError):
+        _insert_entity(database, "postgresql", ADMIN_MEMBER_HEX)   # same scope: refused
+    # The legacy guarantee is kept among unattributed rows: 'legacy' exists.
+    with pytest.raises(IntegrityError):
+        _insert_entity(database, "legacy")
+    _insert_entity(database, "legacy", ADMIN_MEMBER_HEX)           # attributed copy: allowed
+
+
+def test_0022_downgrades_cleanly_when_no_key_is_shared(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    alembic(url, "head")
+    _insert_entity(database, "only-admin", ADMIN_MEMBER_HEX)
+    result = alembic_attempt(url, "downgrade", "0021")
+    assert result.returncode == 0, result.stderr
+    for table, stem in SCOPED_INDEXES_0022.items():
+        names = _index_names(database, table)
+        assert OLD_INDEXES_0022[table] in names
+        assert not {f"uq_{table}_scoped_{stem}", f"uq_{table}_legacy_{stem}"} & names
+
+
+@pytest.mark.parametrize("second_member", [COLLEAGUE_MEMBER_HEX, None])
+def test_0022_downgrade_refuses_when_a_key_is_shared_across_scopes(legacy_at_0020, second_member) -> None:
+    """Two members (or a member and a legacy row) holding the same name cannot
+    go back under one global index; the downgrade refuses and changes nothing."""
+    url, database = legacy_at_0020
+    alembic(url, "head")
+    _insert_entity(database, "shared", ADMIN_MEMBER_HEX)
+    _insert_entity(database, "shared", second_member)
+    before = _row_counts(database)
+    result = alembic_attempt(url, "downgrade", "0021")
+    assert result.returncode != 0
+    assert "0022 downgrade refused" in result.stdout + result.stderr
+    assert "entities: 1" in result.stdout + result.stderr
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0022"
+    assert _row_counts(database) == before
+    assert "uq_entities_scoped_normalized_name" in _index_names(database, "entities")
+
+
+def test_0022_refuses_an_offline_downgrade() -> None:
+    result = alembic_attempt(OFFLINE_URL, "downgrade", "0022:0021", "--sql")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "0022 refused: offline" in output
+    assert "CREATE UNIQUE INDEX" not in result.stdout
+
+
+def test_0022_renders_its_upgrade_offline() -> None:
+    result = alembic_attempt(OFFLINE_URL, "upgrade", "0021:0022", "--sql")
+    assert result.returncode == 0, result.stderr
+    assert "uq_entities_scoped_normalized_name" in result.stdout
+    assert "WHERE scope_id IS NOT NULL" in result.stdout

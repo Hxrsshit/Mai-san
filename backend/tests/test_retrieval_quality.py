@@ -60,7 +60,7 @@ async def store(session, items, conversation_id=None):
             content=text, normalized_content=normalize(text),
             memory_type=MemoryType.PREFERENCE, status=MemoryStatus.ACTIVE,
             importance_score=importance, confidence_score=0.95,
-            source_conversation_id=conversation_id, created_at=created, updated_at=created,
+            source_conversation_id=conversation_id, created_at=created, updated_at=created, **ADMIN_SCOPE.write_columns(),
         ))
     await session.flush()
 
@@ -72,7 +72,7 @@ async def library(db_session):
 
 
 async def ranked(session, settings, query):
-    return [m.content for m in (await RetrievalService(session, settings).retrieve(query)).memories]
+    return [m.content for m in (await RetrievalService(session, settings, scope=ADMIN_SCOPE).retrieve(query)).memories]
 
 
 # --- 1-4: the tea regression, four phrasings ----------------------------------
@@ -205,9 +205,9 @@ async def test_ranking_is_deterministic_whatever_the_insertion_order(
     shuffled = list(items)
     random.Random(7).shuffle(shuffled)
     await store(db_session, shuffled)
-    first = [m.id for m in (await RetrievalService(db_session, settings).retrieve(
+    first = [m.id for m in (await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve(
         "Which tea do I prefer?")).memories]
-    again = [m.id for m in (await RetrievalService(db_session, settings).retrieve(
+    again = [m.id for m in (await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve(
         "Which tea do I prefer?")).memories]
     assert first == again and len(first) > 1
 
@@ -258,7 +258,7 @@ async def test_end_to_end_the_provider_request_carries_the_memory(
 async def test_a_question_with_only_a_preference_word_falls_back_to_it(library, settings) -> None:
     """ "What do I like?" names no subject: every preference memory is a
     candidate, and the unchanged budget then keeps the best ten."""
-    result = await RetrievalService(library, settings).retrieve("What do I like?")
+    result = await RetrievalService(library, settings, scope=ADMIN_SCOPE).retrieve("What do I like?")
     preference_memories = len(DECOYS) + 2       # all decoys, tea and partner
     assert result.metadata.candidate_memories == preference_memories
     assert SISTER not in [m.content for m in result.memories]   # no preference word

@@ -84,7 +84,8 @@ async def test_failure_breaks_neither_chat_memory_nor_entities(
     assert response.status_code == 201
     assert response.json()["assistant_message"]["content"] == "Here is your answer."
     assert (await client.get("/api/memories")).json()["total"] == 1
-    assert (await client.get("/api/entities")).json()["total"] == 2
+    # Two extracted, plus the scope's own User (Stage 7B unit 5).
+    assert (await client.get("/api/entities")).json()["total"] == 3
     assert await count(db_session, Relationship) == 0
     assert await count(db_session, RelationshipEvidence) == 0
 
@@ -101,7 +102,8 @@ async def test_malformed_output_stores_nothing(
     fake_provider.relationship_reply = garbage
 
     assert (await send(client, conversation_id, fake_provider)).status_code == 201
-    assert (await client.get("/api/entities")).json()["total"] == 2
+    # Two extracted, plus the scope's own User (Stage 7B unit 5).
+    assert (await client.get("/api/entities")).json()["total"] == 3
     assert await count(db_session, Relationship) == 0
 
 
@@ -181,11 +183,15 @@ async def test_failed_chat_turn_triggers_no_extraction_at_all(
 async def test_single_entity_memory_skips_extraction(
     client: AsyncClient, conversation_id, fake_provider
 ) -> None:
-    """"User prefers concise answers." -- nothing to relate."""
+    """"User prefers concise answers." -- nothing to relate.
+
+    Since Stage 7B unit 5 a memory with one entity of its own is related to
+    the scope's User (as it always was to the seeded one in a real
+    deployment), so "too few" means a memory with no entity at all."""
     fake_provider.extraction_reply = memory_payload(
         memory("User prefers concise answers.")
     )
-    fake_provider.entity_reply = entity_payload(entity("Mai", "project"))
+    fake_provider.entity_reply = entity_payload()
 
     assert (await send(client, conversation_id, fake_provider)).status_code == 201
     assert fake_provider.relationship_calls == []
@@ -207,7 +213,8 @@ async def test_relationship_extraction_can_be_disabled(
     assert (await send(client, conversation_id, fake_provider)).status_code == 201
     # Everything upstream still works.
     assert (await client.get("/api/memories")).json()["total"] == 1
-    assert (await client.get("/api/entities")).json()["total"] == 2
+    # Two extracted, plus the scope's own User (Stage 7B unit 5).
+    assert (await client.get("/api/entities")).json()["total"] == 3
     assert fake_provider.relationship_calls == []
     assert await count(db_session, Relationship) == 0
 
@@ -324,9 +331,10 @@ async def test_a_mid_relationship_failure_stores_nothing(
 
     async def flaky_flush(self, *args, **kwargs):
         calls["n"] += 1
-        # Memory and entity writes take six flushes; fail on the seventh,
-        # which is the relationship insert.
-        if calls["n"] > 6:
+        # Memory and entity writes take seven flushes (the seventh creates
+        # the scope's User, Stage 7B unit 5); fail on the eighth, which is
+        # the relationship insert.
+        if calls["n"] > 7:
             raise OSError("database went away during relationship storage")
         return await real_flush(self, *args, **kwargs)
 
@@ -346,6 +354,6 @@ async def test_a_mid_relationship_failure_stores_nothing(
 
     async with session_factory() as verify:
         assert await count(verify, Memory) == 1        # memory survived
-        assert await count(verify, Entity) == 2        # entities survived
+        assert await count(verify, Entity) == 3        # entities (and the User) survived
         assert await count(verify, Relationship) == 0  # nothing partial
         assert await count(verify, RelationshipEvidence) == 0

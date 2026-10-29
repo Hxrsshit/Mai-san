@@ -23,9 +23,9 @@ the untrusted historical data that must not travel.
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import AppSettings, HistoryImport
+from app.api.deps import AppSettings, HistoryImport, require_admin
 from app.core.logging import get_logger
 from app.history.schemas import (
     ImportRequest,
@@ -39,7 +39,14 @@ from app.history.sources import list_sources
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/history", tags=["history"])
+# Stage 7B units 5-6 (review M1): Admin-only until unit 9 scopes archives.
+# Import-derived memories are written in the caller's scope, but archives,
+# runs and the duplicate-file check are still global: a member importing the
+# operator's mounted export would take the Admin's history into their own
+# scope, and could list everyone's runs.
+router = APIRouter(
+    prefix="/api/history", tags=["history"], dependencies=[Depends(require_admin)]
+)
 
 #: Reason codes that describe a bad request rather than a server problem.
 #: Anything not listed is a 500, so a new failure mode is loud by default.

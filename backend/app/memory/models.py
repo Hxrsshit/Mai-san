@@ -26,7 +26,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.models.base import Base, utcnow
-from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    scoped_unique_indexes,
+)
 
 
 def _enum_values(enum_cls) -> list:
@@ -189,14 +193,13 @@ class Memory(Base, KnowledgeScopeColumns):
         # Recency queries in conflict detection order by this.
         Index("ix_memories_stated_at", "stated_at"),
         Index("ix_memories_origin", "origin"),
-        # Deduplication looks up exact normalised matches -- and this index is
-        # UNIQUE, so the database enforces it even when two extractions run
-        # concurrently and neither sees the other's uncommitted insert.
-        Index(
-            "uq_memories_type_normalized_content",
-            "memory_type",
-            "normalized_content",
-            unique=True,
+        # Deduplication looks up exact normalised matches -- and these indexes
+        # are UNIQUE, so the database enforces it even when two extractions run
+        # concurrently and neither sees the other's uncommitted insert. Since
+        # Stage 7B (0022) per knowledge scope: one member's fact never
+        # collides with another's.
+        *scoped_unique_indexes(
+            "memories", "type_normalized_content", "memory_type", "normalized_content"
         ),
         knowledge_scope_check(),
     )
