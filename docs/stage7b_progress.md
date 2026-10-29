@@ -19,7 +19,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 | --- | --- | --- | --- |
 | 1 | L0 tenant-scope foundation + review remediation (M1, M3, M4, L1, L2, L5) | **Completed, `e1e8b55`** (see CHANGELOG, Stage 7B L0) | SQLite and live PostgreSQL, ordered and shuffled |
 | 2 | Remaining L0 findings | L1, L2 done. **M2** (foreign keys from a scope to a membership) belongs to unit 10. **H1** is an operational boundary (below) | -- |
-| 3 | Ownership model and enforcement-migration design (foreign keys, orphan checks, legacy-row policy) | Not started | -- |
+| 3 | Ownership model and enforcement-migration design (foreign keys, orphan checks, legacy-row policy) | **Completed** (design: `docs/stage7b_ownership_design.md`) | Repository inventory, 2026-10-29 |
 | 4 | Scope conversations, messages, memory-extraction context | Not started | -- |
 | 5 | Personal-memory isolation, scoped deduplication | Not started | -- |
 | 6 | Tenant-aware entities, relationships, knowledge, retrieval, context | Not started | -- |
@@ -93,7 +93,5 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 
 ## Next action
 
-Unit 3: design the ownership model and the enforcement migration (which
-tables get direct scope columns, which derive from a parent, foreign keys,
-orphan checks, the legacy-row quarantine), written up in
-`docs/stage7b_ownership_design.md`, then unit 4.
+Unit 4: scope conversations and messages and the memory-extraction context,
+following `docs/stage7b_ownership_design.md` sections 1-4 and 8.
