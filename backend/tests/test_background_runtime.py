@@ -44,6 +44,7 @@ from app.tasks.schemas import TaskOutcome
 from app.tasks.service import TaskService
 from app.tasks.states import TaskState, TaskStepState
 from app.tools.schemas import RiskLevel
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -576,7 +577,7 @@ async def test_reminders_and_tasks_share_one_tick(
     async with session_factory() as session:
         session.add(Reminder(
             text="stand up", state=ReminderState.SCHEDULED, recurrence=Recurrence.ONCE,
-            next_run_at=now, timezone_name="Asia/Kolkata",
+            next_run_at=now, timezone_name="Asia/Kolkata", **ADMIN_SCOPE.write_columns(),
         ))
         await session.commit()
     task_id = await scheduled_task(session_factory, execution_settings, at=now, grant=True)
@@ -597,7 +598,7 @@ async def test_a_reminder_is_still_exactly_once_under_the_shared_loop(
     async with session_factory() as session:
         session.add(Reminder(
             text="once", state=ReminderState.SCHEDULED, recurrence=Recurrence.ONCE,
-            next_run_at=now, timezone_name="Asia/Kolkata",
+            next_run_at=now, timezone_name="Asia/Kolkata", **ADMIN_SCOPE.write_columns(),
         ))
         await session.commit()
 

@@ -166,6 +166,7 @@ SCOPE_WRITERS = {
     APP / "entities" / "service.py",                # unit 5: entities, aliases, the scope's User
     APP / "relationships" / "service.py",           # unit 5: relationships
     APP / "knowledge" / "lifecycle.py",             # unit 5: conflict links
+    APP / "reminders" / "service.py",               # unit 8: reminders
 }
 
 
@@ -353,8 +354,13 @@ def test_no_identity_map_read_of_a_conversation_or_message_anywhere() -> None:
 # --- Every knowledge query is scope-bound, statement by statement (units 5-6) --
 
 #: Scoped knowledge models, and the child tables read only through them.
-KNOWLEDGE_MODELS = {"Memory", "Entity", "EntityAlias", "Relationship", "KnowledgeConflict"}
-KNOWLEDGE_CHILDREN = {"MemoryEntity", "RelationshipEvidence"}
+KNOWLEDGE_MODELS = {"Memory", "Entity", "EntityAlias", "Relationship", "KnowledgeConflict",
+                    "Reminder"}                                    # unit 8
+KNOWLEDGE_CHILDREN = {"MemoryEntity", "RelationshipEvidence", "ReminderNotification"}
+#: Calls that bind a model to a scope: the member's own scope, or -- for the
+#: reminder scheduler's cross-member discovery -- "rows of active members'
+#: personal scopes" (`active_member_rows`), which never admits a legacy row.
+SCOPE_BINDING_CALLS = {"clause", "active_member_rows"}
 #: Reviewed child-table statements (memory links, evidence) that need no
 #: clause of their own, keyed by (path relative to app/, function). The
 #: exemption covers only statements naming child tables alone; any statement
@@ -419,7 +425,8 @@ def _unbound_knowledge_statements(source: str, relative: str) -> list:
             if not named:
                 continue
             bound = {c.args[0].id for c in calls
-                     if _call_name(c) == "clause" and c.args and isinstance(c.args[0], ast.Name)}
+                     if _call_name(c) in SCOPE_BINDING_CALLS and c.args
+                     and isinstance(c.args[0], ast.Name)}
             scoped = named & KNOWLEDGE_MODELS
             if scoped:
                 if scoped <= bound:

@@ -28,9 +28,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Optional
 
-from sqlalchemy import ColumnElement, and_
+from sqlalchemy import ColumnElement, and_, select
 
 from app.database.models.scope import KNOWLEDGE_SCOPE_VISIBILITIES
+from app.identity.constants import MemberStatus, OrganisationStatus
+from app.identity.models import Organisation, OrganisationMember
 from app.identity.principal import Principal
 
 _NIL = uuid.UUID(int=0)
@@ -146,6 +148,41 @@ class KnowledgeScope:
         }
 
 
+def active_member_rows(model) -> ColumnElement[bool]:
+    """Rows of a scoped `model` that belong to an active member's personal
+    scope, in an active organisation (Stage 7B unit 8).
+
+    For system work that must find every member's due rows -- the reminder
+    scheduler -- without ever selecting an unattributed (legacy) row or one
+    of a member who is no longer active, so such rows cannot occupy its
+    bounded pass. A filter only: the work itself still re-checks the member
+    under `lock_active_principal` before writing."""
+    members = (
+        select(OrganisationMember.id)
+        .join(Organisation, Organisation.id == OrganisationMember.organisation_id)
+        .where(
+            OrganisationMember.organisation_id == model.organisation_id,
+            OrganisationMember.status == MemberStatus.ACTIVE.value,
+            Organisation.status == OrganisationStatus.ACTIVE.value,
+        )
+    )
+    return and_(
+        model.scope_visibility == ScopeVisibility.PERSONAL.value,
+        model.scope_id.in_(members),
+    )
+
+
+def personal_member_of(row: object) -> Optional[uuid.UUID]:
+    """The member whose personal scope an already-loaded `row` carries, or
+    None (unattributed, or not personal). Only names whom to re-check: the
+    scope itself is then built from the re-read `Principal`, never from the
+    row."""
+    if getattr(row, "scope_visibility", None) != ScopeVisibility.PERSONAL.value:
+        return None
+    member = getattr(row, "scope_id", None)
+    return member if isinstance(member, uuid.UUID) else None
+
+
 def require_scope(value: object, owner: str) -> KnowledgeScope:
     """`value` itself if it is a `KnowledgeScope`; otherwise `InvalidScope`.
     Every scoped service checks its constructor argument with this, so a
@@ -172,5 +209,7 @@ __all__ = [
     "ScopeNotWritable",
     "ScopeVisibility",
     "WRITABLE_VISIBILITIES",
+    "active_member_rows",
+    "personal_member_of",
     "require_scope",
 ]

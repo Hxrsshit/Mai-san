@@ -219,11 +219,11 @@ def get_history_import_service(
 
 
 def get_reminder_service(
-    session: DbSession, settings: AppSettings
+    session: DbSession, settings: AppSettings, scope: "Scope"
 ) -> ReminderService:
     """Stage 5F.1. Takes no provider: reminder scheduling makes no model call
     anywhere -- the schedule is parsed deterministically."""
-    return ReminderService(session=session, settings=settings)
+    return ReminderService(session=session, settings=settings, scope=scope)
 
 
 def get_task_service(session: DbSession, settings: AppSettings, owner_id: "OwnerId") -> TaskService:

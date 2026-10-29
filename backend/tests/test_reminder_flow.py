@@ -25,6 +25,7 @@ from app.reminders.models import (
 from app.reminders.scheduler import ReminderScheduler, run_due_reminders
 from app.reminders.schemas import ReminderOutcome
 from app.reminders.service import ReminderService
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -42,14 +43,14 @@ async def conversations(db_session):
     rather than the constraint.
     """
     for conversation_id in (CONVERSATION, OTHER):
-        db_session.add(Conversation(id=conversation_id, title="test"))
+        db_session.add(Conversation(id=conversation_id, title="test", **ADMIN_SCOPE.write_columns()))
     await db_session.flush()
     await db_session.commit()
 
 
 def make_chat(session, settings):
     return ReminderChat(
-        ReminderService(session, settings=settings), pending=PendingProposals()
+        ReminderService(session, settings=settings, scope=ADMIN_SCOPE), pending=PendingProposals()
     )
 
 
@@ -174,7 +175,7 @@ async def test_listing_and_cancelling_need_no_confirmation(
 
 async def test_the_proposal_table_is_bounded(db_session, settings) -> None:
     pending = PendingProposals()
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     parsed = service.read_request("remind me in 2 hours to call")
     for _ in range(MAX_PENDING + 10):
         pending.put(uuid.uuid4(), parsed)
@@ -189,7 +190,7 @@ async def test_a_service_failure_does_not_fail_the_turn(db_session, settings) ->
             raise RuntimeError("database gone")
 
     chat = ReminderChat(
-        Broken(db_session, settings=settings), pending=PendingProposals()
+        Broken(db_session, settings=settings, scope=ADMIN_SCOPE), pending=PendingProposals()
     )
     result = await chat.handle(CONVERSATION, "what reminders do I have?")
     assert result.outcome is ReminderOutcome.NOT_REMINDER
@@ -201,7 +202,7 @@ async def test_a_service_failure_does_not_fail_the_turn(db_session, settings) ->
 async def seed(session, *, text="ping", when, recurrence=Recurrence.ONCE):
     reminder = Reminder(
         text=text, state=ReminderState.SCHEDULED, recurrence=recurrence,
-        next_run_at=when, timezone_name="Asia/Kolkata",
+        next_run_at=when, timezone_name="Asia/Kolkata", **ADMIN_SCOPE.write_columns(),
     )
     session.add(reminder)
     await session.flush()
@@ -318,7 +319,7 @@ async def test_a_cancelled_reminder_is_never_fired_by_a_tick(
     reminder_id = await seed(db_session, when=due_at, text="cancelled one")
 
     async with session_factory() as session:
-        service = ReminderService(session, settings=settings)
+        service = ReminderService(session, settings=settings, scope=ADMIN_SCOPE)
         await service.cancel_matching("cancelled one")
         await session.commit()
 

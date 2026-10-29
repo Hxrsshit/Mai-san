@@ -24,7 +24,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 | 5 | Personal-memory isolation, scoped deduplication | **Completed with unit 6** (see CHANGELOG, Stage 7B units 5-6) | SQLite and live PostgreSQL, ordered and shuffled; security review M1-M2, L1-L6 |
 | 6 | Tenant-aware entities, relationships, knowledge, retrieval, context | **Completed with unit 5** (migration `0022_scoped_uniqueness`) | as unit 5 |
 | 7 | Background membership gates, revocation races | **Completed** (see CHANGELOG, Stage 7B unit 7) | SQLite and live PostgreSQL (forced races), ordered and shuffled |
-| 8 | Ownership on reminders, executions, workflows, other revocable work | Not started | -- |
+| 8 | Ownership on reminders, executions, workflows, other revocable work | **8a (reminders) completed** (see CHANGELOG); **8b** (executions, workflows) next | SQLite and live PostgreSQL, ordered and shuffled |
 | 9 | Scope history imports, protect integration state | Not started | -- |
 | 10 | Final non-null and relational enforcement migration | Not started | -- |
 | 11 | Telegram organisation binding, sender identity, mention/reply, learning | Not started. Member Telegram turns stay **disabled** until units 4-10 and their security tests pass | -- |
@@ -109,11 +109,11 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 
 ## Next action
 
-Unit 8: ownership on reminders, executions, workflows and the remaining
-revocable work -- write and filter their scope (reminders, executions,
-workflows carry the L0 columns), give the reminder scheduler and execution
-paths the owner's scope, and make revocation cover them (design sections 3
-and 4). Then units 9-14 in order.
+Unit 8b: ownership on executions and workflows -- write and filter their
+scope (both carry the L0 columns), give the execution paths (chat, tasks,
+runner, research, calendar, mail, workflows) the owner's scope, and keep
+their conversation and workflow references inside the scope (design sections
+3 and 4). Reminders are done (8a). Then units 9-14 in order.
 
 Design constraint for unit 8 (recorded 2026-10-29): `app.execution`,
 `app.tasks`, `app.authorization` and `app.background` must never import

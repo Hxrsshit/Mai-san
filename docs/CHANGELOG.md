@@ -30,7 +30,7 @@ before substantial work and updates it after completing work (see
 | Previous stages | 6P harden monitoring concurrency and truthfulness, the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; Stage 6O was an inspection-only audit with no commit of its own); 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main`. Nothing is pushed: on 2026-10-29, after Stage 7B L0 (`e1e8b55`), local `main` was 18 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording it adds one more. |
 | Latest migration | Committed head: `0022_scoped_uniqueness.py` (Stage 7B units 5-6; per-scope unique indexes; verified on SQLite and disposable PostgreSQL 16 by `tests/test_scoped_uniqueness_migration_pg.py`). Before it, `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020`, `0021` and `0022` (security review H1; changing that needs a separate approved plan). |
-| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (`1cb1e94`, scoped knowledge) and **7** (background membership gates; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
+| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (`1cb1e94`, scoped knowledge) **7** (`bbd77ff`, background membership gates) and **8a** (reminders; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
 | Uncommitted work (2026-10-29) | Only the untracked `MAi branding .png`. Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. What is running was last checked on 2026-10-16 (see Stage 0 C5): `mai-backend` started 2026-10-14 09:48 UTC and was still unchanged on 2026-10-29 (same ID and start time, 0 restarts). |
 
 ### Uncommitted / in progress (NOT completed)
@@ -334,7 +334,63 @@ not commit them as part of other work, and do not describe them as done.
 
 ## Completed (newest first)
 
-### Stage 7B unit 7: background membership gates and revocation races (this commit, 2026-10-29)
+### Stage 7B unit 8a: reminders belong to their member (this commit, 2026-10-30)
+
+- **Status:** completed (the reminder half of unit 8; executions and
+  workflows are unit 8b). No migration, no dependency change.
+- **What:**
+  - `ReminderService(session, settings, *, scope)`: required, validated
+    scope. Reminders are created with `scope.write_columns()`; listing,
+    reading, cancelling, due, firing (its claim and failure count included)
+    and notifications are filtered by `scope.clause`. A conversation is
+    linked only if it is in the same scope (otherwise the reminder is created
+    unlinked). Notifications have no scope of their own and are read and
+    marked only through a reminder of the scope. New `get` and
+    `cancel_by_id`; `POST /api/reminders/{id}/cancel` uses them instead of
+    reading the reminder through the service's session (which bypassed the
+    scope and let a 404/409 difference reveal another member's reminder).
+  - Scheduler (`app/reminders/scheduler.py`): `due_reminders` selects only
+    reminders of an active member's personal scope
+    (`app.identity.scope.active_member_rows`), so a legacy or revoked
+    member's reminder never occupies the bounded pass. Each is fired only
+    after its member is re-read under the unit 7 share lock and the scope
+    built from that principal owns the row, through a service bound to
+    exactly that scope. Each reminder runs in its own savepoint: a failure
+    on one skips that one and never aborts the pass.
+  - `app.identity.scope`: `active_member_rows(model)` and
+    `personal_member_of(row)` keep the scope column names in the defining
+    module.
+- **Consequence:** existing (legacy, unattributed) reminders are
+  quarantined: not listed and not fired until attributed by an approved
+  operation (design section 7), like legacy conversations.
+- **Tests:** `tests/test_reminders_scope.py` (13): the service refuses a
+  non-scope; a new reminder carries its creator's scope; another scope's
+  conversation is never linked; a colleague and an outsider cannot list,
+  read, describe, cancel (by phrase or id), find due, fire, see or mark
+  read the Admin's reminder or notification (rows unchanged); a legacy
+  reminder is quarantined; the scheduler fires only active members'
+  reminders, an active colleague's in their own scope; legacy and revoked
+  reminders cannot starve the pass; a member revoked after discovery is not
+  fired while the rest of the pass runs; the claim itself is scope-bound;
+  one failing reminder never aborts the pass; the API never reaches a
+  colleague's reminder. The structure checker now covers `Reminder` and
+  `ReminderNotification` (`active_member_rows` counts as a binding), and
+  the reminder service is an approved scope writer. Mechanical: 5 test
+  files pass the Admin scope; one failure-injection test now injects a
+  refused flush instead of relying on a missing conversation.
+- **Mutation check:** six defects. Caught: listing unscoped (5 failed), the
+  scheduler admitting any due row (3), `mark_read` unscoped (4), no
+  per-reminder savepoint (1). Not caught as distinct defects, both by
+  defence in depth: dropping the scheduler's "member inactive" check
+  (`KnowledgeScope.personal(None)` then refuses inside the savepoint) and
+  `fire` trusting any reminder (the claim's UPDATE is scope-filtered, tested
+  directly). Sources restored byte for byte.
+- **Verification (SQLite + disposable PostgreSQL 16, 2026-10-30):** full
+  suite ordered **7263 passed, 1 xfailed, 0 failed, 0 skipped**; shuffled
+  (seed 1592047306) **7263 passed, 1 xfailed, 0 failed**.
+  `tests/security/test_secrets.py` excluded as before.
+
+### Stage 7B unit 7: background membership gates and revocation races (`bbd77ff`, 2026-10-29)
 
 - **Status:** completed (a Stage 7B unit). No migration, no dependency
   change. Progress: `docs/stage7b_progress.md`.

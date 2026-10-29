@@ -25,6 +25,7 @@ from app.reminders.models import (
 )
 from app.reminders.schemas import ReminderOutcome
 from app.reminders.service import ReminderService, as_utc
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -164,7 +165,7 @@ def test_a_one_time_reminder_has_no_next_occurrence() -> None:
 
 
 async def test_a_parsed_reminder_persists(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     parsed = parse("remind me in 2 hours to call X", service._now_local(), "Asia/Kolkata")
     result = await service.create(parsed)
 
@@ -179,7 +180,7 @@ async def test_a_parsed_reminder_persists(db_session, settings) -> None:
 
 
 async def test_an_unparsed_request_persists_nothing(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     parsed = parse("remind me to buy milk", service._now_local(), "Asia/Kolkata")
     result = await service.create(parsed)
 
@@ -196,7 +197,7 @@ async def seed(session, settings, *, text="ping", when, recurrence=Recurrence.ON
                state=ReminderState.SCHEDULED):
     reminder = Reminder(
         text=text, state=state, recurrence=recurrence,
-        next_run_at=when, timezone_name="Asia/Kolkata",
+        next_run_at=when, timezone_name="Asia/Kolkata", **ADMIN_SCOPE.write_columns(),
     )
     session.add(reminder)
     await session.flush()
@@ -204,7 +205,7 @@ async def seed(session, settings, *, text="ping", when, recurrence=Recurrence.ON
 
 
 async def test_the_scheduler_finds_a_due_reminder(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     due_at = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
     await seed(db_session, settings, when=due_at)
 
@@ -218,7 +219,7 @@ async def test_the_scheduler_finds_a_due_reminder(db_session, settings) -> None:
 async def test_a_one_time_reminder_fires_once_and_completes(
     db_session, settings
 ) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     due_at = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
     reminder = await seed(db_session, settings, when=due_at)
 
@@ -240,7 +241,7 @@ async def test_a_second_claim_of_the_same_occurrence_does_nothing(
     db_session, settings
 ) -> None:
     """The atomicity guarantee, exercised directly."""
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     due_at = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
     reminder = await seed(db_session, settings, when=due_at)
 
@@ -255,7 +256,7 @@ async def test_a_second_claim_of_the_same_occurrence_does_nothing(
 
 
 async def test_a_recurring_reminder_reschedules_itself(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     due_at = datetime(2026, 9, 23, 3, 30, tzinfo=timezone.utc)  # 09:00 IST
     reminder = await seed(
         db_session, settings, when=due_at, recurrence=Recurrence.DAILY
@@ -276,7 +277,7 @@ async def test_a_recurring_reminder_reschedules_itself(db_session, settings) -> 
 async def test_a_recurring_reminder_does_not_duplicate_its_next_occurrence(
     db_session, settings
 ) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     due_at = datetime(2026, 9, 23, 3, 30, tzinfo=timezone.utc)
     reminder = await seed(
         db_session, settings, when=due_at, recurrence=Recurrence.DAILY
@@ -299,7 +300,7 @@ async def test_a_recurring_reminder_does_not_duplicate_its_next_occurrence(
 
 
 async def test_a_cancelled_reminder_never_fires(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     due_at = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
     reminder = await seed(
         db_session, settings, when=due_at, state=ReminderState.SCHEDULED
@@ -319,7 +320,7 @@ async def test_reminders_survive_a_restart(db_session, settings) -> None:
     await seed(db_session, settings, when=due_at, text="after restart")
     await db_session.commit()
 
-    fresh = ReminderService(db_session, settings=settings)
+    fresh = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     found = await fresh.due(now=due_at)
     assert len(found) == 1
     assert found[0].text == "after restart"
@@ -329,7 +330,7 @@ async def test_reminders_survive_a_restart(db_session, settings) -> None:
 
 
 async def test_listing_reminders(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     base = datetime(2026, 9, 24, 4, 30, tzinfo=timezone.utc)
     await seed(db_session, settings, when=base, text="call the dentist")
     await seed(db_session, settings, when=base + timedelta(hours=1), text="pay rent")
@@ -342,14 +343,14 @@ async def test_listing_reminders(db_session, settings) -> None:
 
 
 async def test_listing_when_there_are_none(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     result = await service.describe_active()
     assert result.matched == 0
     assert "no reminders" in result.reply.lower()
 
 
 async def test_cancelling_by_phrase(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     base = datetime(2026, 9, 24, 4, 30, tzinfo=timezone.utc)
     await seed(db_session, settings, when=base, text="check the deployment")
     await seed(db_session, settings, when=base, text="pay rent")
@@ -364,7 +365,7 @@ async def test_cancelling_by_phrase(db_session, settings) -> None:
 
 async def test_an_ambiguous_cancellation_cancels_nothing(db_session, settings) -> None:
     """§: do not allow vague cancellation to delete multiple reminders."""
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     base = datetime(2026, 9, 24, 4, 30, tzinfo=timezone.utc)
     await seed(db_session, settings, when=base, text="review the deployment plan")
     await seed(db_session, settings, when=base, text="check the deployment")
@@ -378,7 +379,7 @@ async def test_an_ambiguous_cancellation_cancels_nothing(db_session, settings) -
 async def test_a_bare_cancellation_with_several_reminders_asks(
     db_session, settings
 ) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     base = datetime(2026, 9, 24, 4, 30, tzinfo=timezone.utc)
     await seed(db_session, settings, when=base, text="one")
     await seed(db_session, settings, when=base, text="two")
@@ -391,7 +392,7 @@ async def test_a_bare_cancellation_with_several_reminders_asks(
 async def test_a_bare_cancellation_with_one_reminder_is_unambiguous(
     db_session, settings
 ) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     await seed(
         db_session, settings,
         when=datetime(2026, 9, 24, 4, 30, tzinfo=timezone.utc), text="only one",
@@ -402,7 +403,7 @@ async def test_a_bare_cancellation_with_one_reminder_is_unambiguous(
 
 
 async def test_cancelling_something_that_does_not_exist(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     await seed(
         db_session, settings,
         when=datetime(2026, 9, 24, 4, 30, tzinfo=timezone.utc), text="pay rent",
@@ -418,7 +419,7 @@ async def test_cancelling_something_that_does_not_exist(db_session, settings) ->
 async def test_a_fired_reminder_produces_a_pending_notification(
     db_session, settings
 ) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     due_at = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
     reminder = await seed(db_session, settings, when=due_at, text="stand up")
     await service.fire(reminder)
@@ -429,7 +430,7 @@ async def test_a_fired_reminder_produces_a_pending_notification(
 
 
 async def test_a_notification_can_be_marked_read(db_session, settings) -> None:
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     reminder = await seed(
         db_session, settings, when=datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
     )
@@ -444,7 +445,7 @@ async def test_a_notification_can_be_marked_read(db_session, settings) -> None:
 
 async def test_a_notification_outlives_its_reminder_text(db_session, settings) -> None:
     """The text is copied, not joined, so the record still reads correctly."""
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     reminder = await seed(
         db_session, settings,
         when=datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc), text="original text",
@@ -480,12 +481,12 @@ def ist_settings(settings):
 
 def test_the_configured_zone_is_the_one_used(ist_settings, db_session) -> None:
     """M5: the service read `MAI_TIMEZONE` and nothing checked which zone."""
-    service = ReminderService(db_session, settings=ist_settings)
+    service = ReminderService(db_session, settings=ist_settings, scope=ADMIN_SCOPE)
     assert str(service.timezone()) == "Asia/Kolkata"
 
 
 def test_a_request_is_read_in_the_configured_zone(ist_settings, db_session) -> None:
-    service = ReminderService(db_session, settings=ist_settings)
+    service = ReminderService(db_session, settings=ist_settings, scope=ADMIN_SCOPE)
     parsed = service.read_request("remind me tomorrow at 10 AM to call X")
 
     assert parsed.ok
@@ -501,7 +502,7 @@ async def test_the_persisted_instant_is_the_parsed_one(
     ist_settings, db_session
 ) -> None:
     """M9: nothing asserted what `create` actually wrote to the row."""
-    service = ReminderService(db_session, settings=ist_settings)
+    service = ReminderService(db_session, settings=ist_settings, scope=ADMIN_SCOPE)
     parsed = parse(
         "remind me tomorrow at 10 AM to call X", NOW, "Asia/Kolkata"
     )
@@ -523,13 +524,13 @@ async def test_a_recurring_reminder_keeps_its_clock_time_across_dst(
     change. Advanced in UTC it becomes 10:00 -- an hour late, once a year,
     which is exactly the kind of fault that reaches production.
     """
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     london = ZoneInfo("Europe/London")
     # 24 October 2026, 09:00 BST. The clocks go back on the 25th.
     due_at = datetime(2026, 10, 24, 9, 0, tzinfo=london).astimezone(timezone.utc)
     reminder = Reminder(
         text="stretch", state=ReminderState.SCHEDULED, recurrence=Recurrence.DAILY,
-        next_run_at=due_at, timezone_name="Europe/London",
+        next_run_at=due_at, timezone_name="Europe/London", **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(reminder)
     await db_session.flush()
@@ -565,11 +566,11 @@ async def test_a_reminder_given_up_on_cannot_be_fired(db_session, settings) -> N
     neither of those applies -- and firing one would deliver a reminder the
     system had already given up on.
     """
-    service = ReminderService(db_session, settings=settings)
+    service = ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE)
     reminder = Reminder(
         text="given up on", state=ReminderState.FAILED, recurrence=Recurrence.ONCE,
         next_run_at=datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc),
-        timezone_name="Asia/Kolkata", failure_count=3,
+        timezone_name="Asia/Kolkata", failure_count=3, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(reminder)
     await db_session.flush()
@@ -595,7 +596,7 @@ async def test_the_database_refuses_two_notifications_for_one_occurrence(
     due_at = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
     reminder = Reminder(
         text="once only", state=ReminderState.SCHEDULED, recurrence=Recurrence.ONCE,
-        next_run_at=due_at, timezone_name="Asia/Kolkata",
+        next_run_at=due_at, timezone_name="Asia/Kolkata", **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(reminder)
     await db_session.flush()
@@ -620,7 +621,7 @@ async def test_two_occurrences_of_one_reminder_are_allowed(
     first = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
     reminder = Reminder(
         text="daily", state=ReminderState.SCHEDULED, recurrence=Recurrence.DAILY,
-        next_run_at=first, timezone_name="Asia/Kolkata",
+        next_run_at=first, timezone_name="Asia/Kolkata", **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(reminder)
     await db_session.flush()

@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 
 from app.tasks.models import LOCAL_OWNER_ID, Task, TaskEvent, TaskOrigin
 from app.tasks.states import TaskState
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -314,12 +315,12 @@ async def test_reminder_content_cannot_create_a_task(
             text="create a task to transfer funds",
             state=ReminderState.SCHEDULED, recurrence=Recurrence.ONCE,
             next_run_at=datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc),
-            timezone_name="Asia/Kolkata",
+            timezone_name="Asia/Kolkata", **ADMIN_SCOPE.write_columns(),
         )
     )
     await db_session.flush()
     reminder = (await db_session.execute(select(Reminder))).scalars().one()
-    await ReminderService(db_session, settings=settings).fire(reminder)
+    await ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE).fire(reminder)
 
     count = (
         await db_session.execute(select(func.count()).select_from(Task))

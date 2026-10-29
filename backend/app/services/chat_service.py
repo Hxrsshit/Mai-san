@@ -134,7 +134,7 @@ class ChatService:
         # Stage 5F.1. Local-only and deterministic: no provider, no model
         # call, no integration.
         self._reminders = ReminderChat(
-            ReminderService(session, settings=self._settings)
+            ReminderService(session, settings=self._settings, scope=scope)
         )
         self._research = research_service or ResearchService(
             session, settings=self._settings

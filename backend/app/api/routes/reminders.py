@@ -47,20 +47,18 @@ async def cancel_reminder(reminder_id: uuid.UUID, service: Reminders) -> Reminde
     conversational path does the matching and refuses when several reminders
     fit; this one is already specific.
     """
-    from app.reminders.models import Reminder
-
-    reminder = await service._session.get(Reminder, reminder_id)
-    if reminder is None:
+    # Stage 7B unit 8: through the member's scoped service only. Another
+    # member's reminder is "not found", exactly like a missing id.
+    result = await service.cancel_by_id(reminder_id)
+    if result.reason == "reminder_not_found":
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="reminder_not_found"
         )
-
-    result = await service._cancel(reminder)
     if not result.outcome.value == "cancelled":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=result.outcome.value
         )
-    refreshed = await service._session.get(Reminder, reminder_id)
+    refreshed = await service.get(reminder_id)
     return ReminderRead.model_validate(refreshed, from_attributes=True)
 
 
