@@ -17,7 +17,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 
 | # | Unit | Status | Evidence |
 | --- | --- | --- | --- |
-| 1 | L0 tenant-scope foundation + review remediation (M1, M3, M4, L1, L2, L5) | **Verified; committed** (see CHANGELOG, Stage 7B L0) | SQLite and live PostgreSQL, ordered and shuffled |
+| 1 | L0 tenant-scope foundation + review remediation (M1, M3, M4, L1, L2, L5) | **Completed, `e1e8b55`** (see CHANGELOG, Stage 7B L0) | SQLite and live PostgreSQL, ordered and shuffled |
 | 2 | Remaining L0 findings | L1, L2 done. **M2** (foreign keys from a scope to a membership) belongs to unit 10. **H1** is an operational boundary (below) | -- |
 | 3 | Ownership model and enforcement-migration design (foreign keys, orphan checks, legacy-row policy) | Not started | -- |
 | 4 | Scope conversations, messages, memory-extraction context | Not started | -- |
@@ -63,6 +63,16 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 - Full suite: `cd backend && .venv/bin/python -m pytest -p no:cacheprovider
   --ignore=tests/security/test_secrets.py` (about 10 minutes; `pytest.ini`
   already sets `-q`). Shuffle with a scratch plugin and report the seed.
+
+## Live test resources
+
+- **2026-10-29:** one disposable PostgreSQL container is running for the
+  current session (label `mai.purpose=pgtest`, `127.0.0.1:55432`, tmpfs, no
+  data of value). Before the session ends it must be stopped by exact ID and
+  its scratch credential files deleted; afterwards confirm
+  `docker ps --filter label=mai.purpose=pgtest` is empty and `mai-db` /
+  `mai-backend` are unchanged. A later session that finds it running and no
+  owner should remove it the same way.
 
 ## Approval boundaries (stop here; never cross autonomously)
 

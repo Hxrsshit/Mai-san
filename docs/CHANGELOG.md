@@ -28,10 +28,10 @@ before substantial work and updates it after completing work (see
 | Latest completed stage | **Stage 7A: Organisation & User Identity**, `8f3ef2f` (2026-10-26; see Completed). Organisation and membership identity with database-backed, fail-closed membership checks; **tenant isolation is not claimed** and member Telegram turns remain disabled |
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only); then the Stage 0 consolidation checkpoints (not stages), each committing work that had been uncommitted: C1 `fc80592`, C2 `30a1342`, C3 `7ac52b4`, C4 `4b8d407`, C5 `d4f8339` (documentation only); then the multi-agent workflow configuration, `5c7801c` (tooling and docs, no application code); then the tab accessibility fix, the commit titled `fix: link only the selected tab to its panel` (frontend only) |
 | Previous stages | 6P harden monitoring concurrency and truthfulness, the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; Stage 6O was an inspection-only audit with no commit of its own); 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
-| Branch | `main`. Nothing is pushed: on 2026-10-26, at Stage 7A (`8f3ef2f`), local `main` was 16 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording Stage 7A adds one more. |
-| Latest migration | Committed head: `0020_organisation_identity.py` (Stage 7A, `8f3ef2f`). **Uncommitted:** `0021_knowledge_scope.py` (Stage 7B L0), verified on throwaway SQLite files by the test suite and, on 2026-10-28, by a scratch runner on a disposable PostgreSQL 16 container (since removed); the permanent gated PostgreSQL tests (`tests/test_knowledge_scope_migration_pg.py`) have **not yet been run live**. `0020`: verified on throwaway SQLite files and, on 2026-10-21, on a disposable PostgreSQL 16 container (upgrade, downgrade to 0019, upgrade). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020` **and the uncommitted `0021`** (security review H1; changing that needs a separate approved plan). |
-| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**: unit **L0 (tenant-scope foundation) implemented, uncommitted** (see Uncommitted / in progress); units T1-T7 and the enforcement migration are not started and each needs the owner's approval. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. Do not begin another unit without an explicit request. |
-| Uncommitted work (2026-10-28) | In the main checkout: Stage 7B L0 (see Uncommitted / in progress) and the untracked `MAi branding .png`. The 2026-10-19 pilot worktrees and branches were removed on 2026-10-20 (owner-approved, verified). Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. **Below, as recorded on 2026-10-16 and not re-checked since:** the six 2026-10-13 workstreams and the 2026-10-14 memory work are committed as Stage 0 C1 to C4 (see Completed). None of it was verified on PostgreSQL (its gated tests are unrun). **What is running (checked 2026-10-16, read-only):** the backend container last started 2026-10-14 09:48 UTC (Docker `StartedAt`), and a public `GET /health` returned `llm.reachability`, so it runs C4's health code. That it lacks C4's 2026-10-16 query bound and debug-pool cap is inferred, not tested: those files changed after it started, and uvicorn runs without reload. The frontend container is the 2026-10-12 image; its served bundle contained the token dialog but none of C3's UI strings, so C3 is not deployed. That C1 is not deployed is inferred from the image date (C1 changes no visible text). The migration head is unchanged (`0019`); the real `mai` database gained owner-approved test and correction records (see Stage 0 C4). |
+| Branch | `main`. Nothing is pushed: on 2026-10-29, after Stage 7B L0 (`e1e8b55`), local `main` was 18 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording it adds one more. |
+| Latest migration | Committed head: `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020` and `0021` (security review H1; changing that needs a separate approved plan). |
+| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: unit **L0 completed** (`e1e8b55`); the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
+| Uncommitted work (2026-10-29) | Only the untracked `MAi branding .png`. Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. What is running was last checked on 2026-10-16 (see Stage 0 C5): `mai-backend` started 2026-10-14 09:48 UTC and was still unchanged on 2026-10-29 (same ID and start time, 0 restarts). |
 
 ### Uncommitted / in progress (NOT completed)
 
@@ -39,206 +39,6 @@ These are in the working tree and are **not** part of any completed stage. Do
 not commit them as part of other work, and do not describe them as done.
 
 - **`MAi branding .png`** at the repository root: untracked.
-- **Stage 7B L0: tenant-scope foundation (implemented 2026-10-28;
-  uncommitted, NOT completed).** Approved by the owner as the first unit of
-  Stage 7B (Multi-Tenant Isolation & Permissions; named 7B to avoid the
-  existing "Stages 2A-3A"). Planned from the Stage 7B Phase 1 audit (given
-  in the session, not in the repository).
-  - **What:** `app/identity/scope.py` `KnowledgeScope` -- frozen, validated
-    (UUIDs only, no nil UUID, personal != organisation id, shared ==
-    organisation id), to be made only through `KnowledgeScope.personal` /
-    `.organisation` from a `Principal`. *(Corrected 2026-10-29: this entry
-    first said "derived only from an authenticated Principal". The code does
-    not enforce that -- the constructor is public, `dataclasses.replace`
-    works, and `Principal` is a plain dataclass anyone can construct -- so
-    it is a repository rule, now checked by AST (review M1, below), not an
-    unforgeable property.)* `write_columns()` refuses the reserved
-    organisation scope (personal is the only writable visibility). `app/database/models/scope.py`
-    `KnowledgeScopeColumns` adds nullable `organisation_id`, `scope_id`
-    (indexed) and `scope_visibility` to ten tables -- `conversations`,
-    `memories`, `entities`, `entity_aliases`, `relationships`,
-    `knowledge_conflicts`, `reminders`, `executions`, `workflows`,
-    `imported_archives` -- with one NULL-safe CHECK each
-    (`ck_<table>_knowledge_scope_valid`). **No default, no server default,
-    no foreign key, not NOT NULL**, and nothing writes or filters on a scope:
-    no behaviour change, no employee access, no shared-memory writes.
-  - **Migration `0021_knowledge_scope.py`** (down 0020): adds the columns,
-    CHECKs and indexes (SQLite: column-level CHECK as in 0017, no table
-    rebuild). **Backfill:** `organisation_id` = the default organisation on
-    every existing row; **no scope is backfilled** -- legacy rows stay
-    unattributed, because pre-7A Telegram content may not be the Admin's and
-    the Telegram conversation cannot be identified without reading
-    configuration. Refuses if the default organisation is missing.
-    **Downgrade** refuses, changing nothing, if any row has a scope or
-    belongs to another organisation; otherwise it drops only the
-    reproducible backfill. The global unique indexes are unchanged (scoped
-    uniqueness needs NOT NULL scopes first).
-  - **Migration pins centralised:** `tests/security/approved_migrations.py`
-    lists every migration; the five per-stage pins (6J, 6K, 6L, 6M.2, 6M.4)
-    keep their windows and exactness against it, and the new
-    `test_approved_migrations.py` requires the whole directory to equal the
-    list and the revision chain to be linear (stricter than before).
-  - **Verification actually performed (SQLite, 2026-10-28):**
-    - focused L0 and pin tests: 176 passed, 1 skipped (PostgreSQL chain);
-    - full suite ordered: **7029 passed, 28 skipped, 1 xfailed, 0 failed**;
-      shuffled (scratch `mai_shuffle` plugin, seed 1611307884, reordering
-      confirmed): **7029 passed, 28 skipped, 1 xfailed, 0 failed**.
-      `tests/security/test_secrets.py` excluded (it would read
-      `backend/.env`); all 28 skips are PostgreSQL-gated;
-    - mutation harness (scratch copy of `backend/`, every file restored byte
-      for byte): two controls survived; eight mutants killed -- no downgrade
-      refusal, no organisation backfill, no default-organisation check, a
-      default on a scope column, the CHECK without its NOT NULL guard, the
-      organisation scope writable, a personal scope equal to the
-      organisation id, an unlisted migration.
-  - **PostgreSQL verification (2026-10-28; prior scratch evidence, not a
-    repository test).** Owner-approved disposable container: the existing
-    `postgres:16-alpine` image (PostgreSQL 16.15), `--rm`, tmpfs data,
-    published on `127.0.0.1:55432` only, label `mai.purpose=pgtest`, a
-    restricted `mai_tester` role (LOGIN CREATEDB, not superuser), fresh
-    credentials in mode-600 scratch files. Results:
-    - the existing `tests/test_identity_migration_pg.py`: **5 passed** (its
-      0019 -> head round trip now passes through `0021`, on empty tables);
-    - a scratch runner (repository migrations through the `alembic`
-      subprocess, real model metadata, one throwaway database per case,
-      synthetic rows in all ten tables): **12 of 12 passed** -- upgrade
-      0020 -> 0021; exactly the scope columns, CHECKs and non-unique indexes
-      added, nothing removed; the CHECK matrix (10 cases x 10 tables); every
-      row preserved; organisation-only backfill; refusal without the default
-      organisation with no partial change; a planted name collision at the
-      ninth table rolled back every table already altered; downgrade refused
-      for a scoped row (each table, plus an organisation-scoped row) and for
-      another organisation (each table), changing nothing; clean downgrade
-      to the exact 0020 schema and data; re-upgrade to the identical schema;
-      schema equal to the ORM's scope definitions.
-    - Teardown verified: container stopped by exact ID and removed, no
-      `pgtest` container left, port free, credentials and runner deleted;
-      `mai-db` and `mai-backend` unchanged (same IDs and start times, 0
-      restarts). Alembic's comparison also reported four differences
-      unrelated to `0021` (Known defect 12).
-  - **Independent security review (2026-10-28): APPROVE WITH CONDITIONS.**
-    No blocker. High: H1, the backend container's start-up `alembic upgrade
-    head` over the mounted working tree would apply `0021` to the real
-    database on any restart (operational; needs a separate owner decision,
-    not changed here). Medium: M1 (scope/principal construction not
-    enforced), M2 (no foreign keys binding a scope to a membership --
-    deferred to the enforcement migration), M3 (migration discovery missed
-    files not matching `0*.py`), M4 (no permanent PostgreSQL test). Low:
-    L1 (string-keyed scope writes not caught by the AST tripwire), L2
-    (`alembic upgrade --sql` fails at `0021`: `bind.execute()` returns
-    `None` offline), L3/L4 (SQLite-only representation and transactional
-    caveats), L5 (this entry overstated construction and omitted the
-    PostgreSQL results), L6 (post-`0021` rows have a NULL organisation).
-  - **Review remediation (2026-10-29; owner-approved scope: M1, M3, M4, L5,
-    Known defect 12).**
-    - **M1:** `tests/security/test_scope_construction_structure.py`. Outside
-      `app/identity/scope.py`, `KnowledgeScope` may be named only as a type,
-      a plain import, or the receiver of `.personal` / `.organisation`;
-      outside `app/identity/principal.py` and `app/identity/service.py`,
-      `Principal` only as a type or plain import. Anywhere in `app/`: no
-      `dataclasses.replace` / `copy.replace` / `__replace__`, `__new__`,
-      `__setattr__`, `__dict__` (except the log formatter) or `vars()`,
-      `type(x)(...)`, `x.__class__(...)`, re-run `x.__init__(...)` (only
-      `super()`), dynamic import of `dataclasses`/`copy`, or `getattr` of
-      those names. The checker is itself tested against 29 bypasses
-      (aliasing, rebinding, `partial`, subclassing, shadowing, string
-      lookup, star import, in-place re-init, ...) and 5 intended uses, and
-      each real construction site is shown to be refused if moved. Plus two
-      import-direction tests: the scope-columns module imports nothing from
-      `app`, and no model imports `app.identity.scope`. These are
-      repository rules, not unforgeability.
-    - **M3:** `tests/security/approved_migrations.py` now discovers every
-      file Alembic loads (every `*.py` except `__init__*` / `.#*`, checked
-      against Alembic's own pattern; the repository sets no `sourceless`,
-      `recursive_version_locations` or `version_locations`, checked), and
-      `chain_problems()` checks Alembic's own `ScriptDirectory`: one head
-      (`0021`), one base, a walk equal to the approved list, no merges,
-      branch labels or dependencies. Regression tests on a temporary copy
-      of the versions directory: a hex-named migration (which the old
-      `0*.py` glob missed) fails discovery, both pin windows and the graph;
-      reordered `down_revision`s, an unexpected revision id and a branch
-      fail the graph; an `__init__.py` is ignored. The five pins are
-      unchanged and now stricter through the shared discovery.
-    - **M4:** `tests/test_knowledge_scope_migration_pg.py`, gated on
-      `TEST_POSTGRES_URL` only (never `.env`, never the application URL,
-      no fallback). Fail-closed guard: not PostgreSQL, the `mai` database,
-      a name without "test" or not plain lower-case -> the tests **fail**,
-      not skip. Each test uses its own sibling database
-      (`<configured>_s0021_<random>`, needs `CREATEDB`), dropped afterwards.
-      Nine tests: the exact schema delta, row preservation and
-      organisation-only backfill, the CHECK matrix on all ten tables,
-      refusal without the default organisation, mid-migration rollback,
-      downgrade refusals (scoped / other organisation, every table), clean
-      downgrade and exact re-upgrade, ORM agreement (including Alembic's
-      comparison, restricted to scope objects). **Not run against
-      PostgreSQL** (no approved environment in this task).
-    - **L5:** this entry, `AGENTS.md` and the `app/identity/scope.py`
-      docstring corrected; PostgreSQL results recorded above.
-    - **Verification of the remediation (SQLite, 2026-10-29; no
-      PostgreSQL, no Docker):**
-      - focused (scope, construction, approved-migration, migration
-        compatibility, identity structure and the five pins): **245 tests,
-        230 passed, 15 skipped (all PostgreSQL-gated), 0 failed**;
-      - with `TEST_POSTGRES_URL` unset, the new module's 8 guard tests pass
-        and its 9 PostgreSQL tests skip; set to a URL naming `mai` (port 1,
-        nothing listening), all 9 **fail** at the guard before connecting;
-      - full suite on the final code, ordered: **7083 passed, 37 skipped,
-        1 xfailed, 0 failed** (7121 tests); shuffled (scratch `mai_shuffle`,
-        seed 319435001, reordering confirmed): the same counts.
-        `tests/security/test_secrets.py` excluded as before; all 37 skips
-        are PostgreSQL-gated. (+63 tests over L0: 38 construction, 8
-        approved-migration, 17 in the new PostgreSQL module.)
-  - **Closing L0 (2026-10-29, second session; the owner's autonomous
-    Stage 7B directive, which authorises disposable test databases and
-    local commits at verified milestones).**
-    - **L2:** `0021` now refuses offline (`--sql`) mode in both directions
-      with its own message ("0021 refused: offline ..."): both safety checks
-      read the database, and a generated script would silently skip them.
-      Before, it crashed with `AttributeError` on `bind.execute()` returning
-      None. Tests in `tests/test_migration_compatibility.py`: the refusal for
-      upgrade and downgrade (failed before the fix, pass after), and offline
-      rendering of `0019:0020` still works.
-    - **L1:** the "nothing writes a scope yet" tripwire
-      (`tests/security/test_knowledge_scope_structure.py`) now also flags any
-      string constant -- including f-string parts and raw SQL -- that names
-      `scope_id`, `scope_visibility` or `write_columns` as a whole word, so
-      `values(**{"scope_id": ...})`, `setattr(row, "scope_id", ...)`,
-      `table.c["scope_visibility"]`, `text("UPDATE ... SET scope_id ...")`
-      and `getattr(scope, "write_columns")` are caught. The checker is tested
-      on 10 bypasses and 4 innocent forms; a name assembled at run time
-      (`"scope" + "_id"`) remains out of reach of any static check.
-    - **M4, run live:** a disposable PostgreSQL 16.15 server (the local
-      `postgres:16-alpine` image, `--rm`, tmpfs data, `127.0.0.1:55432` only,
-      label `mai.purpose=pgtest`, a `mai_tester` role with LOGIN and
-      CREATEDB, not superuser; credentials generated into mode-600 scratch
-      files, never printed; absent from every test log, checked). All
-      PostgreSQL-gated modules: **72 passed, 0 skipped** -- the new
-      `test_knowledge_scope_migration_pg.py` (17), `test_identity_migration_pg.py`
-      (5), `test_identity_races_pg.py` (5), `test_monitor_races_pg.py` (17)
-      and `test_migration_compatibility.py` (28, including the PostgreSQL
-      chain test).
-    - **Full suite with PostgreSQL enabled** (`test_secrets.py` excluded as
-      before): ordered **7137 passed, 1 xfailed, 0 failed, 0 skipped**;
-      shuffled (scratch `mai_shuffle`, seed 1724165901) **7137 passed,
-      1 xfailed, 1 error**. The error was a *teardown* in
-      `test_monitor_races_pg.py::test_grants_are_released_on_completion_and_on_block`:
-      its `DROP DATABASE ... WITH (FORCE)` was refused ("permission denied to
-      terminate process"), because the restricted role may not terminate a
-      backend of another role -- most likely an autovacuum worker on the
-      throwaway database (inferred; not logged). The test itself passed.
-      Environment fix: `GRANT pg_signal_backend TO mai_tester` (still not
-      superuser); the PostgreSQL modules then passed twice more, shuffled
-      (seeds 1724165902 and 1724165903): 44 passed each. Recorded in
-      `AGENTS.md` section 7 as a test-server requirement.
-    - Teardown of the server is recorded in the checkpoint
-      (`docs/stage7b_progress.md`).
-  - **Not done / outstanding:** H1 (start-up migration over the mounted
-    tree) needs a separate plan and the owner's approval; M2 belongs to the
-    enforcement migration. **Decisions needed:** how unattributed legacy rows
-    are attributed or quarantined (the directive's policy: ambiguous
-    historical data stays quarantined until safely classified; a quarantine
-    marker would be a schema change); whether rows created after `0021` but
-    before the scoped services land are attributed the same way.
 - **Multi-agent pilot leftovers (2026-10-19/20), under the gitignored
   `.claude/worktrees/`.** *(Resolved 2026-10-20: removed with the owner's
   approval and verified -- only the main worktree remained, both branches
@@ -533,6 +333,209 @@ not commit them as part of other work, and do not describe them as done.
 ---
 
 ## Completed (newest first)
+
+### Stage 7B L0: tenant-scope foundation (`e1e8b55`, 2026-10-29)
+
+- **Status:** completed (a Stage 7B unit, not the whole stage). Implemented
+  2026-10-28, remediated and committed 2026-10-29. Approved by the owner as
+  the first unit of Stage 7B (Multi-Tenant Isolation & Permissions; named 7B
+  to avoid the existing "Stages 2A-3A"). Planned from the Stage 7B Phase 1
+  audit (given in the session, not in the repository).
+- **What:** `app/identity/scope.py` `KnowledgeScope` -- frozen, validated
+  (UUIDs only, no nil UUID, personal != organisation id, shared ==
+  organisation id), to be made only through `KnowledgeScope.personal` /
+  `.organisation` from a `Principal`. *(Corrected 2026-10-29: this entry
+  first said "derived only from an authenticated Principal". The code does
+  not enforce that -- the constructor is public, `dataclasses.replace`
+  works, and `Principal` is a plain dataclass anyone can construct -- so
+  it is a repository rule, now checked by AST (review M1, below), not an
+  unforgeable property.)* `write_columns()` refuses the reserved
+  organisation scope (personal is the only writable visibility). `app/database/models/scope.py`
+  `KnowledgeScopeColumns` adds nullable `organisation_id`, `scope_id`
+  (indexed) and `scope_visibility` to ten tables -- `conversations`,
+  `memories`, `entities`, `entity_aliases`, `relationships`,
+  `knowledge_conflicts`, `reminders`, `executions`, `workflows`,
+  `imported_archives` -- with one NULL-safe CHECK each
+  (`ck_<table>_knowledge_scope_valid`). **No default, no server default,
+  no foreign key, not NOT NULL**, and nothing writes or filters on a scope:
+  no behaviour change, no employee access, no shared-memory writes.
+- **Migration `0021_knowledge_scope.py`** (down 0020): adds the columns,
+  CHECKs and indexes (SQLite: column-level CHECK as in 0017, no table
+  rebuild). **Backfill:** `organisation_id` = the default organisation on
+  every existing row; **no scope is backfilled** -- legacy rows stay
+  unattributed, because pre-7A Telegram content may not be the Admin's and
+  the Telegram conversation cannot be identified without reading
+  configuration. Refuses if the default organisation is missing.
+  **Downgrade** refuses, changing nothing, if any row has a scope or
+  belongs to another organisation; otherwise it drops only the
+  reproducible backfill. The global unique indexes are unchanged (scoped
+  uniqueness needs NOT NULL scopes first).
+- **Migration pins centralised:** `tests/security/approved_migrations.py`
+  lists every migration; the five per-stage pins (6J, 6K, 6L, 6M.2, 6M.4)
+  keep their windows and exactness against it, and the new
+  `test_approved_migrations.py` requires the whole directory to equal the
+  list and the revision chain to be linear (stricter than before).
+- **Verification actually performed (SQLite, 2026-10-28):**
+  - focused L0 and pin tests: 176 passed, 1 skipped (PostgreSQL chain);
+  - full suite ordered: **7029 passed, 28 skipped, 1 xfailed, 0 failed**;
+    shuffled (scratch `mai_shuffle` plugin, seed 1611307884, reordering
+    confirmed): **7029 passed, 28 skipped, 1 xfailed, 0 failed**.
+    `tests/security/test_secrets.py` excluded (it would read
+    `backend/.env`); all 28 skips are PostgreSQL-gated;
+  - mutation harness (scratch copy of `backend/`, every file restored byte
+    for byte): two controls survived; eight mutants killed -- no downgrade
+    refusal, no organisation backfill, no default-organisation check, a
+    default on a scope column, the CHECK without its NOT NULL guard, the
+    organisation scope writable, a personal scope equal to the
+    organisation id, an unlisted migration.
+- **PostgreSQL verification (2026-10-28; prior scratch evidence, not a
+  repository test).** Owner-approved disposable container: the existing
+  `postgres:16-alpine` image (PostgreSQL 16.15), `--rm`, tmpfs data,
+  published on `127.0.0.1:55432` only, label `mai.purpose=pgtest`, a
+  restricted `mai_tester` role (LOGIN CREATEDB, not superuser), fresh
+  credentials in mode-600 scratch files. Results:
+  - the existing `tests/test_identity_migration_pg.py`: **5 passed** (its
+    0019 -> head round trip now passes through `0021`, on empty tables);
+  - a scratch runner (repository migrations through the `alembic`
+    subprocess, real model metadata, one throwaway database per case,
+    synthetic rows in all ten tables): **12 of 12 passed** -- upgrade
+    0020 -> 0021; exactly the scope columns, CHECKs and non-unique indexes
+    added, nothing removed; the CHECK matrix (10 cases x 10 tables); every
+    row preserved; organisation-only backfill; refusal without the default
+    organisation with no partial change; a planted name collision at the
+    ninth table rolled back every table already altered; downgrade refused
+    for a scoped row (each table, plus an organisation-scoped row) and for
+    another organisation (each table), changing nothing; clean downgrade
+    to the exact 0020 schema and data; re-upgrade to the identical schema;
+    schema equal to the ORM's scope definitions.
+  - Teardown verified: container stopped by exact ID and removed, no
+    `pgtest` container left, port free, credentials and runner deleted;
+    `mai-db` and `mai-backend` unchanged (same IDs and start times, 0
+    restarts). Alembic's comparison also reported four differences
+    unrelated to `0021` (Known defect 12).
+- **Independent security review (2026-10-28): APPROVE WITH CONDITIONS.**
+  No blocker. High: H1, the backend container's start-up `alembic upgrade
+  head` over the mounted working tree would apply `0021` to the real
+  database on any restart (operational; needs a separate owner decision,
+  not changed here). Medium: M1 (scope/principal construction not
+  enforced), M2 (no foreign keys binding a scope to a membership --
+  deferred to the enforcement migration), M3 (migration discovery missed
+  files not matching `0*.py`), M4 (no permanent PostgreSQL test). Low:
+  L1 (string-keyed scope writes not caught by the AST tripwire), L2
+  (`alembic upgrade --sql` fails at `0021`: `bind.execute()` returns
+  `None` offline), L3/L4 (SQLite-only representation and transactional
+  caveats), L5 (this entry overstated construction and omitted the
+  PostgreSQL results), L6 (post-`0021` rows have a NULL organisation).
+- **Review remediation (2026-10-29; owner-approved scope: M1, M3, M4, L5,
+  Known defect 12).**
+  - **M1:** `tests/security/test_scope_construction_structure.py`. Outside
+    `app/identity/scope.py`, `KnowledgeScope` may be named only as a type,
+    a plain import, or the receiver of `.personal` / `.organisation`;
+    outside `app/identity/principal.py` and `app/identity/service.py`,
+    `Principal` only as a type or plain import. Anywhere in `app/`: no
+    `dataclasses.replace` / `copy.replace` / `__replace__`, `__new__`,
+    `__setattr__`, `__dict__` (except the log formatter) or `vars()`,
+    `type(x)(...)`, `x.__class__(...)`, re-run `x.__init__(...)` (only
+    `super()`), dynamic import of `dataclasses`/`copy`, or `getattr` of
+    those names. The checker is itself tested against 29 bypasses
+    (aliasing, rebinding, `partial`, subclassing, shadowing, string
+    lookup, star import, in-place re-init, ...) and 5 intended uses, and
+    each real construction site is shown to be refused if moved. Plus two
+    import-direction tests: the scope-columns module imports nothing from
+    `app`, and no model imports `app.identity.scope`. These are
+    repository rules, not unforgeability.
+  - **M3:** `tests/security/approved_migrations.py` now discovers every
+    file Alembic loads (every `*.py` except `__init__*` / `.#*`, checked
+    against Alembic's own pattern; the repository sets no `sourceless`,
+    `recursive_version_locations` or `version_locations`, checked), and
+    `chain_problems()` checks Alembic's own `ScriptDirectory`: one head
+    (`0021`), one base, a walk equal to the approved list, no merges,
+    branch labels or dependencies. Regression tests on a temporary copy
+    of the versions directory: a hex-named migration (which the old
+    `0*.py` glob missed) fails discovery, both pin windows and the graph;
+    reordered `down_revision`s, an unexpected revision id and a branch
+    fail the graph; an `__init__.py` is ignored. The five pins are
+    unchanged and now stricter through the shared discovery.
+  - **M4:** `tests/test_knowledge_scope_migration_pg.py`, gated on
+    `TEST_POSTGRES_URL` only (never `.env`, never the application URL,
+    no fallback). Fail-closed guard: not PostgreSQL, the `mai` database,
+    a name without "test" or not plain lower-case -> the tests **fail**,
+    not skip. Each test uses its own sibling database
+    (`<configured>_s0021_<random>`, needs `CREATEDB`), dropped afterwards.
+    Nine tests: the exact schema delta, row preservation and
+    organisation-only backfill, the CHECK matrix on all ten tables,
+    refusal without the default organisation, mid-migration rollback,
+    downgrade refusals (scoped / other organisation, every table), clean
+    downgrade and exact re-upgrade, ORM agreement (including Alembic's
+    comparison, restricted to scope objects). **Not run against
+    PostgreSQL** (no approved environment in this task).
+  - **L5:** this entry, `AGENTS.md` and the `app/identity/scope.py`
+    docstring corrected; PostgreSQL results recorded above.
+  - **Verification of the remediation (SQLite, 2026-10-29; no
+    PostgreSQL, no Docker):**
+    - focused (scope, construction, approved-migration, migration
+      compatibility, identity structure and the five pins): **245 tests,
+      230 passed, 15 skipped (all PostgreSQL-gated), 0 failed**;
+    - with `TEST_POSTGRES_URL` unset, the new module's 8 guard tests pass
+      and its 9 PostgreSQL tests skip; set to a URL naming `mai` (port 1,
+      nothing listening), all 9 **fail** at the guard before connecting;
+    - full suite on the final code, ordered: **7083 passed, 37 skipped,
+      1 xfailed, 0 failed** (7121 tests); shuffled (scratch `mai_shuffle`,
+      seed 319435001, reordering confirmed): the same counts.
+      `tests/security/test_secrets.py` excluded as before; all 37 skips
+      are PostgreSQL-gated. (+63 tests over L0: 38 construction, 8
+      approved-migration, 17 in the new PostgreSQL module.)
+- **Closing L0 (2026-10-29, second session; the owner's autonomous
+  Stage 7B directive, which authorises disposable test databases and
+  local commits at verified milestones).**
+  - **L2:** `0021` now refuses offline (`--sql`) mode in both directions
+    with its own message ("0021 refused: offline ..."): both safety checks
+    read the database, and a generated script would silently skip them.
+    Before, it crashed with `AttributeError` on `bind.execute()` returning
+    None. Tests in `tests/test_migration_compatibility.py`: the refusal for
+    upgrade and downgrade (failed before the fix, pass after), and offline
+    rendering of `0019:0020` still works.
+  - **L1:** the "nothing writes a scope yet" tripwire
+    (`tests/security/test_knowledge_scope_structure.py`) now also flags any
+    string constant -- including f-string parts and raw SQL -- that names
+    `scope_id`, `scope_visibility` or `write_columns` as a whole word, so
+    `values(**{"scope_id": ...})`, `setattr(row, "scope_id", ...)`,
+    `table.c["scope_visibility"]`, `text("UPDATE ... SET scope_id ...")`
+    and `getattr(scope, "write_columns")` are caught. The checker is tested
+    on 10 bypasses and 4 innocent forms; a name assembled at run time
+    (`"scope" + "_id"`) remains out of reach of any static check.
+  - **M4, run live:** a disposable PostgreSQL 16.15 server (the local
+    `postgres:16-alpine` image, `--rm`, tmpfs data, `127.0.0.1:55432` only,
+    label `mai.purpose=pgtest`, a `mai_tester` role with LOGIN and
+    CREATEDB, not superuser; credentials generated into mode-600 scratch
+    files, never printed; absent from every test log, checked). All
+    PostgreSQL-gated modules: **72 passed, 0 skipped** -- the new
+    `test_knowledge_scope_migration_pg.py` (17), `test_identity_migration_pg.py`
+    (5), `test_identity_races_pg.py` (5), `test_monitor_races_pg.py` (17)
+    and `test_migration_compatibility.py` (28, including the PostgreSQL
+    chain test).
+  - **Full suite with PostgreSQL enabled** (`test_secrets.py` excluded as
+    before): ordered **7137 passed, 1 xfailed, 0 failed, 0 skipped**;
+    shuffled (scratch `mai_shuffle`, seed 1724165901) **7137 passed,
+    1 xfailed, 1 error**. The error was a *teardown* in
+    `test_monitor_races_pg.py::test_grants_are_released_on_completion_and_on_block`:
+    its `DROP DATABASE ... WITH (FORCE)` was refused ("permission denied to
+    terminate process"), because the restricted role may not terminate a
+    backend of another role -- most likely an autovacuum worker on the
+    throwaway database (inferred; not logged). The test itself passed.
+    Environment fix: `GRANT pg_signal_backend TO mai_tester` (still not
+    superuser); the PostgreSQL modules then passed twice more, shuffled
+    (seeds 1724165902 and 1724165903): 44 passed each. Recorded in
+    `AGENTS.md` section 7 as a test-server requirement.
+  - Teardown of the server is recorded in the checkpoint
+    (`docs/stage7b_progress.md`).
+- **Not done / outstanding:** H1 (start-up migration over the mounted
+  tree) needs a separate plan and the owner's approval; M2 belongs to the
+  enforcement migration. **Decisions needed:** how unattributed legacy rows
+  are attributed or quarantined (the directive's policy: ambiguous
+  historical data stays quarantined until safely classified; a quarantine
+  marker would be a schema change); whether rows created after `0021` but
+  before the scoped services land are attributed the same way.
 
 ### Stage 7A: Organisation & User Identity (`8f3ef2f`, 2026-10-26)
 
