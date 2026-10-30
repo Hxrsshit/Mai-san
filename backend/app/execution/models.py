@@ -41,6 +41,7 @@ from app.database.models.scope import (
     KnowledgeScopeColumns,
     knowledge_scope_check,
     scoped_unique_indexes,
+    same_scope_reference,
 )
 from app.execution.states import ExecutionState
 from app.tools.schemas import AuthorizationStatus, RiskLevel
@@ -222,6 +223,9 @@ class Execution(Base, KnowledgeScopeColumns):
             name="completed_requires_timestamp",
         ),
         knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_reference("executions", "conversation_id", "conversations"),
+        same_scope_reference("executions", "workflow_id", "workflows"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

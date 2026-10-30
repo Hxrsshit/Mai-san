@@ -27,6 +27,8 @@ from app.database.models.scope import (
     KnowledgeScopeColumns,
     knowledge_scope_check,
     scoped_unique_indexes,
+    same_scope_parent_key,
+    same_scope_reference,
 )
 
 
@@ -94,6 +96,9 @@ class Entity(Base, KnowledgeScopeColumns):
 
     aliases: Mapped[List["EntityAlias"]] = relationship(
         back_populates="entity",
+        # The id column alone: since Stage 7B unit 10 a second, composite
+        # foreign key (same scope) also joins the two tables.
+        foreign_keys="EntityAlias.entity_id",
         cascade="all, delete-orphan",
         passive_deletes=True,
         lazy="selectin",
@@ -109,6 +114,8 @@ class Entity(Base, KnowledgeScopeColumns):
         Index("ix_entities_entity_type", "entity_type"),
         Index("ix_entities_status_created_at", "status", "created_at"),
         knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_parent_key("entities"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
@@ -136,7 +143,9 @@ class EntityAlias(Base, KnowledgeScopeColumns):
         server_default=func.now(),
     )
 
-    entity: Mapped["Entity"] = relationship(back_populates="aliases")
+    entity: Mapped["Entity"] = relationship(
+        back_populates="aliases", foreign_keys="EntityAlias.entity_id"
+    )
 
     __table_args__ = (
         # Unique within a scope: an alias that points at two entities makes
@@ -145,6 +154,8 @@ class EntityAlias(Base, KnowledgeScopeColumns):
         *scoped_unique_indexes("entity_aliases", "normalized_alias", "normalized_alias"),
         Index("ix_entity_aliases_entity_id", "entity_id"),
         knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_reference("entity_aliases", "entity_id", "entities"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

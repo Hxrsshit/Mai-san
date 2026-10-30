@@ -220,7 +220,9 @@ def test_there_is_no_http_endpoint_that_creates_a_reminder() -> None:
 
 @pytest.fixture
 async def conversation(db_session):
-    db_session.add(Conversation(id=CONVERSATION, title="test"))
+    # In the Admin's scope: since Stage 7B unit 10 a scoped reminder can
+    # reference only a conversation of its own scope (migration 0025).
+    db_session.add(Conversation(id=CONVERSATION, title="test", **ADMIN_SCOPE.write_columns()))
     await db_session.flush()
     await db_session.commit()
 

@@ -900,7 +900,7 @@ def test_0024_makes_the_archive_digest_per_scope_and_downgrades_safely(legacy_at
     from sqlalchemy.exc import IntegrityError
 
     url, database = legacy_at_0020
-    alembic(url, "head")
+    alembic(url, "0024")
     names = _index_names(database, "imported_archives")
     assert {"uq_imported_archives_scoped_source_sha256",
             "uq_imported_archives_legacy_source_sha256"} <= names
@@ -924,3 +924,40 @@ def test_0024_refuses_an_offline_downgrade_and_renders_its_upgrade() -> None:
     rendered = alembic_attempt(OFFLINE_URL, "upgrade", "0023:0024", "--sql")
     assert rendered.returncode == 0, rendered.stderr
     assert "uq_imported_archives_scoped_source_sha256" in rendered.stdout
+
+
+# --- Stage 7B unit 10: same-scope references (0025) ------------------------------
+
+
+def test_0025_refuses_a_reference_across_scopes_and_changes_nothing(legacy_at_0020) -> None:
+    """The precondition runs on every dialect (the constraints themselves are
+    PostgreSQL's; see the gated PostgreSQL tests)."""
+    url, database = legacy_at_0020
+    alembic(url, "0024")
+    conversation = _scalar(database, "SELECT id FROM conversations LIMIT 1")
+    _execute(database, "UPDATE conversations SET scope_id = :member, scope_visibility = 'personal'",
+             {"member": COLLEAGUE_MEMBER_HEX})
+    _execute(database, "UPDATE memories SET scope_id = :member, scope_visibility = 'personal', "
+                       "source_conversation_id = :conversation",
+             {"member": ADMIN_MEMBER_HEX, "conversation": conversation})
+    result = alembic_attempt(url, "upgrade", "head")
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "0025 refused" in output and "memories.source_conversation_id: 1" in output
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0024"
+
+
+def test_0025_upgrades_and_downgrades_on_clean_data(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    alembic(url, "head")
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0025"
+    assert alembic_attempt(url, "downgrade", "0024").returncode == 0
+    alembic(url, "head")
+
+
+def test_0025_refuses_an_offline_upgrade_and_renders_its_downgrade() -> None:
+    refused = alembic_attempt(OFFLINE_URL, "upgrade", "0024:0025", "--sql")
+    assert refused.returncode != 0 and "0025 refused: offline" in refused.stdout + refused.stderr
+    rendered = alembic_attempt(OFFLINE_URL, "downgrade", "0025:0024", "--sql")
+    assert rendered.returncode == 0, rendered.stderr
+    assert "fk_memories_source_conversation_id_same_scope" in rendered.stdout

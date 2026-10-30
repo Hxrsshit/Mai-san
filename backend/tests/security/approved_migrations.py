@@ -48,6 +48,7 @@ APPROVED_MIGRATIONS = (
     "0022_scoped_uniqueness.py",        # Stage 7B units 5-6
     "0023_scoped_execution_idempotency.py",  # Stage 7B unit 8b
     "0024_scoped_archive_digest.py",    # Stage 7B unit 9
+    "0025_same_scope_references.py",    # Stage 7B unit 10
 )
 
 

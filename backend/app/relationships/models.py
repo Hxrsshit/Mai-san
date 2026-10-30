@@ -25,7 +25,12 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.models.base import Base, utcnow
-from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    same_scope_parent_key,
+    same_scope_reference,
+)
 
 
 def _enum_values(enum_cls) -> list:
@@ -147,6 +152,10 @@ class Relationship(Base, KnowledgeScopeColumns):
             name="confidence_score_range",
         ),
         knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_parent_key("relationships"),
+        same_scope_reference("relationships", "source_entity_id", "entities"),
+        same_scope_reference("relationships", "target_entity_id", "entities"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

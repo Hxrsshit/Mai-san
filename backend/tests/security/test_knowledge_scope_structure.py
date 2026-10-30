@@ -78,7 +78,13 @@ def test_scope_columns_are_nullable_with_no_default(table_name) -> None:
         assert column.nullable, (table_name, name)
         assert column.default is None, (table_name, name)
         assert column.server_default is None, (table_name, name)
-        assert not column.foreign_keys, (table_name, name)   # enforcement is a later migration
+        # Since unit 10 (migration 0025) a scope column takes part only in
+        # the reviewed same-scope composite keys, and only to the same column
+        # of the parent: never a key from a scope to a membership (deferred,
+        # design 6a) or anything else.
+        for key in column.foreign_keys:
+            assert str(key.constraint.name).endswith("_same_scope"), (table_name, name, key)
+            assert key.column.name == name, (table_name, name, key)
     checks = [c for c in table.constraints if isinstance(c, CheckConstraint)
               and c.name == f"ck_{table_name}_knowledge_scope_valid"]
     assert len(checks) == 1 and str(checks[0].sqltext) == KNOWLEDGE_SCOPE_CHECK_SQL
@@ -113,7 +119,8 @@ def test_no_scoped_table_keeps_a_global_unique_index() -> None:
             if index.unique and index.dialect_options["postgresql"]["where"] is None:
                 offenders.append((table.name, index.name))
         for constraint in table.constraints:
-            if constraint.__class__.__name__ == "UniqueConstraint":
+            if (constraint.__class__.__name__ == "UniqueConstraint"
+                    and "scope_id" not in constraint.columns.keys()):
                 offenders.append((table.name, constraint.name))
     assert sorted(set(offenders) - ROW_KEYED_UNIQUES) == [] and GLOBAL_UNIQUES == {}
     assert ROW_KEYED_UNIQUES <= set(offenders), "a reviewed exception no longer exists"
@@ -693,3 +700,45 @@ def test_the_resolver_is_never_written_outside_its_module() -> None:
 ])
 def test_the_narrowed_exemptions(source, flagged) -> None:
     assert bool(_unbound_knowledge_statements(source, "execution/dispatcher.py")) is flagged
+
+
+# --- Unit 10: every same-scope reference is relational ---------------------------
+
+
+def _migration_0025():
+    path = BACKEND / "alembic" / "versions" / "0025_same_scope_references.py"
+    spec = importlib.util.spec_from_file_location("migration_0025", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_every_reference_between_scoped_tables_has_a_same_scope_key() -> None:
+    """A new foreign key from a scoped table to a scoped parent without its
+    composite same-scope twin would let a row point across scopes. Every one
+    has it, the parent has `uq_<table>_id_scope`, and the models and
+    migration 0025 name exactly the same references and parents."""
+    from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
+
+    references, twins, parents = set(), set(), set()
+    for table in Base.metadata.sorted_tables:
+        if "scope_id" not in table.c:
+            continue
+        for constraint in table.constraints:
+            if isinstance(constraint, UniqueConstraint) and str(constraint.name) == f"uq_{table.name}_id_scope":
+                parents.add(table.name)
+            if not isinstance(constraint, ForeignKeyConstraint):
+                continue
+            referred = constraint.referred_table
+            if "scope_id" not in referred.c:
+                continue
+            columns = constraint.columns.keys()
+            if str(constraint.name).endswith("_same_scope"):
+                assert columns[1:] == ["organisation_id", "scope_id"], constraint.name
+                twins.add((table.name, columns[0], referred.name))
+            else:
+                references.add((table.name, columns[0], referred.name))
+    assert references == twins, sorted(references ^ twins)
+    migration = _migration_0025()
+    assert twins == set(migration.REFERENCES)
+    assert parents == set(migration.PARENTS) == {p for _t, _c, p in twins}

@@ -29,7 +29,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.database.models.base import Base
-from app.database.models.scope import KnowledgeScopeColumns, knowledge_scope_check
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    same_scope_parent_key,
+    same_scope_reference,
+)
 from app.workflows.states import WorkflowState
 
 #: `jsonb` on PostgreSQL, `json` on SQLite. The same choice Stage 4E made.
@@ -130,6 +135,9 @@ class Workflow(Base, KnowledgeScopeColumns):
         ),
         Index("ix_workflows_created_at", "created_at"),
         knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_parent_key("workflows"),
+        same_scope_reference("workflows", "conversation_id", "conversations"),
     )
 
     def __repr__(self) -> str:

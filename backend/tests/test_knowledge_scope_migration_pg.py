@@ -54,6 +54,8 @@ SCOPED_TABLES = (
 SCOPE_COLUMNS = ("organisation_id", "scope_id", "scope_visibility")
 #: Migration 0022's per-scope unique indexes (the legacy partial ones carry no
 #: "scope" in their name). table -> (name stem, key columns).
+#: Migration 0025's parent keys (unique constraints, so not in `table.indexes`).
+SAME_SCOPE_PARENTS = ("conversations", "entities", "memories", "relationships", "workflows")
 SCOPED_UNIQUE_STEMS = {
     "memories": ("type_normalized_content", ("memory_type", "normalized_content")),
     "entities": ("normalized_name", ("normalized_name",)),
@@ -524,7 +526,8 @@ async def test_the_migrated_scope_schema_is_the_models_scope_schema() -> None:
                 assert declared == ("uuid" if kind == "uuid" else f"varchar({length})"), (table_name, name)
                 assert (nullable == "YES") is bool(model.nullable), (table_name, name)
                 assert default is None and model.server_default is None and model.default is None
-                assert not model.foreign_keys
+                assert all(str(k.constraint.name).endswith("_same_scope") and k.column.name == name
+                           for k in model.foreign_keys)            # migration 0025 only
             checks = [c for c in table.constraints if isinstance(c, CheckConstraint)
                       and str(c.name).endswith("knowledge_scope_valid")]
             assert [str(c.sqltext) for c in checks] == [KNOWLEDGE_SCOPE_CHECK_SQL]
@@ -542,6 +545,11 @@ async def test_the_migrated_scope_schema_is_the_models_scope_schema() -> None:
                 " WHERE ix.indrelid = CAST(:t AS regclass) AND i.relname LIKE '%scope%'"
                 " GROUP BY i.relname, ix.indisunique", {"t": table_name})}
             expected = {(f"ix_{table_name}_scope_id", ("scope_id",), False)}
+            if table_name in SAME_SCOPE_PARENTS:            # migration 0025
+                expected.add((f"uq_{table_name}_id_scope",
+                              tuple(sorted(("id", "organisation_id", "scope_id"))), True))
+                declared_indexes.add((f"uq_{table_name}_id_scope",
+                                      tuple(sorted(("id", "organisation_id", "scope_id"))), True))
             if table_name in SCOPED_UNIQUE_STEMS:          # migration 0022
                 stem, columns = SCOPED_UNIQUE_STEMS[table_name]
                 expected.add((f"uq_{table_name}_scoped_{stem}",

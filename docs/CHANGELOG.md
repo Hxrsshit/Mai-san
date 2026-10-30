@@ -29,8 +29,8 @@ before substantial work and updates it after completing work (see
 | Since 6M.1 | Fixes (not stages): the metadata registry registers the workflows models, `107d879` (Known defect 6 resolved); the owner committed the Telegram webhook, the frontend/branding work and the `conversations.py` `payload` fix in `e10b7ca` (Known defect 1 resolved); after 6P, the frontend authentication token flow, the commit titled `Fix frontend authentication token flow` (frontend and docs only); then the Stage 0 consolidation checkpoints (not stages), each committing work that had been uncommitted: C1 `fc80592`, C2 `30a1342`, C3 `7ac52b4`, C4 `4b8d407`, C5 `d4f8339` (documentation only); then the multi-agent workflow configuration, `5c7801c` (tooling and docs, no application code); then the tab accessibility fix, the commit titled `fix: link only the selected tab to its panel` (frontend only) |
 | Previous stages | 6P harden monitoring concurrency and truthfulness, the commit titled `Stage 6P: harden monitoring concurrency and truthfulness` (the commit that adds `docs/STAGE_6O_AUDIT.md`; Stage 6O was an inspection-only audit with no commit of its own); 6N confirmed Gmail monitoring, `94ea032`; 6M.4 authentication, `25bfb98`; 6M.3 automatic notification delivery, `1e2ddd2`; 6M.2 notification read API, `922dbbd`; 6M.1 durable notification delivery records, `87365aa`; 6L notification invocation boundary, `a0e16ae`; 6K notification delivery composition, `bb0ea41`; 6E test isolation fix (test only), `20468d3`; 6J Telegram notification adapter, `e6effdb`; Telegram foundation, `6626912`; 6I notification delivery boundary, `3e09853`; 6H durable task notifications, `b6d35ff` |
 | Branch | `main`. Nothing is pushed: on 2026-10-29, after Stage 7B L0 (`e1e8b55`), local `main` was 18 commits ahead of `origin/main` (`e10b7ca`) by the local remote-tracking ref, which was not refreshed (no fetch); the `docs:` commit recording it adds one more. |
-| Latest migration | Committed head: `0024_scoped_archive_digest.py` (Stage 7B unit 9), after `0023_scoped_execution_idempotency.py` (unit 8b) and `0022_scoped_uniqueness.py` (units 5-6); all per-scope unique indexes, verified on SQLite and disposable PostgreSQL 16 by `tests/test_scoped_uniqueness_migration_pg.py`. Before it, `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020` to `0024` (security review H1; changing that needs a separate approved plan). |
-| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (`1cb1e94`, scoped knowledge) **7** (`bbd77ff`, background membership gates) **8a** (`f9e22b1`, reminders) **8b** (`be95c42`, executions and workflows) and **9** (history imports; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
+| Latest migration | Committed head: `0025_same_scope_references.py` (Stage 7B unit 10; composite same-scope foreign keys, PostgreSQL), after `0024_scoped_archive_digest.py` (unit 9), `0023_scoped_execution_idempotency.py` (unit 8b) and `0022_scoped_uniqueness.py` (units 5-6); all per-scope unique indexes, verified on SQLite and disposable PostgreSQL 16 by `tests/test_scoped_uniqueness_migration_pg.py`. Before it, `0021_knowledge_scope.py` (Stage 7B L0, `e1e8b55`), verified on throwaway SQLite files and, on 2026-10-29, on a disposable PostgreSQL 16 server by the permanent gated tests (`tests/test_knowledge_scope_migration_pg.py`, 17 passed). `0020`: verified on throwaway SQLite files and on disposable PostgreSQL (2026-10-21, and again 2026-10-29 by `tests/test_identity_migration_pg.py`). **The real `mai` database is still at `0019`** (as last recorded; not re-checked): the owner's backend container applied 0017 to 0019 at its startup on 2026-10-02; it runs `alembic upgrade head` at start-up and mounts `./backend` from the working tree, so restarting it now would apply `0020` to `0025` (security review H1; changing that needs a separate approved plan). |
+| Next stage | **Stage 7B (Multi-Tenant Isolation & Permissions)**, under the owner's autonomous directive of 2026-10-29: units **L0** (`e1e8b55`), **4** (`6ecb048`, scoped conversations) and **5-6** (`1cb1e94`, scoped knowledge) **7** (`bbd77ff`, background membership gates) **8a** (`f9e22b1`, reminders) **8b** (`be95c42`, executions and workflows) **9** (`a706a61`, history imports) and **10** (same-scope references; see Completed) completed; the remaining units and their status are tracked in `docs/stage7b_progress.md`. Stage 7A is completed (`8f3ef2f`). Member Telegram turns stay disabled. |
 | Uncommitted work (2026-10-29) | Only the untracked `MAi branding .png`. Stage 7A's four agents left four worktrees and branches (`worktree-agent-a31992d10364e0824`, `-ab1bb466a8cc75f7d`, `-abaa0ef6a0bf4bbc5`, `-ac85feb454bd0056a`, all at `b7b6680`) under the gitignored `.claude/worktrees/`; their work is all in `8f3ef2f`, and their removal awaits the owner's approval. What is running was last checked on 2026-10-16 (see Stage 0 C5): `mai-backend` started 2026-10-14 09:48 UTC and was still unchanged on 2026-10-29 (same ID and start time, 0 restarts). |
 
 ### Uncommitted / in progress (NOT completed)
@@ -334,7 +334,64 @@ not commit them as part of other work, and do not describe them as done.
 
 ## Completed (newest first)
 
-### Stage 7B unit 9: history imports belong to their importer; integration state stays the owner's (this commit, 2026-10-30)
+### Stage 7B unit 10: same-scope references enforced by the database (this commit, 2026-10-30)
+
+- **Status:** completed as decided in `docs/stage7b_ownership_design.md`
+  section 6a (`be2abac`). One migration (0025); no dependency change. **Not
+  applied to the real database.**
+- **What:**
+  - Every reference from a scoped row to a scoped parent (13 references:
+    memory -> conversation, alias -> entity, relationship -> both entities,
+    the five conflict links, reminder / workflow / execution ->
+    conversation, execution -> workflow) gains a composite foreign key
+    `(ref, organisation_id, scope_id) -> parent (id, organisation_id,
+    scope_id)` beside its existing key; the five parents gain `UNIQUE (id,
+    organisation_id, scope_id)` (`app.database.models.scope`:
+    `same_scope_parent_key`, `same_scope_reference`). The new keys have no
+    action, so the existing CASCADE / SET NULL behave as before and never
+    null a scope column; legacy rows (no scope) are unchecked. Verified
+    first on throwaway SQLite and disposable PostgreSQL.
+  - This also makes the deferred L3 of units 5-6 structural: an alias can no
+    longer point at another scope's entity.
+  - **Migration `0025_same_scope_references`:** refuses, changing nothing,
+    if any scoped row already references another scope's row or an
+    unattributed row (naming the reference and the count, never a row);
+    adds the constraints on PostgreSQL (SQLite, a test-only dialect whose
+    test schemas come from the models, runs the precondition only); offline
+    upgrade refused (its check reads the database); downgrade drops the
+    constraints (no data lost).
+  - `Entity.aliases` / `EntityAlias.entity` name their foreign key
+    explicitly (two keys now join the tables).
+- **Deferred, by decision (design 6a):** a foreign key from the scope to
+  the membership (L0's M2 -- an organisation-visibility row could never
+  satisfy it); NOT NULL on the scope columns (waits for the owner-approved
+  attribution of legacy rows).
+- **Tests:** gated PostgreSQL `tests/test_same_scope_references_pg.py` (6):
+  exactly the constraints are added and no row changes; a cross-scope
+  reference refuses the upgrade and changes nothing; the database refuses a
+  reference across scopes and from a scoped row to a legacy one, and
+  accepts same-scope and legacy references; CASCADE removes the child and
+  SET NULL keeps the child's scope; a clean downgrade restores 0024 and the
+  upgrade repeats; the ORM's constraints are the migrated ones. SQLite (3):
+  the precondition refusal, upgrade/downgrade, offline refusal. Structure:
+  scope columns may take part only in the `_same_scope` keys;
+  every reference between scoped tables has its same-scope twin, and the
+  models and migration 0025 name exactly the same references and parents
+  (mutation-checked: dropping the reminder's key fails it). One reminder fixture now creates its conversation in the
+  Admin's scope (the constraint refused the old unattributed one -- the
+  guarantee working).
+- **Verification (SQLite + disposable PostgreSQL 16, 2026-10-30):** full
+  suite ordered **7317 passed, 1 xfailed, 0 failed, 0 skipped**; shuffled
+  (seed 2290431175) **7317 passed, 1 xfailed, 0 failed**. The structure
+  test above was added after that run and was run on its own (passed).
+  `tests/security/test_secrets.py` excluded as before. (The run before it
+  failed one reminder security test on both passes: its fixture's
+  unattributed conversation was refused by the new constraint; the fixture
+  now creates it in the Admin's scope.)
+- **Independent review:** not run separately; in scope of unit 13's
+  end-to-end review.
+
+### Stage 7B unit 9: history imports belong to their importer; integration state stays the owner's (`a706a61`, 2026-10-30)
 
 - **Status:** completed (a Stage 7B unit). One migration (0024, below); no
   dependency change. **Not applied to the real database.**

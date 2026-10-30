@@ -26,7 +26,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 | 7 | Background membership gates, revocation races | **Completed** (see CHANGELOG, Stage 7B unit 7) | SQLite and live PostgreSQL (forced races), ordered and shuffled |
 | 8 | Ownership on reminders, executions, workflows, other revocable work | **Completed**: 8a reminders (`f9e22b1`), 8b executions and workflows (see CHANGELOG) | SQLite and live PostgreSQL (forced races), ordered and shuffled; security review M1-M3, L1-L6 |
 | 9 | Scope history imports, protect integration state | **Completed** (see CHANGELOG): imports scoped; history API and integration-backed tools stay owner-only by decision | SQLite and live PostgreSQL, ordered and shuffled |
-| 10 | Final non-null and relational enforcement migration | Not started | -- |
+| 10 | Final non-null and relational enforcement migration | **Completed** (see CHANGELOG): composite same-scope foreign keys (0025); membership key and NOT NULL deferred by decision (design 6a) | SQLite and live PostgreSQL, ordered and shuffled |
 | 11 | Telegram organisation binding, sender identity, mention/reply, learning | Not started. Member Telegram turns stay **disabled** until units 4-10 and their security tests pass | -- |
 | 12 | Provider configuration, secret protection, usage limits | Not started | -- |
 | 13 | End-to-end security, concurrency, migration, regression testing, independent review | Not started | -- |
@@ -77,7 +77,7 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
 ## Approval boundaries (stop here; never cross autonomously)
 
 - **H1:** the backend container runs `alembic upgrade head` on start-up over
-  the mounted working tree. Any restart applies `0020` to `0024` to the real
+  the mounted working tree. Any restart applies `0020` to `0025` to the real
   `mai` database (still at `0019`, as last recorded). Do not restart
   `mai-backend`. Changing the start-up behaviour, or migrating the real
   database, needs the owner's approval with a backup and rollback plan.
@@ -107,21 +107,20 @@ running tests or editing in `~/Mai` (`ps`, the peer session list).
   stays quarantined until safely classified. Unit 3 designs how (no scope =
   unattributed = never returned to a member until attributed).
 
+## Stopping point (owner instruction, 2026-10-30)
+
+Carry on with Stage 7B through unit 14, then stop and report: unit 14
+committed, CHANGELOG and this file updated, the disposable test PostgreSQL
+container removed, and a final report (commit hashes for units 10-14,
+verification results, every item awaiting the owner, final `git status`).
+No work after unit 14. The approval boundaries above are unchanged.
+
 ## Next action
 
-Unit 10: the final non-null and relational enforcement migration (design
-section 6) -- written and tested on disposable databases only:
+Unit 11: Telegram organisation binding, sender identity, mention/reply and
+learning. Member Telegram turns stay **disabled** until their security
+acceptance tests pass. Then units 12-14.
 
-- composite same-scope foreign keys (`UNIQUE (id, organisation_id,
-  scope_id)` on scoped parents; references carry the scope columns), which
-  also make the deferred L3 of units 5-6 structural (aliases and evidence
-  cannot point across scopes);
-- foreign keys from scope columns to memberships (L0's M2);
-- NOT NULL on the scope columns **only once legacy rows are attributed** --
-  which is an owner-approved data operation. Until then the migration must
-  keep NULL legal (quarantine) and refuse to run if it finds orphans.
-- The migration's preconditions (orphan checks, refusal messages, downgrade
-  refusals) as in 0021-0024; PostgreSQL forced-race and migration tests.
-
-Then units 11-14. Open items: per-member reminder fairness (unit 12);
-per-member import sources and integration connections (owner decisions).
+Open items: per-member reminder fairness (unit 12); the deferred membership
+foreign key and NOT NULL (design 6a); per-member import sources and
+integration connections (owner decisions).

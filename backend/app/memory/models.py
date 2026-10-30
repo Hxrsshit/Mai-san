@@ -30,6 +30,8 @@ from app.database.models.scope import (
     KnowledgeScopeColumns,
     knowledge_scope_check,
     scoped_unique_indexes,
+    same_scope_parent_key,
+    same_scope_reference,
 )
 
 
@@ -202,6 +204,9 @@ class Memory(Base, KnowledgeScopeColumns):
             "memories", "type_normalized_content", "memory_type", "normalized_content"
         ),
         knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_parent_key("memories"),
+        same_scope_reference("memories", "source_conversation_id", "conversations"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

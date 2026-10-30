@@ -29,7 +29,15 @@ later units will write from; its visibilities must equal
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional, Protocol, Tuple, runtime_checkable
 
-from sqlalchemy import CheckConstraint, Index, String, Uuid, text
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 #: The only visibilities a scoped row may carry.
@@ -82,6 +90,28 @@ def scoped_unique_indexes(table: str, stem: str, *columns: str) -> Tuple[Index, 
               sqlite_where=attributed, postgresql_where=attributed),
         Index(f"uq_{table}_legacy_{stem}", *columns, unique=True,
               sqlite_where=unattributed, postgresql_where=unattributed),
+    )
+
+
+def same_scope_parent_key(table: str) -> UniqueConstraint:
+    """`UNIQUE (id, organisation_id, scope_id)` on a scoped parent (Stage 7B
+    unit 10, migration 0025): what a same-scope reference points at."""
+    return UniqueConstraint("id", "organisation_id", "scope_id", name=f"uq_{table}_id_scope")
+
+
+def same_scope_reference(table: str, column: str, parent: str) -> ForeignKeyConstraint:
+    """A reference from a scoped row to a scoped parent of the *same* scope,
+    made relational (Stage 7B unit 10; design 6a).
+
+    Added beside the column's existing foreign key, which keeps its CASCADE /
+    SET NULL action: this one has none (NO ACTION, checked at the end of the
+    statement), so a SET NULL leaves the scope columns alone -- a composite
+    key with a NULL component is not checked (MATCH SIMPLE), and neither is a
+    legacy row with no scope."""
+    return ForeignKeyConstraint(
+        [column, "organisation_id", "scope_id"],
+        [f"{parent}.id", f"{parent}.organisation_id", f"{parent}.scope_id"],
+        name=f"fk_{table}_{column}_same_scope",
     )
 
 
@@ -155,6 +185,8 @@ async def resolve_member_scope(session, member_id: uuid.UUID) -> Optional["Scope
 
 
 __all__ = [
+    "same_scope_parent_key",
+    "same_scope_reference",
     "ScopeBinding",
     "register_member_scope_resolver",
     "require_binding",
