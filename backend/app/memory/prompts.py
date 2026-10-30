@@ -46,6 +46,14 @@ says "I might be interested in AI" and the assistant replies "You clearly want
 to be an AI entrepreneur", the only supportable memory is the user's own
 hedged interest -- or none at all.
 
+EARLIER CONTEXT, when present, shows what the user is responding to. A short
+user message is often an answer to the assistant's previous question: read it
+in that light. If the question was about someone or something other than the
+user -- an ideal partner, a friend, a product, a plan -- the user's answer
+describes that subject, and the memory must say so ("User's ideal partner is
+tall and wears glasses"), never attribute it to the user ("User is tall and
+wears glasses"). Facts still come only from the USER MESSAGE.
+
 MEMORY TYPES (use exactly one of these values):
 {MEMORY_TYPE_GUIDE}
 

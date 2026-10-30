@@ -74,3 +74,13 @@ credentials/
 imports/*
 !imports/.gitkeep
 mai_backup_before_cloud.dump
+
+# Claude Code: agent and --worktree checkouts, and per-machine settings.
+.claude/worktrees/
+.claude/settings.local.json
+
+# Without a trailing slash, so it also matches a node_modules symlink that the
+# lead creates inside a worktree (node_modules/ above matches directories only).
+node_modules
+# TypeScript incremental build state, written by `tsc --noEmit`.
+*.tsbuildinfo

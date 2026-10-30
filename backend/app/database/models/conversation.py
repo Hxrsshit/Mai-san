@@ -7,6 +7,11 @@ from sqlalchemy import String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.models.base import Base, TimestampMixin
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    same_scope_parent_key,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard for type checkers only
     from app.database.models.message import Message
@@ -14,8 +19,13 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard for type checkers onl
 DEFAULT_CONVERSATION_TITLE = "New conversation"
 
 
-class Conversation(Base, TimestampMixin):
+class Conversation(Base, TimestampMixin, KnowledgeScopeColumns):
     __tablename__ = "conversations"
+    __table_args__ = (
+        knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): what same-scope references point at.
+        same_scope_parent_key("conversations"),
+    )
 
     # `Uuid` is SQLAlchemy's portable UUID type: native UUID on PostgreSQL,
     # CHAR(32) elsewhere. Keeps the schema portable for a later cloud move.

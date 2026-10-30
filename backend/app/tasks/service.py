@@ -32,10 +32,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
@@ -76,6 +77,12 @@ from app.tasks.states import (
 logger = get_logger(__name__)
 
 _DB_ERRORS = (SQLAlchemyError, OSError)
+
+
+class _StaleState(Exception):
+    """Stage 6P. The row was no longer in the state this write was decided
+    from: someone else changed it first. Unwinds the savepoint; never a
+    persistence failure, and never turned into a success."""
 
 #: Most tasks returned by one listing.
 MAX_LISTED = 50
@@ -448,6 +455,23 @@ class TaskService:
 
         try:
             async with self._session.begin_nested():
+                # Stage 6P. Conditional on the row still being the planned,
+                # unauthorised task this decision was made about. A concurrent
+                # cancellation or authorisation makes it match nothing, and
+                # nothing below is written.
+                claimed = await self._session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task.id,
+                        Task.owner_id == self._owner_id,
+                        Task.state == TaskState.PLANNED,
+                        Task.authorized_at.is_(None),
+                    )
+                    .values(authorized_at=now, state=target, updated_at=now)
+                    .execution_options(synchronize_session=False)
+                )
+                if claimed.rowcount != 1:
+                    raise _StaleState()
                 for step in steps:
                     bound = by_key[step.step_key]
                     # The registry's canonical name, never the model's
@@ -458,9 +482,10 @@ class TaskService:
                     )
                     step.updated_at = now
 
-                task.authorized_at = now
-                task.state = target
-                task.updated_at = now
+                for name, value in (
+                    ("authorized_at", now), ("state", target), ("updated_at", now),
+                ):
+                    set_committed_value(task, name, value)
                 await self._session.flush()
 
                 await journal.record(
@@ -475,11 +500,15 @@ class TaskService:
                         "to": target.value,
                     },
                 )
+        except _StaleState:
+            return await self._lost_race(task_id)
         except _DB_ERRORS as exc:
             logger.error(
                 "Failed to authorize a plan",
                 extra={"task_id": str(task_id), "error": str(exc)},
             )
+            # The savepoint is gone; so is anything this copy was told.
+            await self.refresh(task_id)
             return TaskResult(outcome=TaskOutcome.FAILED, reason="persistence_failed")
 
         logger.info(
@@ -509,6 +538,21 @@ class TaskService:
             # SQLite hands back naive values; reading one as machine-local
             # would expire a fresh grant or revive a stale one.
             granted = granted.replace(tzinfo=timezone.utc)
+        if task.monitor is not None and task.deadline is not None:
+            # Stage 6N. A confirmed monitor's authorization lasts until its
+            # deadline -- the end the person saw and agreed to -- and never
+            # past `MAX_MONITOR_LIFETIME_SECONDS` from the decision, however
+            # far away the deadline was set. Every other task keeps the
+            # short window below, unchanged.
+            from app.tasks.monitoring import MAX_MONITOR_LIFETIME_SECONDS
+
+            deadline = task.deadline
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            return moment < min(
+                deadline,
+                granted + timedelta(seconds=MAX_MONITOR_LIFETIME_SECONDS),
+            )
         ttl = int(
             getattr(self._settings, "TASK_AUTHORIZATION_TTL_SECONDS", 900) or 900
         )
@@ -621,13 +665,22 @@ class TaskService:
                 reason="dependencies_incomplete",
             )
 
-        if executions is None:
-            from app.execution.service import ExecutionService
-
-            executions = ExecutionService(self._session, settings=self._settings)
-
         from app.execution.errors import ExecutionError
         from app.execution.schemas import ExecutionRequest
+
+        if executions is None:
+            # Stage 7B unit 8b: bound to the owner's scope as it is now; an
+            # owner who is no longer active gets a refusal, not a run.
+            from app.database.models.scope import resolve_member_scope
+            from app.execution.service import ExecutionService
+
+            scope = await resolve_member_scope(self._session, self._owner_id)
+            if scope is None:
+                return TaskResult(
+                    outcome=TaskOutcome.REFUSED, task_id=task.id, state=task.state,
+                    reason="owner_not_active",
+                )
+            executions = ExecutionService(self._session, settings=self._settings, scope=scope)
 
         try:
             execution = await executions.create(
@@ -990,18 +1043,38 @@ class TaskService:
             )
 
         now = datetime.now(timezone.utc)
+        values = {"state": target, "updated_at": now}
+        if target is TaskState.CANCELLED:
+            values["cancelled_at"] = now
+        if target is TaskState.FAILED:
+            values["error_code"] = (reason or "task_failed")[:64]
+            values["failure_count"] = int(task.failure_count or 0) + 1
         try:
             async with self._session.begin_nested():
-                task.state = target
-                task.updated_at = now
+                # Stage 6P (Known defect 8). Compare-and-set: the row changes
+                # only if it is still in the state this transition was
+                # decided from. A stale copy -- read before another
+                # transaction moved the task -- matches nothing, so it can no
+                # longer overwrite the newer state. On PostgreSQL a concurrent
+                # writer holding the row makes this wait, then re-check.
+                moved = await self._session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task.id,
+                        Task.owner_id == self._owner_id,
+                        Task.state == current,
+                    )
+                    .values(**values)
+                    .execution_options(synchronize_session=False)
+                )
+                if moved.rowcount != 1:
+                    raise _StaleState()
+                for name, value in values.items():
+                    set_committed_value(task, name, value)
                 if target is TaskState.CANCELLED:
-                    task.cancelled_at = now
                     # Pending steps go with it. A cancelled task with steps
                     # still "pending" would answer "what will you do?" wrongly.
                     await self._cancel_pending_steps(task.id)
-                if target is TaskState.FAILED:
-                    task.error_code = (reason or "task_failed")[:64]
-                    task.failure_count = int(task.failure_count or 0) + 1
                 await self._session.flush()
 
                 await journal.record(
@@ -1015,11 +1088,15 @@ class TaskService:
                         "reason": reason,
                     },
                 )
+        except _StaleState:
+            return await self._lost_race(task_id)
         except _DB_ERRORS as exc:
             logger.error(
                 "Failed to transition a task",
                 extra={"task_id": str(task_id), "error": str(exc)},
             )
+            # The savepoint is gone; so is anything this copy was told.
+            await self.refresh(task_id)
             return TaskResult(outcome=TaskOutcome.FAILED, reason="persistence_failed")
 
         logger.info(
@@ -1036,6 +1113,47 @@ class TaskService:
             else TaskOutcome.UPDATED
         )
         return TaskResult(outcome=outcome, task_id=task.id, state=target)
+
+    async def _lost_race(self, task_id: uuid.UUID) -> TaskResult:
+        """Report a write another transaction got to first. Writes nothing.
+
+        The row is read again, fresh, so the caller learns the state that
+        actually won -- not the stale copy it decided from, and not an
+        expired one it would have to lazy-load.
+        """
+        fresh = await self.refresh(task_id)
+        state = fresh.state if fresh is not None else None
+        logger.info(
+            "Task state changed concurrently; write not applied",
+            extra={"task_id": str(task_id), "state": state.value if state else None},
+        )
+        if fresh is None:
+            return TaskResult(outcome=TaskOutcome.NOT_FOUND, reason="task_not_found")
+        return TaskResult(
+            outcome=(
+                TaskOutcome.TERMINAL if is_terminal(state)
+                else TaskOutcome.INVALID_TRANSITION
+            ),
+            task_id=task_id, state=state, reason="state_changed_concurrently",
+        )
+
+    async def refresh(self, task_id: uuid.UUID) -> Optional[Task]:
+        """This owner's task, read fresh from the database. Stage 6P.
+
+        Unlike `get`, overwrites whatever this session already holds for the
+        row, so a stale copy cannot outlive a concurrent change.
+        """
+        try:
+            return (
+                await self._session.execute(
+                    select(Task)
+                    .where(Task.id == task_id, Task.owner_id == self._owner_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars().first()
+        except _DB_ERRORS as exc:
+            logger.error("Failed to read a task", extra={"error": str(exc)})
+            return None
 
     async def cancel(
         self, task_id: uuid.UUID, reason: Optional[str] = None

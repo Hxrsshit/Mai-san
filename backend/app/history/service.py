@@ -52,6 +52,7 @@ from app.history.parser import (
     read_document,
 )
 from app.history.sources import ImportSourceError, resolve, sha256_of
+from app.identity.scope import InvalidScope, KnowledgeScope, require_scope
 from app.memory.models import Memory
 from app.memory.service import MemoryProvenance, MemoryService
 
@@ -85,14 +86,29 @@ class HistoryImportError(Exception):
 
 
 class HistoryImportService:
+    """Stage 7B unit 9: one importer's archives, bound to their scope.
+
+    Archives are written with `scope.write_columns()`; runs, the
+    duplicate-file check and every read of imported conversations and
+    messages (children, reached only through an archive of the scope) are
+    filtered by `scope.clause`. Derived memories go through a memory service
+    of the same scope. The import itself stays Admin-only at the router: its
+    sources are files mounted on the server -- the operator's own exports.
+    """
+
     def __init__(
         self,
         session: AsyncSession,
         memory_service: Optional[MemoryService] = None,
         settings: Optional[Settings] = None,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "HistoryImportService")
         self._settings = settings or get_settings()
+        if memory_service is not None and memory_service.scope != self._scope:
+            raise InvalidScope("the memory service is bound to another scope")
         self._memories = memory_service
 
     # --- Reads ---------------------------------------------------------------
@@ -100,6 +116,7 @@ class HistoryImportService:
     async def list_runs(self, limit: int = 50) -> Tuple[List[ImportedArchive], int]:
         statement = (
             select(ImportedArchive)
+            .where(self._scope.clause(ImportedArchive))
             .order_by(ImportedArchive.created_at.desc())
             .limit(limit)
         )
@@ -108,6 +125,7 @@ class HistoryImportService:
             total = (
                 await self._session.execute(
                     select(func.count()).select_from(ImportedArchive)
+                    .where(self._scope.clause(ImportedArchive))
                 )
             ).scalar_one()
         except _DB_ERRORS as exc:
@@ -116,7 +134,12 @@ class HistoryImportService:
 
     async def get_run(self, run_id: uuid.UUID) -> Optional[ImportedArchive]:
         try:
-            return await self._session.get(ImportedArchive, run_id)
+            # A filtered SELECT, never `session.get` (the identity map would
+            # bypass the scope filter).
+            return (await self._session.execute(
+                select(ImportedArchive).where(
+                    ImportedArchive.id == run_id, self._scope.clause(ImportedArchive))
+            )).scalars().first()
         except _DB_ERRORS as exc:
             raise DatabaseError(f"Failed to load import run: {exc}") from exc
 
@@ -156,6 +179,7 @@ class HistoryImportService:
             source_bytes=path.stat().st_size,
             import_format=import_format,
             status=ImportStatus.PARSING,
+            **self._scope.write_columns(),
         )
         try:
             async with self._session.begin_nested():
@@ -225,7 +249,7 @@ class HistoryImportService:
 
     async def _find_by_digest(self, digest: str) -> Optional[ImportedArchive]:
         statement = select(ImportedArchive).where(
-            ImportedArchive.source_sha256 == digest
+            ImportedArchive.source_sha256 == digest, self._scope.clause(ImportedArchive)
         )
         try:
             return (await self._session.execute(statement)).scalar_one_or_none()
@@ -316,7 +340,7 @@ class HistoryImportService:
             return []
 
         knowledge = (
-            KnowledgeService(self._session, self._settings)
+            KnowledgeService(self._session, self._settings, scope=self._scope)
             if self._settings.CONFLICT_DETECTION_ENABLED
             else None
         )
@@ -368,7 +392,9 @@ class HistoryImportService:
     ) -> Sequence[ImportedConversation]:
         statement = (
             select(ImportedConversation)
-            .where(ImportedConversation.archive_id == archive_id)
+            .join(ImportedArchive, ImportedArchive.id == ImportedConversation.archive_id)
+            .where(ImportedConversation.archive_id == archive_id,
+                   self._scope.clause(ImportedArchive))
             .order_by(ImportedConversation.source_created_at.asc().nulls_last())
         )
         try:
@@ -388,9 +414,12 @@ class HistoryImportService:
         """
         statement = (
             select(ImportedMessage)
+            .join(ImportedConversation, ImportedConversation.id == ImportedMessage.conversation_id)
+            .join(ImportedArchive, ImportedArchive.id == ImportedConversation.archive_id)
             .where(
                 ImportedMessage.conversation_id == conversation_id,
                 ImportedMessage.role.in_(tuple(EXTRACTABLE_ROLES)),
+                self._scope.clause(ImportedArchive),
             )
             .order_by(ImportedMessage.sequence.asc())
         )

@@ -1,6 +1,7 @@
 """Conversation and message endpoints."""
 
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Query, Response, status
 
@@ -9,9 +10,12 @@ from app.api.deps import (
     Chat,
     Conversations,
     DbSession,
+    OwnerId,
     Provider,
+    Scope,
     SessionFactory,
 )
+from app.identity.scope import InvalidScope, KnowledgeScope
 from app.schemas.common import ErrorResponse
 from app.schemas.conversation import (
     ConversationCreate,
@@ -27,6 +31,7 @@ from app.memory.tasks import run_memory_extraction
 from app.calendar.schemas import CalendarOutcome
 from app.schemas.calendar import CalendarRead
 from app.schemas.mail import MailRead
+from app.schemas.monitor import MonitorRead
 from app.schemas.workflow import WorkflowRead
 from app.schemas.message import (
     ChatResponse,
@@ -193,6 +198,8 @@ async def send_message(
     provider: Provider,
     session_factory: SessionFactory,
     session: DbSession,
+    owner_id: OwnerId,
+    scope: Scope,
 ) -> ChatResponse:
     return await send_conversation_turn(
         conversation_id=conversation_id,
@@ -203,6 +210,11 @@ async def send_message(
         provider=provider,
         session_factory=session_factory,
         session=session,
+        # Stage 6N. The authenticated owner, from the one seam. Only this
+        # route passes one, so only an authenticated API turn can set up
+        # monitoring.
+        owner_id=owner_id,
+        scope=scope,
     )
 
 
@@ -216,14 +228,24 @@ async def send_conversation_turn(
     provider: Provider,
     session_factory: SessionFactory,
     session: DbSession,
+    owner_id: Optional[uuid.UUID] = None,
+    scope: KnowledgeScope,
 ) -> ChatResponse:
     """Run the established conversation turn for an approved interface.
+
+    `scope` must be the scope `chat` was built with (Stage 7B unit 4); the
+    post-turn memory extraction runs in it; a mismatch is refused before
+    anything runs.
 
     This is the application boundary behind the HTTP route.  External
     adapters may call it only after authenticating their own transport and
     resolving an existing Mai conversation; it deliberately owns the exact
     same commit and post-turn extraction behaviour as the browser API.
     """
+    if scope != chat.scope:
+        # Checked before anything runs: the turn and its extraction must share
+        # one scope (security review F3).
+        raise InvalidScope("the turn's scope is not the chat service's scope")
     (
         user_message,
         assistant_message,
@@ -234,8 +256,9 @@ async def send_conversation_turn(
         workflow,
         calendar,
         mail,
+        monitor,
     ) = await chat.send_message(
-        conversation_id=conversation_id, content=content
+        conversation_id=conversation_id, content=content, owner_id=owner_id
     )
 
     # Commit the turn before queueing extraction. FastAPI closes dependency
@@ -278,6 +301,7 @@ async def send_conversation_turn(
             # Passed explicitly so dependency overrides are honoured.
             provider=provider,
             session_factory=session_factory,
+            scope=scope,
         )
 
     return ChatResponse(
@@ -306,6 +330,8 @@ async def send_conversation_turn(
         # Stage 4F-G. Whether a calendar read happened and how many
         # events it found -- never the events, which are private.
         calendar=CalendarRead.from_result(calendar),
+        # Stage 6N. The monitoring outcome and its task, never its content.
+        monitor=MonitorRead.from_result(monitor),
     )
 
 

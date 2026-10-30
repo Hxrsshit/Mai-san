@@ -9,6 +9,9 @@ The specification is explicit that false positives are worse than missed
 matches. Substring and similarity matching are therefore not used: "AI" must
 not silently match "AI Product Development", and "Claude" must not match
 "Claude Code".
+
+Stage 7B unit 6: matching is within one knowledge scope (`scope.clause` on
+the entity and the alias), so a query never matches another member's entity.
 """
 
 from dataclasses import dataclass
@@ -20,6 +23,7 @@ from sqlalchemy.orm import noload
 
 from app.core.logging import get_logger
 from app.entities.models import Entity, EntityAlias, EntityStatus
+from app.identity.scope import KnowledgeScope, require_scope
 from app.retrieval.query_normalizer import NormalizedQuery
 
 logger = get_logger(__name__)
@@ -43,8 +47,9 @@ class EntityMatch:
 
 
 class EntityMatcher:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, scope: KnowledgeScope) -> None:
         self._session = session
+        self._scope = require_scope(scope, "EntityMatcher")
 
     async def match(self, query: NormalizedQuery) -> List[EntityMatch]:
         """Return the entities this query refers to, strongest first.
@@ -82,6 +87,7 @@ class EntityMatcher:
             .where(
                 Entity.normalized_name.in_(phrases),
                 Entity.status == EntityStatus.ACTIVE,
+                self._scope.clause(Entity),
             )
             # Entity.aliases is lazy="selectin"; retrieval never reads it, and
             # loading it costs an extra query per lookup.
@@ -112,6 +118,8 @@ class EntityMatcher:
             .where(
                 EntityAlias.normalized_alias.in_(phrases),
                 Entity.status == EntityStatus.ACTIVE,
+                self._scope.clause(EntityAlias),
+                self._scope.clause(Entity),
             )
             .options(noload(Entity.aliases))
         )

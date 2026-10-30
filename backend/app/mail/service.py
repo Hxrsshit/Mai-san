@@ -39,6 +39,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database.models.scope import ScopeBinding, require_binding
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.execution.errors import ExecutionError
@@ -104,11 +105,19 @@ class MailService:
         settings: Optional[Settings] = None,
         executions: Optional[ExecutionService] = None,
         integrations=None,
+        *,
+        scope: ScopeBinding,
     ) -> None:
         self._session = session
         self._settings = settings or get_settings()
+        # Stage 7B unit 8b: the member's scope, for every execution this
+        # service proposes or reads. An injected execution service must be
+        # bound to the same scope.
+        self._scope = require_binding(scope, "MailService")
+        if executions is not None and executions.scope != self._scope:
+            raise TypeError("the execution service is bound to another scope")
         self._executions = executions or ExecutionService(
-            session, settings=self._settings
+            session, settings=self._settings, scope=self._scope
         )
         self._integrations = integrations
 
@@ -385,6 +394,7 @@ class MailService:
                 Execution.conversation_id == conversation_id,
                 Execution.state == ExecutionState.PROPOSED,
                 Execution.tool_name == MAIL_TOOL,
+                self._scope.clause(Execution),
             )
             .order_by(Execution.created_at.desc())
             .limit(1)

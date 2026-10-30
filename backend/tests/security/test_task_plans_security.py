@@ -444,8 +444,11 @@ def test_the_task_router_is_still_read_only() -> None:
                 decorator.func, ast.Attribute
             ):
                 methods.append(decorator.func.attr)
-    # Six GETs after 6B added the preview. No other verb.
-    assert sorted(methods) == ["get"] * 6, methods
+    # Six GETs after 6B added the preview.
+    # Changed deliberately in 6N: one POST, `/{task_id}/cancel`, which can
+    # only stop work -- never create, approve, run or widen any. Its path and
+    # body are pinned in `test_monitor_requests_security.py`.
+    assert sorted(methods) == ["get"] * 6 + ["post"], methods
 
 
 def test_no_scheduler_or_background_task_was_introduced() -> None:

@@ -145,25 +145,87 @@ async def test_superseded_knowledge_is_not_sent_on_an_ordinary_question(
 # --- Background extraction disclosure ---------------------------------------
 
 
-async def test_extraction_sends_only_the_turn_it_is_analysing(
-    client: AsyncClient, conversation_id, fake_provider
+# Changed deliberately (owner-approved, 2026-10-14). Stage 3D pinned that
+# background extraction sent only the turn it analysed. A short answer read
+# without the question it answers was stored as a fact about the wrong
+# subject, so extraction now also receives a *bounded* window of the same
+# conversation's earlier turns -- turns the chat call already sent to the same
+# provider. The bound is pinned below as strictly as the old rule was: the
+# window, the per-message cap, the conversation, and the absence of anything
+# retrieved.
+
+
+async def test_extraction_sends_only_its_turn_and_a_bounded_same_conversation_window(
+    client: AsyncClient, conversation_id, fake_provider, settings
 ) -> None:
     """Background extraction is a second disclosure path and is bounded too."""
+    assert settings.MEMORY_EXTRACTION_CONTEXT_MESSAGES == 4
     fake_provider.extraction_reply = NOTHING_TO_STORE
+    for text in ("First turn with EARLIER-MARKER.", "Second turn WINDOW-A.",
+                 "Third turn WINDOW-B."):
+        await client.post(
+            f"/api/conversations/{conversation_id}/messages", json={"content": text}
+        )
     await client.post(
         f"/api/conversations/{conversation_id}/messages",
-        json={"content": "First turn with EARLIER-MARKER."},
-    )
-    await client.post(
-        f"/api/conversations/{conversation_id}/messages",
-        json={"content": "Second turn."},
+        json={"content": "Fourth turn."},
     )
 
     latest = "\n".join(m.content for m in fake_provider.last_extraction_call)
-    assert "Second turn." in latest
+    assert "Fourth turn." in latest
+    # The last four earlier messages (turns two and three, user and
+    # assistant) -- and nothing before them.
+    assert "WINDOW-A" in latest and "WINDOW-B" in latest
     assert "EARLIER-MARKER" not in latest, (
-        "extraction sent history beyond the turn it was given"
+        "extraction sent history beyond its bounded window"
     )
+
+
+async def test_extraction_never_sends_another_conversations_turns(
+    client: AsyncClient, fake_provider
+) -> None:
+    fake_provider.extraction_reply = NOTHING_TO_STORE
+    other = (await client.post("/api/conversations", json={})).json()["id"]
+    await client.post(f"/api/conversations/{other}/messages",
+                      json={"content": "OTHER-CONVERSATION-MARKER"})
+    mine = (await client.post("/api/conversations", json={})).json()["id"]
+    await client.post(f"/api/conversations/{mine}/messages",
+                      json={"content": "A first message here."})
+
+    latest = "\n".join(m.content for m in fake_provider.last_extraction_call)
+    assert "A first message here." in latest
+    assert "OTHER-CONVERSATION-MARKER" not in latest
+    assert "EARLIER CONTEXT (for understanding only" not in latest  # nothing earlier in *this* conversation
+
+
+async def test_extraction_never_sends_retrieved_knowledge(
+    client: AsyncClient, fake_provider, session_factory
+) -> None:
+    """Memories reach the chat call as reference knowledge; extraction gets
+    only conversation text, so a stored memory cannot be re-sent through it."""
+    conversation_id = await seed_knowledge(session_factory)
+    fake_provider.extraction_reply = NOTHING_TO_STORE
+    await client.post(f"/api/conversations/{conversation_id}/messages",
+                      json={"content": "What database does Mai use?"})
+    assert any(REFERENCE_HEADER in m.content for m in fake_provider.last_call)
+    latest = "\n".join(m.content for m in fake_provider.last_extraction_call)
+    assert REFERENCE_HEADER not in latest
+    assert "PostgreSQL for local storage" not in latest
+
+
+async def test_each_earlier_message_is_capped(
+    client: AsyncClient, conversation_id, fake_provider, settings
+) -> None:
+    fake_provider.extraction_reply = NOTHING_TO_STORE
+    long_text = "LONG-" + "y" * 5000
+    await client.post(f"/api/conversations/{conversation_id}/messages",
+                      json={"content": long_text})
+    await client.post(f"/api/conversations/{conversation_id}/messages",
+                      json={"content": "Next."})
+    latest = fake_provider.last_extraction_call[-1].content
+    earlier = latest.partition("USER MESSAGE")[0]
+    assert "LONG-" in earlier
+    assert "y" * settings.MEMORY_EXTRACTION_CONTEXT_CHARS not in earlier
 
 
 # --- Transport --------------------------------------------------------------

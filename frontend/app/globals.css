@@ -14,6 +14,7 @@
   --color-secondary: #4f8bff;
   --color-error: #ff6b7c;
   --color-success: #72d6a1;
+  --color-warn: #f0b95f;
   --gradient-mai: linear-gradient(135deg, #eae0ff 0%, #7b6cff 35%, #4f8bff 67%, #e4c9ff 100%);
   --shadow-surface: 0 16px 40px rgba(0, 0, 0, 0.22);
   --glow-mai: 0 0 28px rgba(106, 98, 255, 0.24);
@@ -33,7 +34,7 @@ body {
 }
 
 button, a, textarea { transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease, opacity 180ms ease, transform 180ms ease; }
-button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px solid #8b78ff; outline-offset: 2px; }
+button:focus-visible, a:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, [tabindex]:focus-visible { outline: 2px solid #8b78ff; outline-offset: 2px; }
 ::selection { background: rgba(123, 108, 255, 0.42); color: #fff; }
 
 .mai-wordmark { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.38em; }

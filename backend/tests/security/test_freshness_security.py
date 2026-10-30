@@ -20,6 +20,7 @@ from app.orchestration.freshness import (
     FreshnessSource,
     assess,
 )
+from tests.scopes import ADMIN_SCOPE
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 18, 14, 0, tzinfo=UTC)
@@ -490,7 +491,7 @@ async def test_an_empty_freshness_subject_proposes_nothing(
     from app.research.service import ResearchService
 
     async with session_factory() as session:
-        service = ResearchService(session)
+        service = ResearchService(session, scope=ADMIN_SCOPE)
         result = await service.propose_current_information(conversation_id, "")
         blank = await service.propose_current_information(conversation_id, "   ")
 

@@ -17,6 +17,7 @@ from app.core.errors import (
     LLMTimeoutError,
 )
 from app.entities.models import Entity, EntityAlias, MemoryEntity
+from tests.scopes import ADMIN_SCOPE
 
 
 def memory_payload(*memories) -> str:
@@ -220,7 +221,7 @@ async def test_database_failure_during_entity_storage_leaves_memory_intact(
     from app.services.conversation_service import ConversationService
 
     async with session_factory() as setup:
-        conversation = await ConversationService(setup).create_conversation()
+        conversation = await ConversationService(setup, ADMIN_SCOPE).create_conversation()
         await setup.commit()
         conversation_id = conversation.id
 
@@ -246,6 +247,7 @@ async def test_database_failure_during_entity_storage_leaves_memory_intact(
         settings=settings,
         provider=fake_provider,
         session_factory=session_factory,
+        scope=ADMIN_SCOPE,
     )
 
     monkeypatch.undo()

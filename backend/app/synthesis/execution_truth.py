@@ -89,6 +89,12 @@ class Channel(str, enum.Enum):
     WEB = "web"
     MAIL = "mail"
     CALENDAR = "calendar"
+    #: Stage 6P. Gmail monitoring: set up, active, checked, matched, notified.
+    MONITOR = "monitor"
+    #: Saving to long-term memory. Never claimable on a model-written reply:
+    #: extraction runs *after* the reply and can fail, so "I've saved that"
+    #: is never established when it is said.
+    MEMORY = "memory"
 
 
 #: The one state that licenses a claim.
@@ -119,12 +125,23 @@ class ExecutionRecord(NamedTuple):
     #: is a fact about the mailbox, `None` is the absence of a fact. Only the
     #: application sets it, from `MailResult.message_count`.
     mail_count: Optional[int] = None
+    #: Stage 6P. Whether this turn set up a monitor. Only the application's
+    #: own `MonitorResult` sets it, and only a confirmed, scheduled monitor
+    #: counts -- which is never a turn the model writes: a monitoring turn is
+    #: answered by the application, so on any model-written reply this is not
+    #: claimable and every monitoring claim is unsupported.
+    monitor: ExecutionState = ExecutionState.NOT_REQUESTED
+    #: Always UNKNOWN when a reply is judged: memory extraction has not run
+    #: yet, and may store nothing. Nothing on the reply path may change it.
+    memory: ExecutionState = ExecutionState.UNKNOWN
 
     def state_for(self, channel: Channel) -> ExecutionState:
         return {
             Channel.WEB: self.web,
             Channel.MAIL: self.mail,
             Channel.CALENDAR: self.calendar,
+            Channel.MONITOR: self.monitor,
+            Channel.MEMORY: self.memory,
         }[channel]
 
     def may_claim(self, channel: Channel) -> bool:
@@ -189,6 +206,26 @@ _CALENDAR_STATES = {
 }
 
 
+#: Stage 6P. `app.tasks.requests.MonitorOutcome`, by value. Only `scheduled`
+#: -- a confirmation whose savepoint held -- is an execution; everything else
+#: is talk about monitoring, and an outcome not named here is UNKNOWN.
+_MONITOR_STATES = {
+    "not_monitor": ExecutionState.NOT_REQUESTED,
+    "scheduled": ExecutionState.EXECUTED_SUCCESSFULLY,
+    "failed": ExecutionState.EXECUTED_FAILED,
+    "needs_clarification": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "refused": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "unavailable": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "proposed": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "already_monitoring": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "declined": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "invalidated": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "abandoned": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "expired": ExecutionState.PROPOSED_NOT_EXECUTED,
+    "not_pending": ExecutionState.PROPOSED_NOT_EXECUTED,
+}
+
+
 def _state(result: Any, table: dict, evidence_attr: str) -> ExecutionState:
     """Read one layer's outcome into an execution state.
 
@@ -221,6 +258,7 @@ def record_for_turn(
     mail: Any = None,
     calendar: Any = None,
     workflow: Any = None,
+    monitor: Any = None,
 ) -> ExecutionRecord:
     """Build the authoritative record from this turn's layer results.
 
@@ -256,6 +294,8 @@ def record_for_turn(
         mail=mail_state,
         calendar=calendar_state,
         mail_count=mail_count,
+        # Stage 6P. Licensed only by a scheduled monitor with its task id.
+        monitor=_state(monitor, _MONITOR_STATES, "task_id"),
     )
 
 
@@ -332,6 +372,92 @@ _CLAIMS = {
     ),
 }
 
+#: Stage 6P. A mail noun, for monitoring claims that must be about mail.
+_MAIL_NOUN = r"\b(?:gmail|inbox|e-?mails?|mail(?:box)?|messages?)\b"
+
+#: Stage 6P. Claims that Gmail monitoring started, is active, checked,
+#: matched or notified. First person or about "the monitor", so ordinary
+#: discussion ("monitoring a server is useful") and offers ("I can watch your
+#: Gmail") are not claims.
+_MONITOR_CLAIM = re.compile(
+    "(?:"
+    r"\bi(?:'m|\s+am)\s+(?:now\s+|currently\s+|already\s+|actively\s+|also\s+)?"
+    r"(?:monitoring|watching|tracking|keeping\s+(?:an\s+)?eye\s+on|checking)\b"
+    r"[^.]{0,80}?" + _MAIL_NOUN +
+    r"|" + _I_DID + r"been\s+(?:monitoring|watching|checking|tracking)\b"
+    r"|" + _I_DID + r"(?:set\s+up|started|created|scheduled|enabled|activated|"
+    r"turned\s+on|configured|added)\s+(?:a\s+|an\s+|the\s+|your\s+)?"
+    r"(?:gmail\s+|e-?mail\s+|inbox\s+|mail\s+|new\s+|background\s+)?"
+    r"(?:monitor(?:ing)?|watch(?:er)?|alerts?|notifications?|checks?|tasks?)\b"
+    r"|\b(?:the|your|gmail|e-?mail|inbox|mail)\s+(?:gmail\s+|e-?mail\s+|inbox\s+|mail\s+)?"
+    r"monitor(?:ing)?\s+(?:is|has\s+been|was)\s+(?:now\s+)?"
+    r"(?:active|running|on|live|set\s+up|started|scheduled|enabled|in\s+place|configured)\b"
+    r"|\bmonitoring\s+(?:is|has\s+been)\s+(?:now\s+)?"
+    r"(?:active|running|live|set\s+up|started|scheduled|enabled|in\s+place)\b"
+    r"|\bmonitoring\s+(?:has\s+)?(?:started|begun)\b"
+    r"|\b(?:found|detected|spotted|caught)\s+(?:a\s+|an\s+|the\s+)?"
+    r"(?:match|matching\s+(?:e-?mail|message))\b"
+    r"|\b(?:the|an?|your)\s+(?:e-?mail|message)\s+(?:you\s+(?:were\s+)?"
+    r"(?:waiting|watching|looking)\s+for\s+)?(?:has\s+)?(?:just\s+)?"
+    r"(?:arrived|come\s+in|came\s+in|landed)\b"
+    r"|" + _I_DID + r"(?:sent|pushed|delivered)\s+(?:you\s+)?(?:a\s+|an\s+|the\s+)?"
+    r"(?:notification|alert|telegram(?:\s+message)?)\b"
+    r"|\b(?:a|the|your)\s+notification\s+(?:has\s+been|was)\s+(?:sent|delivered)\b"
+    r"|" + _I_DID + r"(?:notified|alerted|pinged)\s+you\b"
+    ")",
+    re.IGNORECASE,
+)
+
+#: Stage 6P. A promise to watch, or to report an arrival, *is* a claim that
+#: monitoring is in place -- "I'll let you know when it arrives" is exactly
+#: the false sentence a phrasing the grammar missed would produce. Checked
+#: before the shared offer filter, which would read the "I'll" as an offer.
+_MONITOR_PROMISE = re.compile(
+    r"\b(?:i'?ll|i\s+will|i'?m\s+going\s+to)\s+(?:now\s+|also\s+|then\s+)?"
+    r"(?:"
+    r"(?:monitor|watch|keep\s+(?:an\s+)?eye\s+on|keep\s+checking|track|check)\b"
+    r"[^.]{0,80}?" + _MAIL_NOUN +
+    r"|(?:let\s+you\s+know|notify\s+you|tell\s+you|alert\s+you|ping\s+you|"
+    r"message\s+you|text\s+you)\b[^.]{0,80}?\b(?:when|as\s+soon\s+as|once|whenever|if)\b"
+    r"[^.]{0,80}?(?:" + _MAIL_NOUN + r"|\b(?:arrives?|comes?\s+in|lands?)\b)"
+    r")",
+    re.IGNORECASE,
+)
+
+#: What stops a monitoring sentence being a claim: a negation, or a
+#: condition on the user ("once you confirm"). Narrower than the shared
+#: offer filter on purpose -- see `_MONITOR_PROMISE`.
+#: Claims that something was saved to (or will be kept in) long-term memory.
+#: Narrow on purpose: first person with an object ("I've saved that", "I'll
+#: remember your preference") or an explicit memory destination ("saved it to
+#: my memory"). Recall -- "I remember you said" -- is not a claim of saving,
+#: and a file the application writes is not a memory.
+_MEMORY_OBJECT = (
+    r"(?:that|this|it|those|these|your\b|all\s+of\s+(?:that|this)|"
+    r"the\s+(?:details?|description|info(?:rmation)?|preferences?|facts?))"
+)
+_MEMORY_CLAIM = re.compile(
+    "(?:"
+    + _I_DID + r"(?:saved|stored|recorded|noted|memori[sz]ed|remembered)\s+" + _MEMORY_OBJECT
+    + r"|\b(?:saved|stored|added|committed|written|recorded)\s+(?:it\s+|that\s+|this\s+)?"
+    r"(?:to|in|into)\s+(?:my\s+|mai'?s\s+)?(?:long[- ]term\s+)?(?:memory|memories)\b"
+    r"|\b(?:i'?ll|i\s+will|i'?m\s+going\s+to)\s+(?:always\s+|definitely\s+)?"
+    r"(?:remember\s+" + _MEMORY_OBJECT + r"|keep\s+(?:that|this|it)\s+in\s+mind)"
+    ")",
+    re.IGNORECASE,
+)
+
+_MONITOR_EXEMPT = re.compile(
+    # Contractions need their apostrophe: "\w+nt" alone would exempt "sent".
+    r"\b(?:not|never|no|cannot|unable|without)\b|\b\w+n['\u2019]t\b"
+    # "when you" is deliberately absent: "I'll tell you when you get an
+    # email" is the promise this channel exists to catch.
+    r"|\b(?:if|once|after|until|unless)\s+you\b"
+    r"|\byou\s+(?:confirm|say|reply|ask|send|approve)\b",
+    re.IGNORECASE,
+)
+
+
 #: A markdown table whose header names a source column.
 #:
 #: The observed fabrication rendered exactly this. It is a *corroborating*
@@ -363,6 +489,17 @@ def claims(text: str) -> FrozenSet[Channel]:
             # A question is not a report. "Shall I search the web?" asserts
             # nothing about what has happened.
             continue
+        # Stage 6P. Monitoring is judged by its own, narrower exemption,
+        # before the shared offer filter: "I'll tell you when it arrives" is
+        # a claim that a monitor exists, not an offer.
+        if not _MONITOR_EXEMPT.search(clause) and (
+            _MONITOR_PROMISE.search(clause) or _MONITOR_CLAIM.search(clause)
+        ):
+            found.add(Channel.MONITOR)
+        # Memory, like monitoring, is judged before the shared offer filter:
+        # "I'll remember that" is a promise the application cannot keep.
+        if not _MONITOR_EXEMPT.search(clause) and _MEMORY_CLAIM.search(clause):
+            found.add(Channel.MEMORY)
         if _NOT_AN_ASSERTION.search(clause):
             continue
         for channel, pattern in _CLAIMS.items():
@@ -494,6 +631,11 @@ _CHANNEL_NOUNS = {
     Channel.WEB: "web search",
     Channel.MAIL: "email read",
     Channel.CALENDAR: "calendar read",
+    Channel.MONITOR: "Gmail monitoring setup",
+    Channel.MEMORY: (
+        "saving anything to long-term memory (Mai does this automatically "
+        "after your reply, and it can fail)"
+    ),
 }
 
 _STATE_PHRASES = {
@@ -541,6 +683,19 @@ def truthful_reply(record: ExecutionRecord, violations: Tuple[Channel, ...]) -> 
     Written here, from the record, so it is true by construction -- there is
     no model in the loop to rephrase "I have not searched" into "I searched".
     """
+    if Channel.MEMORY in violations:
+        others = tuple(c for c in violations if c is not Channel.MEMORY)
+        if not others:
+            return _MEMORY_TRUTH
+        return f"{truthful_reply(record, others)} {_MEMORY_TRUTH}"
+    if Channel.MONITOR in violations:
+        # Stage 6P. True whatever monitors already exist: it says only that
+        # this reply could not report or start one, and how one is started.
+        others = tuple(c for c in violations if c is not Channel.MONITOR)
+        sentence = _MONITOR_TRUTH
+        if not others:
+            return sentence
+        return f"{truthful_reply(record, others)} {sentence}"
     named = [_CHANNEL_NOUNS[channel] for channel in violations] or ["action"]
     listed = named[0] if len(named) == 1 else (
         ", ".join(named[:-1]) + " and " + named[-1]
@@ -593,6 +748,24 @@ def truthful_reply(record: ExecutionRecord, violations: Tuple[Channel, ...]) -> 
         "— so anything I showed you would have been invented rather than "
         "retrieved. Ask me to run it and I will answer from the real results."
     )
+
+
+#: Stage 6P. What the application says instead of a monitoring claim.
+_MONITOR_TRUTH = (
+    "I can't start Gmail monitoring or report on it from here, so I shouldn't "
+    "have said that. Monitoring only starts when you confirm one of my "
+    "monitoring proposals -- for example, say \u201cwatch my Gmail for an email "
+    "from apple.com and tell me when it arrives\u201d and I'll show you exactly "
+    "what I'd watch before anything starts."
+)
+
+
+#: What the application says instead of a claim that something was saved.
+_MEMORY_TRUTH = (
+    "I can't confirm that I've saved that. Mai records what you tell it "
+    "automatically after it replies, and that step can fail -- ask me about it "
+    "later and I'll answer from what was actually recorded."
+)
 
 
 def known_claim_channels() -> Tuple[Channel, ...]:

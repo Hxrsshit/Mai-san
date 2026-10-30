@@ -6,7 +6,7 @@ Every handled error is returned to the client in a single, stable shape:
     {"error": {"code": "...", "message": "...", "request_id": "..."}}
 """
 
-from typing import Optional
+from typing import Dict, Optional
 
 
 class MaiError(Exception):
@@ -15,6 +15,8 @@ class MaiError(Exception):
     status_code: int = 500
     code: str = "internal_error"
     message: str = "An unexpected error occurred."
+    #: Response headers the error requires (Stage 6M.4: `WWW-Authenticate`).
+    headers: Optional[Dict[str, str]] = None
 
     def __init__(self, message: Optional[str] = None) -> None:
         if message:
@@ -36,6 +38,64 @@ class ConversationNotFoundError(NotFoundError):
 class MemoryNotFoundError(NotFoundError):
     code = "memory_not_found"
     message = "Memory not found."
+
+
+# --- Authentication (Stage 6M.4) --------------------------------------------
+# Raised only by the request seam, `app.api.deps.get_owner_id`. The messages
+# are fixed: none says whether a token was close, configured or malformed.
+
+
+class AuthenticationRequired(MaiError):
+    status_code = 401
+    code = "authentication_required"
+    message = "An API token is required: send Authorization: Bearer <token>."
+    headers = {"WWW-Authenticate": "Bearer"}
+
+
+class InvalidCredentials(MaiError):
+    status_code = 401
+    code = "invalid_credentials"
+    message = "The API token was not accepted."
+    headers = {"WWW-Authenticate": "Bearer"}
+
+
+class AuthenticationNotConfigured(MaiError):
+    status_code = 503
+    code = "authentication_not_configured"
+    message = "API authentication is not configured on this server."
+
+
+# --- Membership (Stage 7A) --------------------------------------------------
+# Raised by the request seam after the token is accepted: the token names a
+# member, and the member must be active in an active organisation. Fixed
+# messages; none says which of the two failed.
+
+
+class MembershipInactive(MaiError):
+    status_code = 403
+    code = "membership_inactive"
+    message = "This account is not an active member of an active organisation."
+
+
+class MembershipUnavailable(MaiError):
+    status_code = 503
+    code = "membership_unavailable"
+    message = "Membership could not be checked. Try again shortly."
+
+
+class AdminRequired(MaiError):
+    status_code = 403
+    code = "admin_required"
+    message = "This action requires an organisation Admin."
+
+
+class SeamInvariantError(MaiError):
+    """The seam found writes pending on the request session before it ran.
+    Nothing may write before authentication; this is a programming error."""
+
+    status_code = 500
+    code = "seam_invariant"
+    message = "The request could not be authenticated."
 
 
 class ValidationError(MaiError):

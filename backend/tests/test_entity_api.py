@@ -66,9 +66,10 @@ async def test_entities_appear_after_a_turn(
     )
 
     body = (await client.get("/api/entities")).json()
-    assert body["total"] == 2
+    # The two extracted, plus the scope's own User (Stage 7B unit 5).
+    assert body["total"] == 3
     names = {item["canonical_name"] for item in body["items"]}
-    assert names == {"PostgreSQL", "Mai"}
+    assert names == {"PostgreSQL", "Mai", "User"}
     item = next(i for i in body["items"] if i["canonical_name"] == "PostgreSQL")
     assert item["entity_type"] == "technology"
     assert item["status"] == "active"
@@ -87,7 +88,10 @@ async def test_filter_by_entity_type(
     tech = (await client.get("/api/entities?entity_type=technology")).json()
     assert tech["total"] == 1
     assert tech["items"][0]["canonical_name"] == "PostgreSQL"
-    assert (await client.get("/api/entities?entity_type=person")).json()["total"] == 0
+    # Only the scope's own User is a person (Stage 7B unit 5).
+    person = (await client.get("/api/entities?entity_type=person")).json()
+    assert [i["canonical_name"] for i in person["items"]] == ["User"]
+    assert (await client.get("/api/entities?entity_type=place")).json()["total"] == 0
 
 
 async def test_filter_by_status(
@@ -98,7 +102,8 @@ async def test_filter_by_status(
         [memory("User decided to use PostgreSQL for Mai.")],
         [entity("PostgreSQL", "technology")],
     )
-    assert (await client.get("/api/entities?status=active")).json()["total"] == 1
+    # PostgreSQL and the scope's own User (Stage 7B unit 5).
+    assert (await client.get("/api/entities?status=active")).json()["total"] == 2
     assert (await client.get("/api/entities?status=archived")).json()["total"] == 0
 
 
@@ -117,7 +122,7 @@ async def test_pagination(client: AsyncClient, conversation_id, fake_provider) -
     )
     page = (await client.get("/api/entities?limit=2&offset=0")).json()
     assert len(page["items"]) == 2
-    assert page["total"] == 4
+    assert page["total"] == 5        # four tools and the scope's own User
 
 
 # --- Detail -----------------------------------------------------------------
@@ -190,13 +195,16 @@ async def test_delete_entity_keeps_the_memory(
         [memory("User decided to use PostgreSQL for Mai.")],
         [entity("PostgreSQL", "technology", aliases=["Postgres"])],
     )
-    entity_id = (await client.get("/api/entities")).json()["items"][0]["id"]
+    items = (await client.get("/api/entities")).json()["items"]
+    entity_id = next(i["id"] for i in items if i["canonical_name"] == "PostgreSQL")
     assert (await client.get("/api/memories")).json()["total"] == 1
 
     assert (await client.delete(f"/api/entities/{entity_id}")).status_code == 204
 
     assert (await client.get(f"/api/entities/{entity_id}")).status_code == 404
-    assert (await client.get("/api/entities")).json()["total"] == 0
+    # Only the scope's own User remains (Stage 7B unit 5).
+    remaining = (await client.get("/api/entities")).json()["items"]
+    assert [i["canonical_name"] for i in remaining] == ["User"]
     # The memory is untouched -- only the link went.
     assert (await client.get("/api/memories")).json()["total"] == 1
 
@@ -216,11 +224,13 @@ async def test_deleting_a_conversation_removes_its_entities_links_not_entities(
         [memory("User decided to use PostgreSQL for Mai.")],
         [entity("PostgreSQL", "technology")],
     )
-    assert (await client.get("/api/entities")).json()["total"] == 1
+    # PostgreSQL and the scope's own User (Stage 7B unit 5).
+    assert (await client.get("/api/entities")).json()["total"] == 2
 
     await client.delete(f"/api/conversations/{conversation_id}")
 
     assert (await client.get("/api/memories")).json()["total"] == 0
     # The entity itself survives -- it is knowledge, not conversation content.
-    entity_id = (await client.get("/api/entities")).json()["items"][0]["id"]
+    items = (await client.get("/api/entities")).json()["items"]
+    entity_id = next(i["id"] for i in items if i["canonical_name"] == "PostgreSQL")
     assert (await client.get(f"/api/entities/{entity_id}")).json()["memory_count"] == 0

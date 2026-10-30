@@ -12,6 +12,7 @@ from app.api.routes.knowledge import router as knowledge_router
 from app.api.routes.notification_delivery import router as notification_delivery_router
 from app.api.routes.reminders import router as reminders_router
 from app.api.routes.orchestration import router as orchestration_router
+from app.api.routes.organisation import router as organisation_router
 from app.api.routes.planning import router as planning_router
 from app.api.routes.prompt import router as prompt_router
 from app.api.routes.tools import router as tools_router
@@ -38,6 +39,7 @@ __all__ = [
     "knowledge_router",
     "reminders_router",
     "tasks_router",
+    "organisation_router",
     "notification_delivery_router",
     "intent_router",
     "planning_router",

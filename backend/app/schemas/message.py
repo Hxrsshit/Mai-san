@@ -12,6 +12,7 @@ from app.orchestration.schemas import OrchestrationRead
 from app.planning.schemas import PlanningRead
 from app.schemas.calendar import CalendarRead
 from app.schemas.mail import MailRead
+from app.schemas.monitor import MonitorRead
 from app.schemas.workflow import WorkflowRead
 
 
@@ -114,6 +115,10 @@ class ChatResponse(BaseModel):
     #: Stage 4F-G. None on any turn that did not concern the calendar.
     #: Carries no event content -- see `app/schemas/calendar.py`.
     calendar: Optional["CalendarRead"] = None
+
+    #: Stage 6N. None on any turn that did not concern Gmail monitoring.
+    #: The outcome and the task id -- see `app/schemas/monitor.py`.
+    monitor: Optional["MonitorRead"] = None
 
 
 class ResearchRead(BaseModel):

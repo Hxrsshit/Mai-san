@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.execution.models import Execution
 from app.workflows.schemas import StepStatus
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.asyncio
 
@@ -838,12 +839,12 @@ async def test_finalise_invents_no_outcome_for_a_composition_it_did_not_run(
             conversation_id=_uuid.UUID(conversation),
             kind="briefing",
             state=WorkflowState.RUNNING,
-            plan=plan.model_dump(mode="json"),
+            plan=plan.model_dump(mode="json"), **ADMIN_SCOPE.write_columns(),
         )
         session.add(workflow)
         await session.flush()
 
-        service = WorkflowService(session, settings=c.settings)
+        service = WorkflowService(session, settings=c.settings, scope=ADMIN_SCOPE)
         result = await service.finalise(workflow.id, "a synthesis")
 
     # It wrote nothing, so it must claim nothing -- in particular not the

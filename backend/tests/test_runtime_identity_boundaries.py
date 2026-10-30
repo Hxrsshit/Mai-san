@@ -30,6 +30,7 @@ from app.runtime.facts import (
 from app.services.conversation_service import ConversationService
 
 from tests.conftest import FakeLLMProvider
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
@@ -50,7 +51,7 @@ CONTRADICTIONS = [
 async def seed_memory(session_factory, content: str) -> None:
     """Store a memory directly, at maximum importance and confidence."""
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         session.add(
             Memory(
                 content=content,
@@ -59,7 +60,7 @@ async def seed_memory(session_factory, content: str) -> None:
                 status=MemoryStatus.ACTIVE,
                 importance_score=10,
                 confidence_score=1.0,
-                source_conversation_id=conversation.id,
+                source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
             )
         )
         await session.commit()

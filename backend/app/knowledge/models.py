@@ -48,6 +48,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    same_scope_reference,
+)
 
 
 def _enum_values(enum_cls) -> list:
@@ -82,7 +87,7 @@ class ConflictReason(str, enum.Enum):
     EXCLUSIVE_AMBIGUOUS = "exclusive_ambiguous"
 
 
-class KnowledgeConflict(Base):
+class KnowledgeConflict(Base, KnowledgeScopeColumns):
     """One detected conflict between two pieces of stored knowledge.
 
     The kind is decided by which `older_*` column is populated; the other
@@ -201,6 +206,13 @@ class KnowledgeConflict(Base):
             "ix_knowledge_conflicts_newer_relationship_id", "newer_relationship_id"
         ),
         Index("ix_knowledge_conflicts_resolution", "resolution"),
+        knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_reference("knowledge_conflicts", "older_memory_id", "memories"),
+        same_scope_reference("knowledge_conflicts", "newer_memory_id", "memories"),
+        same_scope_reference("knowledge_conflicts", "triggering_memory_id", "memories"),
+        same_scope_reference("knowledge_conflicts", "older_relationship_id", "relationships"),
+        same_scope_reference("knowledge_conflicts", "newer_relationship_id", "relationships"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

@@ -350,3 +350,614 @@ def postgres_url() -> str:
 def test_the_chain_runs_on_postgresql() -> None:
     """The test that would have caught this, on the dialect that showed it."""
     alembic(postgres_url(), "head")
+
+
+# --- Stage 7A: the organisation-identity migration --------------------------
+# The suite's databases are built by `create_all` plus a test-only seed
+# (`tests/conftest.py`). These tests keep that honest: the migration's seed is
+# the same, it is readable through the application's own query, and the
+# migrated schema -- including the two partial unique indexes and their
+# predicates -- is the schema the models declare.
+
+IDENTITY_TABLES = (
+    "organisations", "users", "organisation_members", "user_identities", "identity_link_codes",
+)
+
+
+def alembic_downgrade(url: str, target: str) -> None:
+    """`alembic downgrade`, in a subprocess, like `alembic` above."""
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "downgrade", target],
+        cwd=BACKEND,
+        env={"PATH": "/usr/bin:/bin", "DATABASE_URL": url, "GROQ_API_KEY": "test-key",
+             "LOG_LEVEL": "WARNING"},
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"alembic downgrade {target} failed:\n{result.stdout}\n{result.stderr}")
+
+
+def _migration_0020():
+    path = MIGRATIONS / "0020_organisation_identity.py"
+    spec = importlib.util.spec_from_file_location("migration_0020", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_0020_seed_literals_equal_the_application_constants() -> None:
+    from app.core.owner import CONFIGURED_OWNER_ID
+    from app.identity import constants
+
+    migration = _migration_0020()
+    assert migration.DEFAULT_ORGANISATION_ID == constants.DEFAULT_ORGANISATION_ID
+    assert migration.DEFAULT_ORGANISATION_NAME == constants.DEFAULT_ORGANISATION_NAME
+    assert migration.LEGACY_ADMIN_USER_ID == constants.LEGACY_ADMIN_USER_ID
+    assert migration.LEGACY_ADMIN_DISPLAY_NAME == constants.LEGACY_ADMIN_DISPLAY_NAME
+    assert migration.LEGACY_ADMIN_MEMBER_ID == constants.LEGACY_ADMIN_MEMBER_ID == CONFIGURED_OWNER_ID
+
+
+def _seed_rows(database) -> dict:
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        found = {
+            table: connection.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one()
+            for table in ("organisations", "users", "organisation_members")
+        }
+    engine.dispose()
+    return found
+
+
+async def test_the_migrated_seed_is_the_active_admin_read_by_the_application(tmp_path) -> None:
+    """Through the application's own query and the real SQLite `Uuid` storage
+    path: a seed written in another form would not match, and every request
+    on a migrated database would be refused."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.owner import CONFIGURED_OWNER_ID
+    from app.identity.constants import DEFAULT_ORGANISATION_ID, Role
+    from app.identity.principal import load_active_principal
+
+    database = tmp_path / "seed.db"
+    alembic(f"sqlite+aiosqlite:///{database}", "head")
+    assert _seed_rows(database) == {"organisations": 1, "users": 1, "organisation_members": 1}
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
+    try:
+        async with engine.connect() as connection:
+            from sqlalchemy.ext.asyncio import AsyncSession
+
+            async with AsyncSession(bind=connection) as session:
+                principal = await load_active_principal(session, CONFIGURED_OWNER_ID)
+    finally:
+        await engine.dispose()
+    assert principal is not None
+    assert principal.member_id == CONFIGURED_OWNER_ID
+    assert principal.organisation_id == DEFAULT_ORGANISATION_ID
+    assert principal.role is Role.ADMIN
+
+
+def test_0020_downgrades_and_upgrades_again_with_one_seed(tmp_path) -> None:
+    database = tmp_path / "cycle.db"
+    url = f"sqlite+aiosqlite:///{database}"
+    alembic(url, "head")
+    alembic_downgrade(url, "0019")
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        remaining = {
+            row[0] for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'table'")
+            )
+        }
+    engine.dispose()
+    assert not remaining & set(IDENTITY_TABLES)
+    alembic(url, "head")
+    assert _seed_rows(database) == {"organisations": 1, "users": 1, "organisation_members": 1}
+
+
+def _schema(database) -> dict:
+    """Every schema object of the identity tables, as SQLite records it."""
+    from sqlalchemy import inspect
+
+    engine = create_engine(f"sqlite:///{database}")
+    found = {}
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        for table in IDENTITY_TABLES:
+            found[table] = {
+                "columns": sorted(
+                    (c["name"], str(c["type"]), c["nullable"]) for c in inspector.get_columns(table)
+                ),
+                "pk": inspector.get_pk_constraint(table)["name"],
+                "checks": sorted(
+                    (c["name"], " ".join(c["sqltext"].split()))
+                    for c in inspector.get_check_constraints(table)
+                ),
+                "uniques": sorted(
+                    (u["name"], tuple(u["column_names"])) for u in inspector.get_unique_constraints(table)
+                ),
+                "fks": sorted(
+                    (f["name"], tuple(f["constrained_columns"]), f["referred_table"],
+                     f.get("options", {}).get("ondelete"))
+                    for f in inspector.get_foreign_keys(table)
+                ),
+            }
+        # Indexes as SQLite stores their DDL: this is where a partial index's
+        # WHERE predicate lives, and what an inspector of constraints misses.
+        rows = connection.execute(text(
+            "SELECT tbl_name, name, sql FROM sqlite_master "
+            "WHERE type = 'index' AND sql IS NOT NULL"
+        )).all()
+    engine.dispose()
+    for table, name, sql in rows:
+        if table in found:
+            found[table].setdefault("indexes", []).append((name, " ".join(sql.split())))
+    for table in found:
+        found[table]["indexes"] = sorted(found[table].get("indexes", []))
+    return found
+
+
+def test_the_migrated_identity_schema_is_the_models_schema(tmp_path) -> None:
+    from app.database.metadata import Base
+
+    migrated = tmp_path / "migrated.db"
+    alembic(f"sqlite+aiosqlite:///{migrated}", "head")
+
+    declared = tmp_path / "declared.db"
+    engine = create_engine(f"sqlite:///{declared}")
+    Base.metadata.create_all(engine, tables=[Base.metadata.tables[t] for t in IDENTITY_TABLES])
+    engine.dispose()
+
+    expected, actual = _schema(declared), _schema(migrated)
+    assert actual == expected
+    # The comparison is not vacuous: both partial unique indexes are there,
+    # with their predicate.
+    indexes = dict(actual["user_identities"]["indexes"])
+    for name in ("uq_user_identities_provider_subject_attached",
+                 "uq_user_identities_user_id_provider_attached"):
+        assert indexes[name].startswith("CREATE UNIQUE INDEX")
+        assert indexes[name].endswith("WHERE detached_at IS NULL")
+
+
+# --- Stage 7B L0: knowledge-scope columns (0021) ----------------------------
+# The upgrade backfills only `organisation_id` (to the one default
+# organisation), never a scope; the downgrade refuses whenever dropping the
+# columns would lose ownership. Rows are inserted at 0020 with raw SQL, as
+# the old releases wrote them.
+
+SCOPED_TABLES = (
+    "conversations", "memories", "entities", "entity_aliases", "relationships",
+    "knowledge_conflicts", "reminders", "executions", "workflows", "imported_archives",
+)
+DEFAULT_ORG_HEX = uuid.UUID("00000000-0000-0000-0000-00000000b1b1").hex
+ADMIN_MEMBER_HEX = uuid.UUID("00000000-0000-0000-0000-00000000a1a1").hex
+
+
+def alembic_attempt(url: str, *command: str) -> subprocess.CompletedProcess:
+    """`alembic <command>`, returning the result instead of raising."""
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *command],
+        cwd=BACKEND,
+        env={"PATH": "/usr/bin:/bin", "DATABASE_URL": url, "GROQ_API_KEY": "test-key",
+             "LOG_LEVEL": "WARNING"},
+        capture_output=True, text=True,
+    )
+
+
+def _columns(database, table: str) -> set:
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.connect() as connection:
+        found = {row[1] for row in connection.execute(text(f"PRAGMA table_info({table})"))}
+    engine.dispose()
+    return found
+
+
+def _scalar(database, sql: str, params=None):
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        value = connection.execute(text(sql), params or {}).scalar()
+    engine.dispose()
+    return value
+
+
+def _execute(database, sql: str, params=None) -> None:
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        connection.execute(text(sql), params or {})
+    engine.dispose()
+
+
+@pytest.fixture
+def legacy_at_0020(tmp_path):
+    """A database at 0020 holding legacy rows: a conversation, a memory and an entity."""
+    database = tmp_path / "legacy.db"
+    url = f"sqlite+aiosqlite:///{database}"
+    alembic(url, "0020")
+    conversation = uuid.uuid4().hex
+    _execute(database, "INSERT INTO conversations (id, title, created_at, updated_at) "
+                       "VALUES (:id, 'legacy', :now, :now)", {"id": conversation, "now": BASE})
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.begin() as connection:
+        insert_duplicate(connection, uuid.UUID(conversation), "legacy fact", "legacy fact", 0, "semantic")
+    engine.dispose()
+    _execute(database, "INSERT INTO entities (id, canonical_name, normalized_name, entity_type, "
+                       "status, created_at, updated_at) VALUES (:id, 'Legacy', 'legacy', "
+                       "'person', 'active', :now, :now)", {"id": uuid.uuid4().hex, "now": BASE})
+    return url, database
+
+
+def _row_counts(database) -> dict:
+    return {t: _scalar(database, f"SELECT COUNT(*) FROM {t}") for t in SCOPED_TABLES}
+
+
+def test_0021_backfills_only_the_organisation_and_preserves_every_row(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    before = _row_counts(database)
+    # Not vacuous: legacy rows exist (the chain itself also seeds an entity).
+    assert before["conversations"] >= 1 and before["memories"] >= 1 and before["entities"] >= 1
+    alembic(url, "head")
+    assert _row_counts(database) == before
+    for table in SCOPED_TABLES:
+        assert {"organisation_id", "scope_id", "scope_visibility"} <= _columns(database, table)
+        assert _scalar(database, f"SELECT COUNT(*) FROM {table} WHERE organisation_id IS NULL "
+                                 f"OR organisation_id <> :org", {"org": DEFAULT_ORG_HEX}) == 0, table
+        # Never a guessed scope: legacy rows stay unattributed.
+        assert _scalar(database, f"SELECT COUNT(*) FROM {table} WHERE scope_id IS NOT NULL "
+                                 f"OR scope_visibility IS NOT NULL") == 0, table
+
+
+def test_0021_downgrades_cleanly_when_only_the_backfill_is_present(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    before = _row_counts(database)
+    alembic(url, "head")
+    result = alembic_attempt(url, "downgrade", "0020")
+    assert result.returncode == 0, result.stderr
+    assert _row_counts(database) == before
+    for table in SCOPED_TABLES:
+        assert not {"organisation_id", "scope_id", "scope_visibility"} & _columns(database, table)
+    alembic(url, "head")     # and the upgrade recreates the backfill exactly
+    assert _scalar(database, "SELECT COUNT(*) FROM conversations WHERE organisation_id = :org",
+                   {"org": DEFAULT_ORG_HEX}) == 1
+
+
+@pytest.mark.parametrize("ownership_sql", [
+    # a row with a scope (personal, the Admin's)
+    "UPDATE conversations SET scope_id = :member, scope_visibility = 'personal'",
+    # a row attributed to an organisation other than the default
+    "UPDATE memories SET organisation_id = :other",
+])
+def test_0021_downgrade_refuses_when_it_would_lose_ownership(legacy_at_0020, ownership_sql) -> None:
+    url, database = legacy_at_0020
+    alembic(url, "0021")
+    _execute(database, ownership_sql, {"member": ADMIN_MEMBER_HEX, "other": uuid.uuid4().hex})
+    before = _row_counts(database)
+    result = alembic_attempt(url, "downgrade", "0020")
+    assert result.returncode != 0
+    assert "0021 downgrade refused" in result.stdout + result.stderr
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0021"
+    assert _row_counts(database) == before
+    for table in SCOPED_TABLES:      # nothing was dropped
+        assert {"organisation_id", "scope_id", "scope_visibility"} <= _columns(database, table)
+
+
+#: Offline (`--sql`) generation never connects, so any well-formed URL will do.
+OFFLINE_URL = "postgresql+asyncpg://offline:offline@127.0.0.1:1/mai_offline_test"
+
+
+@pytest.mark.parametrize("command", [
+    ("upgrade", "0020:0021", "--sql"),
+    ("downgrade", "0021:0020", "--sql"),
+])
+def test_0021_refuses_offline_sql_generation(command) -> None:
+    """Review L2. Offline mode cannot read the database, so 0021 cannot check
+    its own preconditions (the default organisation exists; a downgrade loses
+    no ownership). It must refuse with its own message -- not crash on
+    `bind.execute()` returning None, and not emit a script without the checks."""
+    result = alembic_attempt(OFFLINE_URL, *command)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "0021 refused: offline" in output
+    assert "AttributeError" not in output
+    assert "ALTER TABLE" not in result.stdout
+
+
+def test_offline_sql_generation_still_works_before_0021() -> None:
+    """The refusal is 0021's alone: earlier migrations still render offline."""
+    result = alembic_attempt(OFFLINE_URL, "upgrade", "0019:0020", "--sql")
+    assert result.returncode == 0, result.stderr
+    assert "CREATE TABLE organisations" in result.stdout
+
+
+def test_0021_refuses_without_the_default_organisation(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    for sql in ("DELETE FROM organisation_members", "DELETE FROM users", "DELETE FROM organisations"):
+        _execute(database, sql)
+    result = alembic_attempt(url, "upgrade", "head")
+    assert result.returncode != 0
+    assert "0021 refused" in result.stdout + result.stderr
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0020"
+    assert "scope_id" not in _columns(database, "conversations")
+
+
+def _scope_schema(database) -> dict:
+    """The scope columns, CHECK and index of each scoped table, as SQLite records them."""
+    from sqlalchemy import inspect
+
+    engine = create_engine(f"sqlite:///{database}")
+    found = {}
+    with engine.connect() as connection:
+        inspector = inspect(connection)
+        for table in SCOPED_TABLES:
+            found[table] = {
+                "columns": sorted(
+                    (c["name"], str(c["type"]), c["nullable"], c.get("default"))
+                    for c in inspector.get_columns(table)
+                    if c["name"] in ("organisation_id", "scope_id", "scope_visibility")
+                ),
+                "checks": sorted(
+                    (c["name"], " ".join(c["sqltext"].split()))
+                    for c in inspector.get_check_constraints(table)
+                    if c["name"] and c["name"].endswith("knowledge_scope_valid")
+                ),
+                "index": " ".join(connection.execute(text(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = :n"),
+                    {"n": f"ix_{table}_scope_id"}).scalar_one().split()),
+            }
+    engine.dispose()
+    return found
+
+
+def test_the_migrated_scope_schema_is_the_models_scope_schema(tmp_path) -> None:
+    from app.database.metadata import Base
+
+    migrated = tmp_path / "migrated.db"
+    alembic(f"sqlite+aiosqlite:///{migrated}", "head")
+    declared = tmp_path / "declared.db"
+    engine = create_engine(f"sqlite:///{declared}")
+    Base.metadata.create_all(engine)
+    engine.dispose()
+
+    expected, actual = _scope_schema(declared), _scope_schema(migrated)
+    assert actual == expected
+    for table in SCOPED_TABLES:      # not vacuous
+        assert len(actual[table]["columns"]) == 3 and len(actual[table]["checks"]) == 1, table
+
+
+# --- Stage 7B units 5-6: uniqueness per scope (0022) ---------------------------
+
+SCOPED_INDEXES_0022 = {
+    "memories": "type_normalized_content",
+    "entities": "normalized_name",
+    "entity_aliases": "normalized_alias",
+}
+OLD_INDEXES_0022 = {
+    "memories": "uq_memories_type_normalized_content",
+    "entities": "uq_entities_normalized_name",
+    "entity_aliases": "uq_entity_aliases_normalized_alias",
+}
+COLLEAGUE_MEMBER_HEX = uuid.UUID("00000000-0000-0000-0000-0000000c0111").hex
+
+
+def _index_names(database, table: str) -> set:
+    return {row[1] for row in _rows(database, f"PRAGMA index_list({table})")}
+
+
+def _rows(database, sql: str, params=None) -> list:
+    engine = create_engine(f"sqlite:///{database}")
+    with engine.connect() as connection:
+        found = list(connection.execute(text(sql), params or {}))
+    engine.dispose()
+    return found
+
+
+def _insert_entity(database, normalized: str, member_hex=None) -> None:
+    scope = (", :org, :member, 'personal'" if member_hex else ", :org, NULL, NULL")
+    _execute(database, "INSERT INTO entities (id, canonical_name, normalized_name, entity_type, "
+                       "status, created_at, updated_at, organisation_id, scope_id, scope_visibility) "
+                       "VALUES (:id, :name, :name, 'technology', 'active', :now, :now" + scope + ")",
+             {"id": uuid.uuid4().hex, "name": normalized, "now": BASE,
+              "org": DEFAULT_ORG_HEX, "member": member_hex})
+
+
+def test_0022_replaces_each_global_index_with_two_partial_ones(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    before = _row_counts(database)
+    alembic(url, "0022")
+    assert _row_counts(database) == before                 # no data change
+    for table, stem in SCOPED_INDEXES_0022.items():
+        names = _index_names(database, table)
+        assert {f"uq_{table}_scoped_{stem}", f"uq_{table}_legacy_{stem}"} <= names, table
+        assert OLD_INDEXES_0022[table] not in names, table
+
+
+def test_0022_lets_two_scopes_hold_the_same_name_but_not_one_scope_twice(legacy_at_0020) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    url, database = legacy_at_0020
+    alembic(url, "0022")
+    _insert_entity(database, "postgresql", ADMIN_MEMBER_HEX)
+    _insert_entity(database, "postgresql", COLLEAGUE_MEMBER_HEX)   # another member: allowed
+    with pytest.raises(IntegrityError):
+        _insert_entity(database, "postgresql", ADMIN_MEMBER_HEX)   # same scope: refused
+    # The legacy guarantee is kept among unattributed rows: 'legacy' exists.
+    with pytest.raises(IntegrityError):
+        _insert_entity(database, "legacy")
+    _insert_entity(database, "legacy", ADMIN_MEMBER_HEX)           # attributed copy: allowed
+
+
+def test_0022_downgrades_cleanly_when_no_key_is_shared(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    alembic(url, "0022")
+    _insert_entity(database, "only-admin", ADMIN_MEMBER_HEX)
+    result = alembic_attempt(url, "downgrade", "0021")
+    assert result.returncode == 0, result.stderr
+    for table, stem in SCOPED_INDEXES_0022.items():
+        names = _index_names(database, table)
+        assert OLD_INDEXES_0022[table] in names
+        assert not {f"uq_{table}_scoped_{stem}", f"uq_{table}_legacy_{stem}"} & names
+
+
+@pytest.mark.parametrize("second_member", [COLLEAGUE_MEMBER_HEX, None])
+def test_0022_downgrade_refuses_when_a_key_is_shared_across_scopes(legacy_at_0020, second_member) -> None:
+    """Two members (or a member and a legacy row) holding the same name cannot
+    go back under one global index; the downgrade refuses and changes nothing."""
+    url, database = legacy_at_0020
+    alembic(url, "0022")
+    _insert_entity(database, "shared", ADMIN_MEMBER_HEX)
+    _insert_entity(database, "shared", second_member)
+    before = _row_counts(database)
+    result = alembic_attempt(url, "downgrade", "0021")
+    assert result.returncode != 0
+    assert "0022 downgrade refused" in result.stdout + result.stderr
+    assert "entities: 1" in result.stdout + result.stderr
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0022"
+    assert _row_counts(database) == before
+    assert "uq_entities_scoped_normalized_name" in _index_names(database, "entities")
+
+
+def test_0022_refuses_an_offline_downgrade() -> None:
+    result = alembic_attempt(OFFLINE_URL, "downgrade", "0022:0021", "--sql")
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "0022 refused: offline" in output
+    assert "CREATE UNIQUE INDEX" not in result.stdout
+
+
+def test_0022_renders_its_upgrade_offline() -> None:
+    result = alembic_attempt(OFFLINE_URL, "upgrade", "0021:0022", "--sql")
+    assert result.returncode == 0, result.stderr
+    assert "uq_entities_scoped_normalized_name" in result.stdout
+    assert "WHERE scope_id IS NOT NULL" in result.stdout
+
+
+# --- Stage 7B unit 8b: execution idempotency per scope (0023) ----------------
+
+
+def _insert_execution(database, key: str, member_hex=None) -> None:
+    scope = (", :org, :member, 'personal'" if member_hex else ", :org, NULL, NULL")
+    _execute(database, "INSERT INTO executions (id, tool_name, arguments, state, "
+                       "authorization_status, idempotency_key, created_at, updated_at, "
+                       "organisation_id, scope_id, scope_visibility) VALUES (:id, 'echo', '{}', "
+                       "'proposed', 'allowed', :key, :now, :now" + scope + ")",
+             {"id": uuid.uuid4().hex, "key": key, "now": BASE, "org": DEFAULT_ORG_HEX,
+              "member": member_hex})
+
+
+def test_0023_makes_execution_idempotency_per_scope(legacy_at_0020) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    url, database = legacy_at_0020
+    alembic(url, "0023")
+    names = _index_names(database, "executions")
+    assert {"uq_executions_scoped_idempotency_key", "uq_executions_legacy_idempotency_key"} <= names
+    assert "uq_executions_idempotency_key" not in names
+    _insert_execution(database, "same-payload", ADMIN_MEMBER_HEX)
+    _insert_execution(database, "same-payload", COLLEAGUE_MEMBER_HEX)     # another scope: allowed
+    with pytest.raises(IntegrityError):
+        _insert_execution(database, "same-payload", ADMIN_MEMBER_HEX)     # the same scope: refused
+
+
+def test_0023_downgrade_refuses_a_key_shared_across_scopes_and_is_clean_otherwise(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    alembic(url, "0023")
+    _insert_execution(database, "only-admin", ADMIN_MEMBER_HEX)
+    clean = alembic_attempt(url, "downgrade", "0022")
+    assert clean.returncode == 0, clean.stderr
+    assert "uq_executions_idempotency_key" in _index_names(database, "executions")
+    alembic(url, "0023")
+    _insert_execution(database, "shared", ADMIN_MEMBER_HEX)
+    _insert_execution(database, "shared", COLLEAGUE_MEMBER_HEX)
+    refused = alembic_attempt(url, "downgrade", "0022")
+    assert refused.returncode != 0
+    assert "0023 downgrade refused" in refused.stdout + refused.stderr
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0023"
+
+
+def test_0023_refuses_an_offline_downgrade_and_renders_its_upgrade() -> None:
+    refused = alembic_attempt(OFFLINE_URL, "downgrade", "0023:0022", "--sql")
+    assert refused.returncode != 0 and "0023 refused: offline" in refused.stdout + refused.stderr
+    rendered = alembic_attempt(OFFLINE_URL, "upgrade", "0022:0023", "--sql")
+    assert rendered.returncode == 0, rendered.stderr
+    assert "uq_executions_scoped_idempotency_key" in rendered.stdout
+
+
+# --- Stage 7B unit 9: the archive duplicate check per scope (0024) ---------------
+
+
+def _insert_archive(database, digest: str, member_hex=None) -> None:
+    scope = (", :org, :member, 'personal'" if member_hex else ", :org, NULL, NULL")
+    _execute(database, "INSERT INTO imported_archives (id, source_filename, source_sha256, "
+                       "source_bytes, import_format, status, conversations_imported, "
+                       "messages_imported, conversations_skipped, messages_skipped, redactions, "
+                       "memories_derived, created_at, updated_at, organisation_id, scope_id, "
+                       "scope_visibility) VALUES (:id, 'export.json', :digest, 1, 'chatgpt_json', "
+                       "'completed', 0, 0, 0, 0, 0, 0, :now, :now" + scope + ")",
+             {"id": uuid.uuid4().hex, "digest": digest, "now": BASE, "org": DEFAULT_ORG_HEX,
+              "member": member_hex})
+
+
+def test_0024_makes_the_archive_digest_per_scope_and_downgrades_safely(legacy_at_0020) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    url, database = legacy_at_0020
+    alembic(url, "0024")
+    names = _index_names(database, "imported_archives")
+    assert {"uq_imported_archives_scoped_source_sha256",
+            "uq_imported_archives_legacy_source_sha256"} <= names
+    assert "uq_imported_archives_source_sha256" not in names
+    _insert_archive(database, "d" * 64, ADMIN_MEMBER_HEX)
+    _insert_archive(database, "d" * 64, COLLEAGUE_MEMBER_HEX)      # another scope: allowed
+    with pytest.raises(IntegrityError):
+        _insert_archive(database, "d" * 64, ADMIN_MEMBER_HEX)      # the same scope: refused
+    refused = alembic_attempt(url, "downgrade", "0023")
+    assert refused.returncode != 0 and "0024 downgrade refused" in refused.stdout + refused.stderr
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0024"
+    _execute(database, "DELETE FROM imported_archives")
+    clean = alembic_attempt(url, "downgrade", "0023")
+    assert clean.returncode == 0, clean.stderr
+    assert "uq_imported_archives_source_sha256" in _index_names(database, "imported_archives")
+
+
+def test_0024_refuses_an_offline_downgrade_and_renders_its_upgrade() -> None:
+    refused = alembic_attempt(OFFLINE_URL, "downgrade", "0024:0023", "--sql")
+    assert refused.returncode != 0 and "0024 refused: offline" in refused.stdout + refused.stderr
+    rendered = alembic_attempt(OFFLINE_URL, "upgrade", "0023:0024", "--sql")
+    assert rendered.returncode == 0, rendered.stderr
+    assert "uq_imported_archives_scoped_source_sha256" in rendered.stdout
+
+
+# --- Stage 7B unit 10: same-scope references (0025) ------------------------------
+
+
+def test_0025_refuses_a_reference_across_scopes_and_changes_nothing(legacy_at_0020) -> None:
+    """The precondition runs on every dialect (the constraints themselves are
+    PostgreSQL's; see the gated PostgreSQL tests)."""
+    url, database = legacy_at_0020
+    alembic(url, "0024")
+    conversation = _scalar(database, "SELECT id FROM conversations LIMIT 1")
+    _execute(database, "UPDATE conversations SET scope_id = :member, scope_visibility = 'personal'",
+             {"member": COLLEAGUE_MEMBER_HEX})
+    _execute(database, "UPDATE memories SET scope_id = :member, scope_visibility = 'personal', "
+                       "source_conversation_id = :conversation",
+             {"member": ADMIN_MEMBER_HEX, "conversation": conversation})
+    result = alembic_attempt(url, "upgrade", "head")
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "0025 refused" in output and "memories.source_conversation_id: 1" in output
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0024"
+
+
+def test_0025_upgrades_and_downgrades_on_clean_data(legacy_at_0020) -> None:
+    url, database = legacy_at_0020
+    alembic(url, "head")
+    assert _scalar(database, "SELECT version_num FROM alembic_version") == "0025"
+    assert alembic_attempt(url, "downgrade", "0024").returncode == 0
+    alembic(url, "head")
+
+
+def test_0025_refuses_an_offline_upgrade_and_renders_its_downgrade() -> None:
+    refused = alembic_attempt(OFFLINE_URL, "upgrade", "0024:0025", "--sql")
+    assert refused.returncode != 0 and "0025 refused: offline" in refused.stdout + refused.stderr
+    rendered = alembic_attempt(OFFLINE_URL, "downgrade", "0025:0024", "--sql")
+    assert rendered.returncode == 0, rendered.stderr
+    assert "fk_memories_source_conversation_id_same_scope" in rendered.stdout

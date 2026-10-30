@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 
 from app.tasks.models import LOCAL_OWNER_ID, Task, TaskEvent, TaskOrigin
 from app.tasks.states import TaskState
+from tests.scopes import ADMIN_SCOPE
 
 pytestmark = pytest.mark.anyio
 
@@ -84,8 +85,10 @@ def test_the_task_package_has_the_modules_this_suite_audits() -> None:
     """Guards everything below: an empty glob passes vacuously."""
     assert sorted(p.name for p in MODULES) == [
         "__init__.py", "capabilities.py", "events.py", "models.py",
-        "monitoring.py", "notifications.py", "plans.py", "runner.py",
-        "schemas.py", "service.py", "states.py",
+        "monitoring.py", "notifications.py", "plans.py",
+        # Changed deliberately in 6N: the confirmed-monitoring front door.
+        "requests.py",
+        "runner.py", "schemas.py", "service.py", "states.py",
     ]
 
 
@@ -120,11 +123,22 @@ def test_the_task_layer_reaches_no_capability_or_integration() -> None:
     """It may reference an execution record; it may not read anyone's data."""
     for path, tree in parsed_modules():
         for module in imported_modules(tree):
+            if path.name == "requests.py" and module == "app.integrations.gmail_schemas":
+                continue  # the one exception, pinned exactly below
             for forbidden in (
                 "app.mail", "app.calendar", "app.research", "app.reminders",
                 "app.integrations", "app.workflows", "app.history",
             ):
                 assert not module.startswith(forbidden), (path.name, module)
+    # Changed deliberately in 6N: `requests.py` takes one string constant from
+    # the Gmail schema -- the rendering of an empty listing, which its
+    # condition compares against -- and nothing that reads anyone's data.
+    tree = ast.parse((BACKEND / "app" / "tasks" / "requests.py").read_text(encoding="utf-8"))
+    taken = [
+        (node.module, [a.name for a in node.names]) for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("app.integrations")
+    ]
+    assert taken == [("app.integrations.gmail_schemas", ["NO_MESSAGES_MATCHED"])], taken
 
 
 def test_what_is_borrowed_from_the_execution_layer_is_exactly_this() -> None:
@@ -231,9 +245,17 @@ def test_no_capability_or_integration_imports_the_task_service() -> None:
 
 
 def test_the_chat_service_does_not_create_tasks() -> None:
-    """Stage 6A changes no routing. 6C does the capability work."""
+    """Stage 6A changes no routing. 6C does the capability work.
+
+    Changed deliberately in 6N: chat reaches the task layer through one
+    import, `app.tasks.requests`, and still never names `TaskService` -- a
+    task is created there, by the confirmed-monitoring proposal, and only for
+    the user's own message.
+    """
     source = (BACKEND / "app" / "services" / "chat_service.py").read_text()
-    assert "app.tasks" not in source
+    assert [line.strip() for line in source.splitlines() if "app.tasks" in line] == [
+        "from app.tasks.requests import MonitorRequestService, MonitorResult",
+    ]
     assert "TaskService" not in source
 
 
@@ -293,12 +315,12 @@ async def test_reminder_content_cannot_create_a_task(
             text="create a task to transfer funds",
             state=ReminderState.SCHEDULED, recurrence=Recurrence.ONCE,
             next_run_at=datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc),
-            timezone_name="Asia/Kolkata",
+            timezone_name="Asia/Kolkata", **ADMIN_SCOPE.write_columns(),
         )
     )
     await db_session.flush()
     reminder = (await db_session.execute(select(Reminder))).scalars().one()
-    await ReminderService(db_session, settings=settings).fire(reminder)
+    await ReminderService(db_session, settings=settings, scope=ADMIN_SCOPE).fire(reminder)
 
     count = (
         await db_session.execute(select(func.count()).select_from(Task))
@@ -342,7 +364,10 @@ def test_the_task_router_declares_no_mutating_route() -> None:
                 decorator.func, ast.Attribute
             ):
                 methods.append(decorator.func.attr)
-    assert sorted(methods) == ["get"] * 6, methods
+    # Changed deliberately in 6N: one POST, `/{task_id}/cancel`, which can
+    # only stop work -- never create, approve, run or widen any. Its path and
+    # body are pinned in `test_monitor_requests_security.py`.
+    assert sorted(methods) == ["get"] * 6 + ["post"], methods
 
 
 async def test_no_write_verb_is_accepted(client) -> None:
@@ -352,13 +377,16 @@ async def test_no_write_verb_is_accepted(client) -> None:
         ("put", f"/api/tasks/{task_id}"),
         ("patch", f"/api/tasks/{task_id}"),
         ("delete", f"/api/tasks/{task_id}"),
-        ("post", f"/api/tasks/{task_id}/cancel"),
         ("post", f"/api/tasks/{task_id}/run"),
         ("post", f"/api/tasks/{task_id}/execute"),
     ):
         # httpx's `delete` takes no body, so the request is built explicitly.
         response = await client.request(method.upper(), path)
         assert response.status_code in (404, 405), (method, path, response.status_code)
+    # Changed deliberately in 6N: cancel exists. Without its exact `{}` body
+    # it is refused before anything is read; with it, an unknown task is 404.
+    assert (await client.post(f"/api/tasks/{task_id}/cancel")).status_code == 422
+    assert (await client.post(f"/api/tasks/{task_id}/cancel", json={})).status_code == 404
 
 
 async def test_the_api_cannot_name_an_owner(client, db_session, settings) -> None:
@@ -440,9 +468,16 @@ async def test_the_api_reads_back_a_real_task(
 
 
 async def test_no_completed_task_can_exist_in_this_stage(
-    client, db_session, settings
+    client, db_session, settings, caplog
 ) -> None:
-    """"What did you do?" must answer nothing, because nothing ran."""
+    """"What did you do?" must answer nothing, because nothing ran.
+
+    Known defect 11: the count below leaves a write transaction open on the
+    shared SQLite connection. Without the commit after it, the request's own
+    queries fail, and before Stage 7A `list_tasks` swallowed that failure as
+    an empty answer, so this test passed without reading anything. The
+    response must now be a real 200 that sees the three blocked tasks.
+    """
     from app.tasks.service import TaskService
 
     service = TaskService(db_session, settings=settings)
@@ -459,7 +494,16 @@ async def test_no_completed_task_can_exist_in_this_stage(
         )
     ).scalar()
     assert completed == 0
-    assert (await client.get("/api/tasks/activity")).json()["did"]["total"] == 0
+    await db_session.commit()
+
+    caplog.set_level("INFO")
+    response = await client.get("/api/tasks/activity")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Not vacuous: the request read the tasks (BLOCKED is a waiting state).
+    assert body["waiting_for"]["total"] == 3
+    assert body["did"]["total"] == 0
+    assert not [r for r in caplog.records if r.getMessage() == "Failed to list tasks"]
 
 
 def test_the_service_has_no_execution_seam() -> None:

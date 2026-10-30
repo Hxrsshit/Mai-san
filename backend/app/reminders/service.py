@@ -22,6 +22,18 @@ the caller believes it is claiming. Two schedulers racing both issue it;
 `rowcount` makes exactly one of them the winner. Behind that, the unique index
 on `(reminder_id, due_at)` means even a claim that somehow succeeded twice
 cannot produce two notifications for the same occurrence.
+
+### Whose reminders (Stage 7B unit 8)
+
+The service belongs to one knowledge scope, given at construction: a
+member's own reminders are created with `scope.write_columns()`, and every
+read, cancellation, claim and notification is filtered by `scope.clause`.
+A conversation is linked only if it is in the same scope. Notifications have
+no scope of their own: they are read and marked only through a reminder of
+the scope. The scheduler (`app.reminders.scheduler`) finds due reminders of
+active members, re-checks each member under a share lock, and fires through
+a service built for that member's scope; unattributed (legacy) reminders are
+quarantined and never fire.
 """
 
 import uuid
@@ -34,6 +46,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
+from app.database.models.conversation import Conversation
+from app.identity.scope import KnowledgeScope, require_scope
 from app.reminders import language
 from app.reminders.language import ParsedSchedule, ScheduleProblem
 from app.reminders.models import (
@@ -109,10 +123,19 @@ class ReminderService:
     """Everything that reads or writes a reminder."""
 
     def __init__(
-        self, session: AsyncSession, settings: Optional[Settings] = None
+        self,
+        session: AsyncSession,
+        settings: Optional[Settings] = None,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "ReminderService")
         self._settings = settings or get_settings()
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        return self._scope
 
     # --- Timezone ------------------------------------------------------------
 
@@ -160,6 +183,13 @@ class ReminderService:
                 reason=parsed.problem.value if parsed.problem else None,
             )
 
+        if conversation_id is not None and not await self._conversation_in_scope(
+            conversation_id
+        ):
+            # Never link another scope's conversation (design section 4);
+            # the reminder itself is still the member's own.
+            conversation_id = None
+
         reminder = Reminder(
             text=parsed.text[: language.MAX_TEXT_CHARS],
             state=ReminderState.SCHEDULED,
@@ -168,6 +198,7 @@ class ReminderService:
             next_run_at=parsed.run_at.astimezone(timezone.utc),
             timezone_name=parsed.timezone_name,
             conversation_id=conversation_id,
+            **self._scope.write_columns(),
         )
 
         try:
@@ -209,13 +240,23 @@ class ReminderService:
             ),
         )
 
+    async def _conversation_in_scope(self, conversation_id: uuid.UUID) -> bool:
+        try:
+            return (await self._session.execute(
+                select(Conversation.id).where(
+                    Conversation.id == conversation_id, self._scope.clause(Conversation)
+                )
+            )).first() is not None
+        except _DB_ERRORS:
+            return False
+
     # --- Reading ---------------------------------------------------------------
 
     async def active(self, limit: int = MAX_LISTED) -> List[Reminder]:
         """Scheduled reminders, soonest first."""
         statement = (
             select(Reminder)
-            .where(Reminder.state == ReminderState.SCHEDULED)
+            .where(Reminder.state == ReminderState.SCHEDULED, self._scope.clause(Reminder))
             .order_by(Reminder.next_run_at.asc())
             .limit(limit)
         )
@@ -224,6 +265,28 @@ class ReminderService:
         except _DB_ERRORS as exc:
             logger.error("Failed to list reminders", extra={"error": str(exc)})
             return []
+
+    async def get(self, reminder_id: uuid.UUID) -> Optional[Reminder]:
+        """One of this scope's reminders by id, or None -- another member's
+        reminder is indistinguishable from a missing one. A filtered SELECT,
+        never `session.get` (the identity map would bypass the filter)."""
+        try:
+            return (await self._session.execute(
+                select(Reminder).where(Reminder.id == reminder_id, self._scope.clause(Reminder))
+                .execution_options(populate_existing=True)
+            )).scalars().first()
+        except _DB_ERRORS as exc:
+            logger.error("Failed to read a reminder", extra={"error": type(exc).__name__})
+            return None
+
+    async def cancel_by_id(self, reminder_id: uuid.UUID) -> ReminderResult:
+        """Cancel one of this scope's reminders by id. NOTHING_TO_CANCEL with
+        no reminder id when it is not this scope's (or does not exist)."""
+        reminder = await self.get(reminder_id)
+        if reminder is None:
+            return ReminderResult(outcome=ReminderOutcome.NOTHING_TO_CANCEL,
+                                  reply="No such reminder.", reason="reminder_not_found")
+        return await self._cancel(reminder)
 
     async def describe_active(self) -> ReminderResult:
         """The conversational answer to "what reminders do I have?"."""
@@ -319,6 +382,7 @@ class ReminderService:
                 .where(
                     Reminder.id == reminder.id,
                     Reminder.state == ReminderState.SCHEDULED,
+                    self._scope.clause(Reminder),
                 )
                 .values(
                     state=ReminderState.CANCELLED,
@@ -355,7 +419,9 @@ class ReminderService:
     # --- Firing ---------------------------------------------------------------------
 
     async def due(self, now: Optional[datetime] = None) -> List[Reminder]:
-        """Scheduled reminders whose time has come. Oldest first.
+        """This scope's scheduled reminders whose time has come. Oldest
+        first. (The scheduler's cross-member discovery is
+        `app.reminders.scheduler.due_reminders`.)
 
         `now` is injectable so the scheduler is testable at an arbitrary
         instant without sleeping.
@@ -366,6 +432,7 @@ class ReminderService:
             .where(
                 Reminder.state == ReminderState.SCHEDULED,
                 Reminder.next_run_at <= moment,
+                self._scope.clause(Reminder),
             )
             .order_by(Reminder.next_run_at.asc())
             .limit(MAX_PER_TICK)
@@ -393,7 +460,16 @@ class ReminderService:
         leave it delivered but unclaimed, and the next pass would deliver it
         again. A missed reminder is recoverable by the user; a duplicate at
         3am is not.
+
+        Only a reminder of this service's scope is fired (Stage 7B unit 8);
+        the claim itself is scope-filtered too.
         """
+        if not self._scope.owns(reminder):
+            logger.warning(
+                "Reminder fire refused: not in the service's scope",
+                extra={"reminder_id": str(reminder.id)},
+            )
+            return False
         # Normalised before any arithmetic: a naive value from the driver
         # would be read as machine-local and land the next occurrence hours
         # out. `stored` is what the WHERE clause compares against -- that
@@ -422,6 +498,7 @@ class ReminderService:
                     # recurring reminder already advanced by another pass
                     # would be advanced again.
                     Reminder.next_run_at == stored,
+                    self._scope.clause(Reminder),
                 )
                 .values(
                     state=claimed_state,
@@ -495,7 +572,7 @@ class ReminderService:
         try:
             await self._session.execute(
                 update(Reminder)
-                .where(Reminder.id == reminder.id)
+                .where(Reminder.id == reminder.id, self._scope.clause(Reminder))
                 .values(
                     failure_count=Reminder.failure_count + 1,
                     state=(
@@ -523,10 +600,15 @@ class ReminderService:
     async def pending_notifications(
         self, limit: int = MAX_LISTED
     ) -> Tuple[List[ReminderNotification], int]:
-        """Fired occurrences the user has not seen."""
+        """Fired occurrences of this scope's reminders the user has not seen.
+        A notification is reached only through its reminder's scope."""
         statement = (
             select(ReminderNotification)
-            .where(ReminderNotification.state == NotificationState.PENDING)
+            .join(Reminder, Reminder.id == ReminderNotification.reminder_id)
+            .where(
+                ReminderNotification.state == NotificationState.PENDING,
+                self._scope.clause(Reminder),
+            )
             .order_by(ReminderNotification.delivered_at.asc())
             .limit(limit)
         )
@@ -536,7 +618,11 @@ class ReminderService:
                 await self._session.execute(
                     select(func.count())
                     .select_from(ReminderNotification)
-                    .where(ReminderNotification.state == NotificationState.PENDING)
+                    .join(Reminder, Reminder.id == ReminderNotification.reminder_id)
+                    .where(
+                        ReminderNotification.state == NotificationState.PENDING,
+                        self._scope.clause(Reminder),
+                    )
                 )
             ).scalar_one()
         except _DB_ERRORS as exc:
@@ -552,6 +638,9 @@ class ReminderService:
                 .where(
                     ReminderNotification.id == notification_id,
                     ReminderNotification.state == NotificationState.PENDING,
+                    ReminderNotification.reminder_id.in_(
+                        select(Reminder.id).where(self._scope.clause(Reminder))
+                    ),
                 )
                 .values(state=NotificationState.READ)
                 .execution_options(synchronize_session="fetch")

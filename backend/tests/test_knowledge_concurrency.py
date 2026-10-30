@@ -22,7 +22,8 @@ from app.main import create_app
 from app.memory.models import Memory, MemoryStatus
 from app.relationships.models import Relationship, RelationshipStatus
 
-from tests.conftest import FakeLLMProvider
+from tests.conftest import AUTH_HEADERS, FakeLLMProvider
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -120,7 +121,7 @@ async def test_concurrent_turns_do_not_duplicate_lifecycle_links(
     app, provider, engine = file_backed
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         # Establish the knowledge that will be retired.
         provider.extraction_reply = json.dumps(
@@ -199,7 +200,7 @@ async def test_concurrent_evaluation_leaves_a_deterministic_final_state(
     app, provider, engine = file_backed
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         provider.extraction_reply = json.dumps(
             {
@@ -255,7 +256,7 @@ async def test_no_orphaned_or_self_referential_links_are_created(
     app, provider, engine = file_backed
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         provider.entity_reply = ENTITIES
         provider.relationship_reply = json.dumps({"relationships": []})
@@ -344,7 +345,8 @@ async def test_conflict_evaluation_failure_does_not_break_chat(
 
     # The earlier stages still committed their work.
     assert (await client.get("/api/memories")).json()["total"] == 1
-    assert (await client.get("/api/entities")).json()["total"] == 3
+    # Three extracted, plus the scope's own User (Stage 7B unit 5).
+    assert (await client.get("/api/entities")).json()["total"] == 4
 
     # And the failure is visible rather than swallowed.
     assert any(
@@ -410,13 +412,13 @@ async def test_a_partial_failure_does_not_stop_the_other_decisions(
     from tests.test_knowledge_lifecycle import make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     a = await make_memory(db_session, conversation, "Memory A.", day=0)
     b = await make_memory(db_session, conversation, "Memory B.", day=1)
     c = await make_memory(db_session, conversation, "Memory C.", day=2)
 
-    writer = LifecycleWriter(db_session)
+    writer = LifecycleWriter(db_session, scope=ADMIN_SCOPE)
     report = await writer.apply(
         [
             # Self-supersession: refused.

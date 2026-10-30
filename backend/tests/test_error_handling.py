@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.core.errors import DatabaseError
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 
 # --- Blank input ------------------------------------------------------------
@@ -97,7 +98,7 @@ class _BrokenSession:
     ],
 )
 async def test_database_failures_become_database_errors(error) -> None:
-    service = ConversationService(_BrokenSession(error))
+    service = ConversationService(_BrokenSession(error), ADMIN_SCOPE)
 
     with pytest.raises(DatabaseError):
         await service.create_conversation()
@@ -109,7 +110,7 @@ async def test_database_failures_become_database_errors(error) -> None:
 )
 async def test_database_failure_maps_to_503_not_500(error) -> None:
     """The status code the API actually returns."""
-    service = ConversationService(_BrokenSession(error))
+    service = ConversationService(_BrokenSession(error), ADMIN_SCOPE)
 
     with pytest.raises(DatabaseError) as caught:
         await service.list_conversations()
@@ -119,7 +120,7 @@ async def test_database_failure_maps_to_503_not_500(error) -> None:
 
 
 async def test_database_failure_on_read_is_also_mapped() -> None:
-    service = ConversationService(_BrokenSession(ConnectionRefusedError()))
+    service = ConversationService(_BrokenSession(ConnectionRefusedError()), ADMIN_SCOPE)
 
     with pytest.raises(DatabaseError):
         await service.get_conversation(uuid.uuid4())

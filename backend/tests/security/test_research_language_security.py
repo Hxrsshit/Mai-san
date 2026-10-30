@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 
 from app.execution.models import Execution, ExecutionEvent
 from app.execution.states import ExecutionState
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 NATURAL = "Search up the web and find out about Godzilla Minus One"
@@ -172,7 +173,7 @@ async def test_the_extracted_query_is_what_the_fingerprint_binds(
 
     async with session_factory() as session:
         execution = (await session.execute(select(Execution))).scalars().one()
-        service = ExecutionService(session, settings=execution_settings)
+        service = ExecutionService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         await service.approve(execution.id)
 
         # Swap the approved query for another.

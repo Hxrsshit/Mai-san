@@ -23,6 +23,7 @@ from app.knowledge.service import KnowledgeService
 from app.memory.models import Memory, MemoryStatus, MemoryType
 from app.prompt.formatter import REFERENCE_HEADER, knowledge_block
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -61,7 +62,7 @@ async def seed(session_factory, *contents, day_offset=0):
 
     ids = []
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         for index, content in enumerate(contents):
             created = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(
                 days=day_offset + index
@@ -75,7 +76,7 @@ async def seed(session_factory, *contents, day_offset=0):
                 confidence_score=0.95,
                 source_conversation_id=conversation.id,
                 created_at=created,
-                updated_at=created,
+                updated_at=created, **ADMIN_SCOPE.write_columns(),
             )
             session.add(memory)
             await session.flush()
@@ -195,7 +196,7 @@ async def test_a_broad_replacement_phrase_retires_nothing(
     from tests.test_knowledge_lifecycle import make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     for content in (
         "Mai uses PostgreSQL for storage.",
@@ -206,7 +207,7 @@ async def test_a_broad_replacement_phrase_retires_nothing(
         await make_memory(db_session, conversation, content, day=0)
 
     trigger = await make_memory(db_session, conversation, attack, day=10)
-    report = await KnowledgeService(db_session, settings).evaluate_memory(trigger)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(trigger)
 
     assert report.memories_superseded == 0, (
         f"{attack!r} deactivated unrelated knowledge"
@@ -222,7 +223,7 @@ async def test_supersession_is_bounded_even_when_it_does_fire(
     from tests.test_knowledge_lifecycle import make_entity, make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     await make_entity(db_session, "OpenRouter", EntityType.COMPANY)
     await make_entity(db_session, "Groq", EntityType.COMPANY)
@@ -240,7 +241,7 @@ async def test_supersession_is_bounded_even_when_it_does_fire(
     trigger = await make_memory(
         db_session, conversation, "User switched from OpenRouter to Groq.", day=10
     )
-    report = await KnowledgeService(db_session, settings).evaluate_memory(trigger)
+    report = await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(trigger)
 
     assert report.memories_superseded == 1, "supersession spread beyond its subject"
     rows = dict(
@@ -264,7 +265,7 @@ async def test_a_lookalike_entity_name_does_not_retire_the_real_one(
     from tests.test_knowledge_lifecycle import make_entity, make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     await make_entity(db_session, "Groq", EntityType.COMPANY)
     await make_entity(db_session, "Groq Inc", EntityType.COMPANY)
@@ -275,7 +276,7 @@ async def test_a_lookalike_entity_name_does_not_retire_the_real_one(
         db_session, conversation, "User switched from Groq Inc to Anthropic.", day=5
     )
 
-    await KnowledgeService(db_session, settings).evaluate_memory(trigger)
+    await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(trigger)
 
     # "Mai uses Groq." does not mention "groq inc", so it survives.
     assert (await db_session.get(Memory, real.id)).status is MemoryStatus.ACTIVE
@@ -293,11 +294,11 @@ async def test_an_alias_cannot_be_registered_against_two_entities(
     second = await make_entity(db_session, "Anthropic", EntityType.COMPANY)
 
     db_session.add(
-        EntityAlias(entity_id=first.id, alias="Provider", normalized_alias="provider")
+        EntityAlias(entity_id=first.id, alias="Provider", normalized_alias="provider", **ADMIN_SCOPE.write_columns())
     )
     await db_session.flush()
     db_session.add(
-        EntityAlias(entity_id=second.id, alias="Provider", normalized_alias="provider")
+        EntityAlias(entity_id=second.id, alias="Provider", normalized_alias="provider", **ADMIN_SCOPE.write_columns())
     )
     with pytest.raises(IntegrityError):
         await db_session.flush()
@@ -310,7 +311,7 @@ async def test_abandonment_only_affects_the_named_subject(
     from tests.test_knowledge_lifecycle import make_entity, make_memory
 
     conversation = (
-        await ConversationService(db_session).create_conversation()
+        await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     ).id
     await make_entity(db_session, "OpenRouter", EntityType.COMPANY)
 
@@ -324,7 +325,7 @@ async def test_abandonment_only_affects_the_named_subject(
     trigger = await make_memory(
         db_session, conversation, "User no longer uses OpenRouter.", day=5
     )
-    await KnowledgeService(db_session, settings).evaluate_memory(trigger)
+    await KnowledgeService(db_session, settings, scope=ADMIN_SCOPE).evaluate_memory(trigger)
 
     assert (await db_session.get(Memory, targeted.id)).status is MemoryStatus.SUPERSEDED
     assert (await db_session.get(Memory, spared.id)).status is MemoryStatus.ACTIVE
@@ -454,13 +455,13 @@ async def test_retrieval_stays_bounded_with_many_entities(
 ) -> None:
     """A wide entity graph must not produce an unbounded candidate pool."""
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
         for index in range(150):
             entity = Entity(
                 canonical_name=f"Tool{index}",
                 normalized_name=f"tool{index}",
                 entity_type=EntityType.TECHNOLOGY,
-                status=EntityStatus.ACTIVE,
+                status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
             )
             session.add(entity)
             await session.flush()
@@ -471,7 +472,7 @@ async def test_retrieval_stays_bounded_with_many_entities(
                 status=MemoryStatus.ACTIVE,
                 importance_score=8,
                 confidence_score=0.9,
-                source_conversation_id=conversation.id,
+                source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
             )
             session.add(memory)
             await session.flush()

@@ -15,16 +15,63 @@ which is what makes a loop this simple defensible.
 The loop itself is deliberately dumb: wake, ask for due reminders, fire each,
 sleep. It owns no state, so there is nothing in it to get out of step with the
 database.
+
+**Whose reminders (Stage 7B unit 8).** The pass finds due reminders that
+belong to an active member's personal scope (`active_member_rows`), so an
+unattributed (legacy) reminder or one of a revoked member is never selected
+and cannot occupy the bounded pass. Each is then fired only after its member
+is re-read under a share lock (`lock_active_principal`, the unit 7 gate) and
+the scope built from that principal owns the row; the firing service is
+bound to exactly that scope.
 """
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
+
+from sqlalchemy import select
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
-from app.reminders.service import ReminderService
+from app.identity.principal import lock_active_principal
+from app.identity.scope import KnowledgeScope, active_member_rows, personal_member_of
+from app.reminders.models import Reminder, ReminderState
+from app.reminders.service import MAX_PER_TICK, ReminderService
 
 logger = get_logger(__name__)
+
+
+async def due_reminders(session, now: Optional[datetime] = None) -> List[Reminder]:
+    """Every active member's scheduled reminders whose time has come, oldest
+    first, at most `MAX_PER_TICK`. Never an unattributed row."""
+    moment = now or datetime.now(timezone.utc)
+    return list((await session.execute(
+        select(Reminder)
+        .where(
+            Reminder.state == ReminderState.SCHEDULED,
+            Reminder.next_run_at <= moment,
+            active_member_rows(Reminder),
+        )
+        .order_by(Reminder.next_run_at.asc())
+        .limit(MAX_PER_TICK)
+    )).scalars().all())
+
+
+async def _fire_for_its_member(session, settings, reminder: Reminder) -> bool:
+    """Fire `reminder` through a service bound to its member's scope, only if
+    that member is still active (re-read under a share lock) and the scope
+    built from them owns the row. A refusal is False, never an error."""
+    member_id = personal_member_of(reminder)
+    if member_id is None:
+        return False
+    principal = await lock_active_principal(session, member_id)
+    if principal is None:
+        logger.info("Reminder not fired: its member is no longer active",
+                    extra={"reminder_id": str(reminder.id)})
+        return False
+    scope = KnowledgeScope.personal(principal)
+    if not scope.owns(reminder):
+        return False
+    return await ReminderService(session, settings=settings, scope=scope).fire(reminder)
 
 
 async def run_due_reminders(
@@ -44,11 +91,19 @@ async def run_due_reminders(
 
     try:
         async with session_factory() as session:
-            service = ReminderService(session, settings=settings)
-            due = await service.due(now=now)
-            for reminder in due:
-                if await service.fire(reminder):
-                    fired += 1
+            for reminder in await due_reminders(session, now=now):
+                # One savepoint per reminder: a failure on one -- its
+                # member's re-check included -- skips that reminder only,
+                # and never aborts the rest of the pass (Stage 7B unit 8).
+                try:
+                    async with session.begin_nested():
+                        if await _fire_for_its_member(session, settings, reminder):
+                            fired += 1
+                except Exception as exc:  # noqa: BLE001 - one reminder only
+                    logger.error(
+                        "Reminder skipped",
+                        extra={"reminder_id": str(reminder.id), "error": type(exc).__name__},
+                    )
             if session.in_transaction():
                 await session.commit()
     except Exception as exc:  # noqa: BLE001 - a tick must never kill the loop
@@ -77,4 +132,4 @@ async def run_due_reminders(
 from app.background.runtime import BackgroundRuntime as ReminderScheduler  # noqa: E402
 
 
-__all__ = ["ReminderScheduler", "run_due_reminders"]
+__all__ = ["ReminderScheduler", "due_reminders", "run_due_reminders"]

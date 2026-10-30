@@ -103,8 +103,10 @@ def attribute_writers(attr: str) -> set:
 
 
 def test_the_monitoring_module_imports_only_the_standard_library_and_pydantic() -> None:
+    # Changed deliberately in 6N: `datetime`, standard library, for the
+    # deadline helpers (`deadline_passed`, `clamp_to_deadline`).
     assert imports(parse(MONITORING)) == {
-        "enum", "math", "re", "typing", "pydantic",
+        "datetime", "enum", "math", "re", "typing", "pydantic",
     }
 
 
@@ -264,7 +266,9 @@ def test_the_runtime_routes_but_does_not_evaluate() -> None:
         [a.name for a in n.names] for n in ast.walk(tree)
         if isinstance(n, ast.ImportFrom) and n.module == "app.tasks.monitoring"
     ]
-    assert from_monitoring == [["interval_of"]]
+    # Changed deliberately in 6N: the deadline clamp, so no check is ever
+    # scheduled after a monitor ends. Still nothing that evaluates.
+    assert from_monitoring == [["clamp_to_deadline", "interval_of"]]
     names = called(tree)
     assert {"advance", "check"} <= names
     for forbidden in ("evaluate", "parse_spec", "run_returning_outcome",
@@ -332,7 +336,19 @@ def test_no_content_handling_module_or_http_route_can_configure_monitoring() -> 
         for node in ast.walk(parse(path)):
             if isinstance(node, ast.Attribute) and node.attr == "configure_monitoring":
                 offenders.append(str(path.relative_to(BACKEND)))
-    assert offenders == [], offenders
+    # Changed deliberately in 6N: exactly one caller, the confirmed-monitoring
+    # proposal in the task layer -- user-originated, and reached from a chat
+    # turn only through its own single door (pinned in
+    # `test_monitor_requests_security.py`). No HTTP route, no content module.
+    assert offenders == ["app/tasks/requests.py"], offenders
+    requests = parse(APP / "tasks" / "requests.py")
+    callers = [
+        f.name for f in ast.walk(requests)
+        if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(isinstance(n, ast.Attribute) and n.attr == "configure_monitoring"
+                for n in ast.walk(f))
+    ]
+    assert callers == ["_propose"], callers
 
 
 def test_configuring_takes_no_source_parameter() -> None:

@@ -23,9 +23,9 @@ the untrusted historical data that must not travel.
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import AppSettings, HistoryImport
+from app.api.deps import AppSettings, HistoryImport, require_admin
 from app.core.logging import get_logger
 from app.history.schemas import (
     ImportRequest,
@@ -39,7 +39,15 @@ from app.history.sources import list_sources
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/history", tags=["history"])
+# Admin-only (Stage 7B units 5-6 review M1; kept by unit 9). Archives, runs
+# and the duplicate check are per scope since unit 9, but the *sources* are
+# files mounted on the server -- the operator's own exports. A member
+# importing one would take the operator's history into their own scope. A
+# per-member import needs a per-member source (an upload path), which is a
+# product decision, not a scoping one.
+router = APIRouter(
+    prefix="/api/history", tags=["history"], dependencies=[Depends(require_admin)]
+)
 
 #: Reason codes that describe a bad request rather than a server problem.
 #: Anything not listed is a 500, so a new failure mode is loud by default.

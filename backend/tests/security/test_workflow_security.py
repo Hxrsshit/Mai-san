@@ -25,6 +25,7 @@ from app.workflows.models import Workflow
 from app.workflows.plans import find_plan
 from app.workflows.schemas import StepKind, WorkflowPlan, WorkflowStep, plan_fingerprint
 from app.workflows.states import WorkflowState
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
@@ -173,7 +174,7 @@ async def test_changing_the_plan_after_approval_invalidates_it(
         await session.commit()
 
     async with session_factory() as session:
-        service = WorkflowService(session, settings=execution_settings)
+        service = WorkflowService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         result = await service.finalise(workflow_id, "a synthesis")
         await session.commit()
 
@@ -206,7 +207,7 @@ async def test_an_expired_approval_does_not_write(
         workflow_id = workflow.id
 
     async with session_factory() as session:
-        service = WorkflowService(session, settings=execution_settings)
+        service = WorkflowService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         result = await service.finalise(workflow_id, "a synthesis")
         await session.commit()
 
@@ -261,7 +262,7 @@ async def test_a_workflow_approval_does_not_reach_an_api_execution(
     from app.execution.service import ExecutionService
 
     async with session_factory() as session:
-        service = ExecutionService(session, settings=execution_settings)
+        service = ExecutionService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         execution = await service.create(
             ExecutionRequest(
                 tool_name="create_text_file",
@@ -577,7 +578,7 @@ async def test_two_concurrent_finalise_calls_write_one_file(
 
     async def finalise():
         async with session_factory() as session:
-            service = WorkflowService(session, settings=execution_settings)
+            service = WorkflowService(session, settings=execution_settings, scope=ADMIN_SCOPE)
             try:
                 result = await service.finalise(workflow_id, "a synthesis")
                 await session.commit()
@@ -725,7 +726,7 @@ async def test_a_completed_workflow_cannot_be_finalised_again(
     before = sorted(item.name for item in workspace.iterdir())
 
     async with session_factory() as session:
-        service = WorkflowService(session, settings=execution_settings)
+        service = WorkflowService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         result = await service.finalise(workflow_id, "a different synthesis")
         await session.commit()
 
@@ -768,7 +769,7 @@ async def test_finalise_refuses_every_state_but_running(
         workflow_id = workflow.id
 
     async with session_factory() as session:
-        service = WorkflowService(session, settings=execution_settings)
+        service = WorkflowService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         result = await service.finalise(workflow_id, "a synthesis")
         await session.commit()
 
@@ -793,7 +794,7 @@ async def test_the_service_refuses_an_undeclared_transition(
 
     async with session_factory() as session:
         workflow = (await session.execute(select(Workflow))).scalars().one()
-        service = WorkflowService(session, settings=execution_settings)
+        service = WorkflowService(session, settings=execution_settings, scope=ADMIN_SCOPE)
 
         # AWAITING_APPROVAL -> SUCCEEDED is not a declared edge.
         with pytest.raises(ExecutionError) as refusal:
@@ -820,7 +821,7 @@ async def test_only_an_awaiting_workflow_is_pending(
     await send(research_client, conversation_id, REQUEST)
 
     async with session_factory() as session:
-        service = WorkflowService(session, settings=execution_settings)
+        service = WorkflowService(session, settings=execution_settings, scope=ADMIN_SCOPE)
         workflow = (await session.execute(select(Workflow))).scalars().one()
 
         assert await service._pending_for(conversation_id) is not None
@@ -953,6 +954,10 @@ async def test_a_non_succeeded_execution_is_not_reported_as_written(
         def __init__(self, inner):
             self._inner = inner
 
+        @property
+        def scope(self):
+            return self._inner.scope
+
         async def create(self, *args, **kwargs):
             self._execution = await self._inner.create(*args, **kwargs)
             return self._execution
@@ -974,8 +979,8 @@ async def test_a_non_succeeded_execution_is_not_reported_as_written(
             session,
             settings=execution_settings,
             executions=QuietlyFailingExecutions(
-                ExecutionService(session, settings=execution_settings)
-            ),
+                ExecutionService(session, settings=execution_settings, scope=ADMIN_SCOPE)
+            ), scope=ADMIN_SCOPE,
         )
         result = await service.finalise(workflow_id, "a synthesis")
         await session.commit()

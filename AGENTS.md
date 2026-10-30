@@ -73,9 +73,37 @@ strictly scoped stages (see `docs/CHANGELOG.md`).
   on Python 3.9: no runtime-evaluated `X | Y` unions, no `match`, no other
   3.10+ syntax. Dependency pins in `backend/requirements.txt` were chosen to
   support 3.9.
-- **Single owner:** there is no authentication layer. The owner is the
-  documented constant `LOCAL_OWNER_ID` (`app/tasks/models.py`). Owner columns
-  exist anyway, and every owner-scoped query filters on them.
+- **Single owner, one API token (Stage 6M.4):** the owner is
+  `CONFIGURED_OWNER_ID` (`app/core/owner.py`, the only definition;
+  `app.tasks.models.LOCAL_OWNER_ID` re-exports it). Owner columns exist, and
+  every owner-scoped query filters on them. HTTP callers authenticate with one
+  token; see §3 "API authentication".
+- **Organisation identity (Stage 7A):** `app/identity/` holds organisations,
+  users (people), organisation members (`admin` | `member`; `invited` |
+  `active` | `revoked`), linked Telegram identities and single-use link
+  codes (migration `0020`). One default organisation exists; its Admin
+  member **is** `CONFIGURED_OWNER_ID`, so every existing owner-scoped row
+  already belongs to that Admin. The shape is multi-tenant-ready, but **no
+  existing table is organisation-aware and tenant isolation is not
+  claimed**: conversations, messages, memories, entities, knowledge,
+  reminders and executions remain one global store. Employees have no chat
+  turns, no memory reads and no memory writes.
+- **Knowledge-scope foundation (Stage 7B L0):** ten tables
+  (`conversations`, `memories`, `entities`, `entity_aliases`,
+  `relationships`, `knowledge_conflicts`, `reminders`, `executions`,
+  `workflows`, `imported_archives`) carry nullable `organisation_id`,
+  `scope_id` and `scope_visibility` (`app/database/models/scope.py`,
+  migration `0021`), with one CHECK each. `app/identity/scope.py`
+  `KnowledgeScope` is the frozen, validated scope value, to be made only by
+  `KnowledgeScope.personal(principal)` / `.organisation(principal)`.
+  Python cannot enforce that (the constructor is public, and so is
+  `Principal`'s): it is a **repository rule**, checked by AST in
+  `tests/security/test_scope_construction_structure.py` (construction
+  sites, no copying or mutating of frozen values), not an unforgeable
+  property. Personal is the only writable visibility. In
+  L0 **nothing writes or filters on a scope**: legacy rows have the default
+  organisation and **no scope (unattributed)**; new rows have neither. The
+  columns must never get a default. Tenant isolation is still not claimed.
 
 ### Package map (backend/app)
 
@@ -99,6 +127,33 @@ strictly scoped stages (see `docs/CHANGELOG.md`).
 
 ## 3. Security requirements (non-negotiable)
 
+- **API authentication (Stage 6M.4).** Every data route requires
+  `Authorization: Bearer <token>`. The backend stores only the token's
+  SHA-256 (`MAI_API_TOKEN_SHA256`) and compares in constant time
+  (`app/core/auth.py`, the one authenticator, pure: no FastAPI, database or
+  channel). `deps.get_owner_id` is the one request seam: unconfigured gives
+  503 `authentication_not_configured`; a missing or malformed header gives
+  401 `authentication_required` (with `WWW-Authenticate: Bearer`); a wrong
+  token gives 401 `invalid_credentials`. Since Stage 7A the token's owner is
+  a member, and the seam then checks in the database, on every request and
+  without a cache, that the member is `active` in an `active` organisation:
+  otherwise 403 `membership_inactive`; a failed check is 503
+  `membership_unavailable` (never access, never "inactive"). The seam ends
+  its read transaction at once and refuses (500 `seam_invariant`) if
+  anything already ran on the request session. `deps.get_principal`
+  re-reads membership itself and `deps.require_admin` adds 403
+  `admin_required`; both depend on the seam. There is no bypass. The owner is
+  the token's, never a request value. Every router is included with
+  `dependencies=[Depends(get_owner_id)]` except the public allow-list:
+  `/health`, the two OAuth callbacks (protected by single-use `state`), the
+  Telegram webhook (its own secret and allowed chat; the API token grants
+  nothing there), `/docs` and `/openapi.json`. A route-introspection test
+  fails for any other route without the seam: **a new data route must be
+  protected.** Background work never authenticates and never imports
+  `app.api`; it uses `CONFIGURED_OWNER_ID` directly and, in Stage 7A, does
+  not check membership (a stated limitation). The browser asks for
+  the token and keeps it only in `sessionStorage`; never put a token in
+  `NEXT_PUBLIC_*`, a build, a cookie, `localStorage` or a URL.
 - **Secrets.** Never read, print, copy or commit `.env` or any credential
   file. Never put a real secret in a test, fixture, log, prompt, database row,
   task or execution event, or API response. Use synthetic sentinel values in
@@ -149,7 +204,11 @@ a change pass. If a test blocks a change, the test is usually right.
 - `GrantService` (`app/authorization/grants.py`) stores and finds grants. It
   makes no decision. Grants are scoped to one canonical tool name (no
   wildcards), always expire (one week maximum), and are revoked by conditional
-  UPDATE, never deleted. Grant creation has no `source` parameter.
+  UPDATE, never deleted. Grant creation has no `source` parameter. In
+  production a grant is created in exactly one place: a person's confirmation
+  of a Stage 6N monitoring proposal (`app/tasks/requests.py` `_confirm`), for
+  `gmail_list_messages` at its own risk (HIGH), ending at the monitor's
+  deadline. Only the runner consults grants (`authorize_with_grants`).
 - Nothing approves on a person's behalf. The runner approves an execution only
   when policy or a standing grant already cleared it, or a person already
   approved that specific execution.
@@ -166,14 +225,57 @@ a change pass. If a test blocks a change, the test is usually right.
   `MAI_WORKSPACE_ROOT`.
 - **Truthfulness (Stage 5D.1):** replies that claim an action happened are
   written by application code after the action is recorded. Synthesis may not
-  claim an action, or a count, that was not executed and retrieved.
+  claim an action, or a count, that was not executed and retrieved. Since
+  Stage 6P the validator (`app/synthesis/execution_truth.py`) also has a
+  `monitor` channel: a model-written reply may not claim that Gmail
+  monitoring started, is active, checked, matched or notified -- including
+  promises like "I'll let you know when it arrives" -- because monitoring
+  turns are answered by the application and a model turn carries no
+  monitoring evidence.
 
 ### 4.3 Tasks, runner, runtime
 - Only a person creates a task (`TaskService.create_for_user`). Only
   `TaskService.schedule_background` schedules background work, and only
   `TaskService.configure_monitoring` configures monitoring. None of them takes
   a `source` parameter, and no content-handling module can reach them. There
-  is currently **no HTTP route** for scheduling or monitoring.
+  is **no HTTP route** for scheduling or monitoring.
+- **Confirmed Gmail monitoring (Stage 6N)** is the one way a chat turn reaches
+  the task layer: `chat_service.py` imports `app.tasks.requests` and nothing
+  else from `app.tasks`, and passes it the user's raw message only. A
+  deterministic grammar (no model) recognises the request; the proposal is a
+  `planned` task with a monitor and no authorization, grant or schedule, so it
+  is runtime-inert. Only an exact plain confirmation ("yes", "go ahead", ...)
+  of that persisted row, in the same conversation within 900 s, authorizes,
+  approves, grants and schedules it, in one savepoint after a conditional
+  claim. Anything else cancels the proposal; a changed specification needs a
+  new request. Every reply is application-written. The owner comes from the
+  authentication seam; the Telegram webhook passes none, so monitoring is
+  never set up from Telegram.
+- **Monitor lifetime (Stage 6N):** a monitoring task with a deadline stays
+  authorized until `min(deadline, authorized_at + 7 days)`; every other task
+  keeps `TASK_AUTHORIZATION_TTL_SECONDS` (900). A monitor's deadline is the
+  sooner of the lifetime asked for and 40 intervals (the task budget's
+  `max_tool_calls`). At the deadline, or when that authorization lapses, the
+  runner refuses with `monitor_expired` before any authorization or
+  execution, and the runtime cancels the task (reason `expired`), unschedules
+  it and releases the grant: not a failure, no block, no notification.
+  Reschedules are clamped to the deadline. Task completion is conditional on
+  the task still being active, so a check in flight cannot complete a task
+  cancelled meanwhile.
+- **Task state is compare-and-set (Stage 6P, Known defect 8).** Every write
+  to a task's lifecycle is a conditional UPDATE on the state it was decided
+  from: `TaskService.transition` and `authorize_plan`, the runner's
+  `mark_task_running` and check claim, and the runtime's reschedule and
+  failure bookkeeping. A write that loses a race matches nothing, writes
+  nothing and reports `state_changed_concurrently` with the fresh state
+  (`TaskService.refresh`); it never overwrites newer state and never touches
+  an expired ORM copy. The CHECK constraints `cancelled_requires_timestamp`
+  and `completed_requires_timestamp` remain the backstop for terminal states.
+  A proposal is withdrawn only while still planned and unauthorised, so a
+  concurrent confirmation always wins, and a turn that lost the race says
+  what actually happened. A monitor's grant is released on completion,
+  block, cancellation and expiry, in the same transaction, unless another
+  active task still needs the capability.
 - Plans are validated by the one graph validator
   (`app/planning/validator.validate_graph`) before persistence. Capabilities
   are bound (`app/tasks/capabilities.py`) and re-bound at run time.
@@ -187,6 +289,17 @@ a change pass. If a test blocks a change, the test is usually right.
   lease), calls the runner, and reschedules. It resolves no capability, asks
   no authorization question, and calls no dispatcher or execution service.
   There is no second scheduler, worker framework, queue, or in-memory state.
+- **Automatic delivery (Stage 6M.3)** is the loop's third work source, after
+  reminders and tasks, in `app/background/deliveries.py`. It is off unless
+  `NOTIFICATION_AUTO_DELIVER_ADAPTERS` names registered channels. It
+  delivers only notifications of the configured owner
+  (`app.core.owner.CONFIGURED_OWNER_ID`) created at or after the moment the runtime was
+  created with the setting on. It sends only candidates with **no** delivery
+  record for that channel, so it never retries a failure and never takes
+  over an abandoned claim (those are a person's, through 6L). It makes at
+  most 3 attempts per tick, sequentially, every one through the 6K factory
+  and 6I's durable claim. The runtime itself resolves no owner and calls no
+  adapter.
 - Claims are exactly-once by conditional UPDATE with `rowcount == 1`
   (reminders, steps, task leases, and monitoring `check_count`). External
   effects are at-least-once only in the crash window documented in
@@ -235,12 +348,34 @@ a change pass. If a test blocks a change, the test is usually right.
   - treat inbound text as instructions to the application.
   It must authenticate its caller (for example with a webhook secret and an
   allowed sender) and must be inert when unconfigured.
+- **Telegram (Stage 7A).** `app/telegram/updates.py` classifies an update by
+  an allow-list. Group, supergroup and channel updates are acknowledged and
+  ignored -- including the Admin's -- with no turn and no write. In a
+  private chat, any message whose first token (after leading whitespace and
+  format characters) begins with `/link` is a link command and is **never**
+  a chat turn; only an exact `/link <code>` or `/link@bot <code>` can
+  redeem, through `MembershipService`, and the webhook commits only a
+  successful link. Replies are fixed application text, and failure replies
+  are capped per process. The
+  only path to a chat turn is a private message from
+  `TELEGRAM_ALLOWED_CHAT_ID` (positive) whose sender has no attached
+  identity, while the Admin member is active. Admin Telegram accounts are
+  never linked by code. Database errors there are ignored (never a turn),
+  rolled back quietly outside any `except` block, and logged by category
+  only.
 
 ### 4.6 Database and migrations
 - The schema is created only by Alembic migrations
   (`backend/alembic/versions/`, sequential `NNNN_name.py`). Application code
   never calls `create_all`; tests do, on SQLite.
 - Migrations must be additive unless a stage explicitly requires otherwise.
+- **Approved migration list (Stage 7B L0):** every migration file must be
+  listed, in order, in `tests/security/approved_migrations.py`; the
+  per-stage "added no migration" pins and `test_approved_migrations.py`
+  compare the directory with it exactly. Adding a migration means adding it
+  there, as a reviewed change. Discovery follows Alembic (every `*.py` in
+  `versions/` except `__init__*`, not only `0*.py`), and Alembic's own
+  revision graph must be one line through the list with a single head.
   Every migration needs a working `downgrade()`. Enum values are added with
   `ALTER TYPE ... ADD VALUE IF NOT EXISTS` on PostgreSQL only, and are not
   removed on downgrade (the column is an append-only journal).
@@ -262,20 +397,58 @@ a change pass. If a test blocks a change, the test is usually right.
   run" endpoint, and nothing routes model output to these endpoints.
 - `POST /api/tools/authorize` and `POST /api/orchestration/debug` only answer
   "would this be permitted?". They run nothing.
-- The task API is read-only (GETs). There is no HTTP surface for scheduling
-  background work, configuring monitoring, creating standing grants, or
-  running the runner. Adding one is an architectural change (§6).
+- The task API is read-only (GETs) except for one write (Stage 6N):
+  `POST /api/tasks/{task_id}/cancel` with the body exactly `{}`, owner-scoped
+  (another owner's task is the same 404 as a missing one), idempotent for a
+  cancelled task, 409 for a completed or failed one. It can only stop work,
+  through `TaskService.cancel`, and releases a monitor's grant when no other
+  active task needs it. There is no HTTP surface for scheduling background
+  work, configuring monitoring, creating standing grants, or running the
+  runner. Adding one is an architectural change (§6).
+- **Organisation membership (Stage 7A, approved by the owner):** under
+  `/api/organisation`, behind the seam and `require_admin`: list the
+  organisation and its members (GET); invite a member, issue a link code,
+  and revoke a member (three POSTs). The organisation is always the Admin's
+  own. Responses never carry a user id, a Telegram id, a code hash or a
+  token; code-bearing responses are `Cache-Control: no-store`, and those two
+  routes commit before answering, so a code is never shown that was not
+  saved (a failed commit is 503 with no code). There is no
+  route to create an Admin, delete anything, or unlink an identity.
+  Revocation (`app/organisation/revocation.py`, built only in `deps.py`) is
+  one transaction: the member is revoked, open codes invalidated, the
+  identity detached, every unfinished task cancelled through
+  `MonitorRequestService.cancel` with reason `member_revoked`, every live
+  grant revoked, and postconditions checked -- any failure rolls all of it
+  back. `MonitorRequestService.cancel` takes a closed `CancelReason`; the
+  cancel route's default (`cancelled_by_owner`) is unchanged. Revocation
+  cannot reach what has no owner column (reminders, executions, execution
+  approvals); a member with more than 500 unfinished tasks cannot be revoked
+  (it fails closed); a request already past the seam when revocation commits
+  may still complete; and the stage that enables member turns must re-check
+  membership before persisting a turn.
 - **Notification delivery (Stage 6L, approved by the owner):**
   `POST /api/task-notifications/{notification_id}/deliveries` with the body
   `{"adapter": "<name>"}` is the one route that triggers delivery. It hands
   the id and name to the 6I `NotificationDeliveryService` from the 6K
   composition root (through `deps.get_notification_delivery_service`) and
   maps the result to a status. The body accepts no other field: the owner is
-  the server's, and the message, chat and host are the channel's. It marks
+  the authenticated owner's, and the message, chat and host are the channel's. It marks
   nothing read. It is ungated, and inert while no
   channel is configured. Nothing but a person's client calls it: no model
-  output, chat turn, runner or background loop. Automatic delivery would be
-  a separate architectural decision (§6).
+  output, chat turn or runner. (Automatic delivery, Stage 6M.3, calls 6I
+  through the same 6K factory from the runtime, not through this route.)
+- **Notification read API (Stage 6M.2, approved by the owner):** on the same
+  router, `GET /api/task-notifications` (newest first, at most 50 per page,
+  keyset-paged by `before=<id>`, optional `unread_only`),
+  `GET /api/task-notifications/{id}` and `POST /api/task-notifications/{id}/read`
+  (empty JSON body, idempotent, 204). The routes delegate to 6H's
+  `NotificationService` and to the read-only `app/delivery/status.py`, both
+  bound in `deps.py` to the request's owner, which is resolved only by
+  `deps.get_owner_id`, which authenticates the bearer token (Stage 6M.4). No
+  route takes an owner. Another owner's notification is the same 404 as a
+  missing one. Responses carry references, times and codes only: no owner, no
+  record id, lease or delivery key, and no text. Mark-read writes only 6H's
+  `read_at`, never a delivery record.
 - **Durable delivery records (Stage 6M.1):** whether a notification was
   delivered through an adapter is recorded in `notification_deliveries`,
   unique per (notification, adapter). `app/delivery/records.py` is the one
@@ -349,6 +522,31 @@ Run the suite from `backend/` with the venv: `.venv/bin/python -m pytest`.
 - Expected skips: `tests/security/test_secrets.py` when `backend/.env` is
   absent, and the PostgreSQL migration-chain test unless `TEST_POSTGRES_URL`
   is set.
+- **PostgreSQL race tests (Stage 6P):** `tests/test_monitor_races_pg.py` is
+  skipped unless `TEST_POSTGRES_ADMIN_URL` names a maintenance database on a
+  server where the user may `CREATE DATABASE`. Each test creates and drops
+  its own `mai_pgtest_*` database; the real `mai` database is refused. Run
+  them for any change to task state, confirmation, grants or the runtime --
+  SQLite has one writer and cannot show these races.
+- **Identity PostgreSQL tests (Stage 7A):** `tests/test_identity_races_pg.py`
+  (same `TEST_POSTGRES_ADMIN_URL` contract: link-code redemption, revocation
+  and their lock order) and `tests/test_identity_migration_pg.py`
+  (`TEST_POSTGRES_URL`: migration `0020` upgrade, downgrade and re-upgrade,
+  constraints and the partial unique indexes). The migration test drops and
+  recreates the 0020 tables in the database it is given, so that database
+  must be disposable (it refuses `mai`). Run both for any change to identity,
+  membership, link codes or revocation.
+- **Knowledge-scope PostgreSQL tests (Stage 7B L0):**
+  `tests/test_knowledge_scope_migration_pg.py` (`TEST_POSTGRES_URL`; fails,
+  rather than skips, on a URL that is not PostgreSQL, names `mai` or has no
+  "test" in its database name). Run it for any change to migration `0021` or
+  the scope columns.
+- **The test server.** Use a disposable server only, never `mai-db`. The role
+  needs `CREATEDB` and, so that `DROP DATABASE ... WITH (FORCE)` cannot fail
+  on a background worker (for example autovacuum) connected to a throwaway
+  database, membership of `pg_signal_backend`. It does not need to be a
+  superuser. Without `pg_signal_backend`, a test can pass and still error in
+  teardown (seen once, 2026-10-29).
 
 For a stage or other substantial change:
 

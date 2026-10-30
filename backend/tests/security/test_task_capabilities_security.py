@@ -357,10 +357,27 @@ def test_only_the_runner_runs_or_approves_an_execution() -> None:
             )
             if is_session:
                 continue
+            if (
+                path.name == "requests.py" and node.func.attr == "revoke"
+                and isinstance(receiver, ast.Name) and receiver.id == "grants"
+            ):
+                # Changed deliberately in 6N: a *grant* revocation, not an
+                # execution one -- an ended monitor releasing its standing
+                # grant. It only ever narrows what may run. Pinned exactly
+                # below.
+                continue
             called.add(node.func.attr)
     for forbidden in ("run", "approve", "dispatch", "claim", "execute",
                       "run_returning_outcome", "revoke"):
         assert forbidden not in called, forbidden
+    requests = ast.parse((BACKEND / "app" / "tasks" / "requests.py").read_text(encoding="utf-8"))
+    revocations = [
+        f.name for f in ast.walk(requests)
+        if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for n in ast.walk(f)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "revoke"
+    ]
+    assert revocations == ["release_monitor_grants"], revocations
 
 
 def test_no_scheduler_or_background_machinery_was_introduced() -> None:
@@ -400,7 +417,10 @@ def test_the_task_router_is_still_read_only() -> None:
                 methods.append(decorator.func.attr)
     # Stage 6C exposes no HTTP way to authorize, create an execution or move
     # a step. Those are service calls, so there is no endpoint to get wrong.
-    assert sorted(methods) == ["get"] * 6, methods
+    # Changed deliberately in 6N: one POST, `/{task_id}/cancel`, which can
+    # only stop work -- never create, approve, run or widen any. Its path and
+    # body are pinned in `test_monitor_requests_security.py`.
+    assert sorted(methods) == ["get"] * 6 + ["post"], methods
 
 
 def test_no_content_handling_module_reaches_the_task_layer() -> None:

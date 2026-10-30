@@ -223,6 +223,26 @@ def test_no_other_html_injection_sink_is_used() -> None:
     assert offenders == [], f"injection sinks: {offenders}"
 
 
+#: Changed deliberately in Stage 6M.4 (owner-approved design): the API token,
+#: entered by the person, is kept for the browser session in sessionStorage,
+#: under one key, in `lib/api.ts` only -- these three exact calls and nothing
+#: else. Every other browser-storage use, anywhere, is still refused.
+SESSION_TOKEN_CALLS = (
+    "window.sessionStorage.getItem(TOKEN_KEY)",
+    "window.sessionStorage.setItem(TOKEN_KEY, token)",
+    "window.sessionStorage.removeItem(TOKEN_KEY)",
+)
+
+
+def _without_the_session_token(path, code: str) -> str:
+    if path.name == "api.ts" and path.parent.name == "lib":
+        assert 'const TOKEN_KEY = "mai.apiToken";' in code
+        for call in SESSION_TOKEN_CALLS:
+            assert code.count(call) == 1, call
+            code = code.replace(call, "")
+    return code
+
+
 @requires_frontend
 def test_no_personal_data_is_persisted_in_browser_storage() -> None:
     """Browser storage outlives the session and is readable by any script."""
@@ -237,6 +257,7 @@ def test_no_personal_data_is_persisted_in_browser_storage() -> None:
             line for line in path.read_text(errors="ignore").splitlines()
             if not line.lstrip().startswith(("//", "*", "/*"))
         )
+        code = _without_the_session_token(path, code)
         for api in ("localStorage.", "sessionStorage.", "document.cookie"):
             if api in code:
                 offenders.append(f"{path.name}:{api}")

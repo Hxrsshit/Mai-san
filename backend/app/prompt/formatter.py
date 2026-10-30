@@ -335,6 +335,22 @@ def with_execution_correction(
 
 REFERENCE_HEADER = "REFERENCE KNOWLEDGE (retrieved from earlier conversations)"
 
+#: Degraded sources meaning the user's stored memories could not be searched.
+MEMORY_UNAVAILABLE_SOURCES = frozenset({"long_term_knowledge", "retrieval:memories"})
+
+#: Application text for a turn where memory search failed. Says only what the
+#: application knows: the search did not run, so absence proves nothing. An
+#: instruction, not reference knowledge: it carries no retrieved content, so
+#: the degraded path still reintroduces no knowledge.
+MEMORY_UNAVAILABLE_NOTE = (
+    "LONG-TERM MEMORY UNAVAILABLE ON THIS TURN (authoritative)\n\n"
+    "Mai's long-term memory could not be searched for this message because of "
+    "an internal error. If the user asks about something they told you in an "
+    "earlier conversation, say that you could not reach your memory just now "
+    "and suggest asking again. Do not say that you do not know it or that "
+    "they never told you: that has not been established."
+)
+
 #: Frames the block before any content is shown. Retrieved memories may one day
 #: contain arbitrary text the user pasted, so the framing is explicit that this
 #: section is data being quoted, not instructions being given.
@@ -737,6 +753,19 @@ class PromptFormatter:
             stats.rejected_reference_items += rejected
 
         if not (memories or entities or relationships):
+            if MEMORY_UNAVAILABLE_SOURCES & set(package.metadata.degraded_sources):
+                # Retrieval *failed*, which is not the same as finding nothing.
+                # Without this the prompt is identical to a turn with no
+                # memories, and the model tells the user it knows nothing
+                # about them -- a failure disguised as an answer.
+                parts.append(
+                    PromptPart(
+                        message=LLMMessage(role="system", content=MEMORY_UNAVAILABLE_NOTE),
+                        section=PromptSection.SYSTEM_INSTRUCTIONS,
+                    )
+                )
+                stats.instruction_messages += 1
+                stats.instruction_chars += len(MEMORY_UNAVAILABLE_NOTE)
             return
 
         block = render_reference_block(memories, entities, relationships)
@@ -858,6 +887,14 @@ def render_runtime_facts(facts: RuntimeFacts) -> str:
     lines.append(f"- Reminders: {_on_off(facts.reminders_enabled)}")
     lines.append(
         f"- Background tasks: {_on_off(facts.background_tasks_enabled)}"
+    )
+    # Stage 6N. Gmail monitoring is set up by the application, from a
+    # proposal the person confirmed -- never by the model. A sentence saying
+    # it started, changed or found mail is a claim only application state can
+    # make, so the model is told plainly that it cannot make one.
+    lines.append(
+        "- Gmail monitoring: set up only through Mai's own confirmed proposal. "
+        "Never say monitoring has started, changed, stopped or found an email."
     )
     lines.append(
         f"- Action identification: {_on_off(facts.action_orchestration_enabled)}"

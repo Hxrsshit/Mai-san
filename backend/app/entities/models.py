@@ -23,6 +23,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    scoped_unique_indexes,
+    same_scope_parent_key,
+    same_scope_reference,
+)
 
 
 def _enum_values(enum_cls) -> list:
@@ -49,7 +56,7 @@ class EntityStatus(str, enum.Enum):
     ARCHIVED = "archived"
 
 
-class Entity(Base):
+class Entity(Base, KnowledgeScopeColumns):
     __tablename__ = "entities"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -89,6 +96,9 @@ class Entity(Base):
 
     aliases: Mapped[List["EntityAlias"]] = relationship(
         back_populates="entity",
+        # The id column alone: since Stage 7B unit 10 a second, composite
+        # foreign key (same scope) also joins the two tables.
+        foreign_keys="EntityAlias.entity_id",
         cascade="all, delete-orphan",
         passive_deletes=True,
         lazy="selectin",
@@ -99,16 +109,20 @@ class Entity(Base):
         # thing inconsistently ("Groq" as company or technology), and forking
         # an entity on every reclassification is the common failure. The first
         # classification wins.
-        Index("uq_entities_normalized_name", "normalized_name", unique=True),
+        # Since Stage 7B (0022) per knowledge scope.
+        *scoped_unique_indexes("entities", "normalized_name", "normalized_name"),
         Index("ix_entities_entity_type", "entity_type"),
         Index("ix_entities_status_created_at", "status", "created_at"),
+        knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_parent_key("entities"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Entity {self.entity_type.value} {self.canonical_name!r}>"
 
 
-class EntityAlias(Base):
+class EntityAlias(Base, KnowledgeScopeColumns):
     """An alternative surface form that resolves to one entity."""
 
     __tablename__ = "entity_aliases"
@@ -129,13 +143,19 @@ class EntityAlias(Base):
         server_default=func.now(),
     )
 
-    entity: Mapped["Entity"] = relationship(back_populates="aliases")
+    entity: Mapped["Entity"] = relationship(
+        back_populates="aliases", foreign_keys="EntityAlias.entity_id"
+    )
 
     __table_args__ = (
-        # Globally unique: an alias that points at two entities makes
+        # Unique within a scope: an alias that points at two entities makes
         # resolution ambiguous, which is worse than having no alias at all.
-        Index("uq_entity_aliases_normalized_alias", "normalized_alias", unique=True),
+        # Since Stage 7B (0022) per knowledge scope, not global.
+        *scoped_unique_indexes("entity_aliases", "normalized_alias", "normalized_alias"),
         Index("ix_entity_aliases_entity_id", "entity_id"),
+        knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_reference("entity_aliases", "entity_id", "entities"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

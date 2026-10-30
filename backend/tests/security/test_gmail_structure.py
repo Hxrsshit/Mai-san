@@ -165,9 +165,11 @@ def test_no_gmail_operation_accepts_a_url_method_or_header() -> None:
     """The arguments are fields, never a request description."""
     from app.tools.catalog import GmailGetMessageArguments, GmailListMessagesArguments
 
+    # Changed deliberately in 6N: `received_after`, a monitor's baseline --
+    # an integer epoch rendered as Gmail's `after:`, bounded on every use.
     assert set(GmailListMessagesArguments.model_fields) == {
         "sender", "subject_terms", "text_terms", "unread_only",
-        "newer_than_days", "max_results", "body_count",
+        "newer_than_days", "max_results", "body_count", "received_after",
     }
     assert set(GmailGetMessageArguments.model_fields) == {"message_id"}
 
@@ -320,6 +322,26 @@ def test_no_scheduler_or_background_task_reads_mail() -> None:
 # --- Frontend ------------------------------------------------------------------
 
 
+#: Changed deliberately in Stage 6M.4 (owner-approved design): the API token,
+#: entered by the person, is kept for the browser session in sessionStorage,
+#: under one key, in `lib/api.ts` only -- these three exact calls and nothing
+#: else. Every other browser-storage use, anywhere, is still refused.
+SESSION_TOKEN_CALLS = (
+    "window.sessionStorage.getItem(TOKEN_KEY)",
+    "window.sessionStorage.setItem(TOKEN_KEY, token)",
+    "window.sessionStorage.removeItem(TOKEN_KEY)",
+)
+
+
+def _without_the_session_token(path, code: str) -> str:
+    if path.name == "api.ts" and path.parent.name == "lib":
+        assert 'const TOKEN_KEY = "mai.apiToken";' in code
+        for call in SESSION_TOKEN_CALLS:
+            assert code.count(call) == 1, call
+            code = code.replace(call, "")
+    return code
+
+
 def test_the_frontend_stores_no_credential() -> None:
     """§: no Gmail tokens in browser storage, no direct Gmail calls."""
     if not FRONTEND.exists():
@@ -332,6 +354,7 @@ def test_the_frontend_stores_no_credential() -> None:
             line for line in path.read_text().splitlines()
             if not line.lstrip().startswith(("//", "*", "/*"))
         )
+        code = _without_the_session_token(path, code)
         for banned in ("localStorage.", "sessionStorage.", "document.cookie",
                        "indexedDB."):
             assert banned not in code, (path, banned)

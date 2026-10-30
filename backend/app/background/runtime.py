@@ -8,6 +8,7 @@ queue, and nothing kept in memory that the database does not also hold.
     tick
      |-- reminders:  run_due_reminders()          (Stage 5F.1, unchanged)
      |-- tasks:      discover -> claim -> TaskRunner.advance -> reschedule
+     |-- deliveries: Stage 6M.3, opt-in -- app.background.deliveries
      '-- wait on the stop event for one interval
 
 ### What was generalised from the reminder poller, and what was not
@@ -71,7 +72,16 @@ H  after a failed step      the step is `failed`, `next_run_at` NULL. Failed
 When `_record_failure` blocks a monitoring task, the same transaction records
 one notification through `app.tasks.notifications.record_outcome`; a met
 condition is recorded the same way by the runner. The runtime decides nothing
-about notifications beyond calling that one writer, and delivers nothing.
+about notifications beyond calling that one writer.
+
+### Automatic delivery (Stage 6M.3)
+
+Off unless `NOTIFICATION_AUTO_DELIVER_ADAPTERS` names channels. Then, after
+tasks, each tick hands `app.background.deliveries` the boundary fixed when this
+runtime was created, and that module delivers -- through the 6K composition
+and 6I's durable claim, at most a few per tick, never retrying -- only
+notifications created since. The runtime itself resolves no owner, chooses no
+channel and calls no adapter.
 
 ### Monitoring (Stage 6G)
 
@@ -91,6 +101,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, NamedTuple, Optional, Tuple
 
 from sqlalchemy import select, update
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
@@ -101,7 +112,7 @@ from app.tasks.models import (
     TaskEventType,
     TaskNotificationKind,
 )
-from app.tasks.monitoring import interval_of
+from app.tasks.monitoring import clamp_to_deadline, interval_of
 from app.tasks.notifications import record_outcome
 from app.tasks.runner import TaskRunner
 from app.tasks.schemas import RunnerOutcome
@@ -141,6 +152,8 @@ class TickReport(NamedTuple):
     tasks_discovered: int = 0
     tasks_claimed: int = 0
     tasks_advanced: int = 0
+    #: Stage 6M.3: automatic notification delivery attempts this tick.
+    deliveries_attempted: int = 0
 
 
 def _utc(moment: Optional[datetime]) -> datetime:
@@ -265,11 +278,24 @@ async def advance_claimed_task(
         tasks = TaskService(session, settings=settings, owner_id=owner_id)
         runner = TaskRunner(tasks)
 
+        # Stage 7B unit 8b (review M1): the owner first, then the task row --
+        # the lock order revocation uses -- so the two cannot deadlock. An
+        # owner who is no longer active gets nothing written at all.
+        if not await runner.bind_owner():
+            await session.rollback()
+            return None
+
         task = await tasks.get(task_id)
         if task is not None and task.state is TaskState.QUEUED:
             # The runner's own transition, so `running` is written in one
             # place in the codebase.
-            await runner.mark_task_running(task_id)
+            if not await runner.mark_task_running(task_id):
+                # Stage 6P. Someone else moved the task since it was
+                # claimed -- most often the owner cancelling it. The copy
+                # has been read fresh; a task that is no longer active is
+                # left exactly as it is: no step, no read, no write.
+                if task.state not in ADVANCEABLE_STATES:
+                    return None
 
         monitoring = task is not None and task.monitor is not None
         if monitoring:
@@ -284,6 +310,17 @@ async def advance_claimed_task(
             await _record_failure(session_factory, settings, task_id, owner_id, now)
             return result.outcome
 
+        if result.outcome is RunnerOutcome.REFUSED and result.reason == "monitor_expired":
+            # Stage 6N. The monitor reached its deadline, or its
+            # authorization lapsed. It ends: cancelled with reason `expired`,
+            # unscheduled, and in the same transaction as the runner's own
+            # refusal event. Not a failure -- the count is untouched, the
+            # task is not blocked and no "stopped after failures"
+            # notification is written, because nothing failed.
+            await _expire_monitor(session, settings, task_id, owner_id)
+            await session.commit()
+            return result.outcome
+
         if result.outcome is RunnerOutcome.CHECK_FAILED:
             # The check ran and told us nothing. What it did -- the execution,
             # the observation, the failure event, the spent check number -- is
@@ -296,9 +333,74 @@ async def advance_claimed_task(
             )
             return result.outcome
 
+        if result.outcome is RunnerOutcome.CONDITION_MET:
+            # Stage 6P. The monitor matched and is completed; its standing
+            # grant goes with it, in the same transaction, unless another
+            # active task still needs the capability.
+            from app.tasks.requests import release_monitor_grants
+
+            await release_monitor_grants(session, owner_id)
+
         await _reschedule(session, task_id, result, now)
         await session.commit()
         return result.outcome
+
+
+async def _schedule_if_active(session, task, when, reset_failures: bool) -> bool:
+    """Stage 6P. Set the next run only while the task is still active.
+
+    Conditional, like every other write to a task's lifecycle: a task
+    cancelled or expired since it was read keeps no schedule.
+    """
+    values = {"next_run_at": when}
+    if reset_failures:
+        values["failure_count"] = 0
+    result = await session.execute(
+        update(Task)
+        .where(Task.id == task.id, Task.state.in_(list(ADVANCEABLE_STATES)))
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        return False
+    for name, value in values.items():
+        set_committed_value(task, name, value)
+    return True
+
+
+async def _unschedule(session, task_id: uuid.UUID) -> None:
+    """Clear the next run. Always safe: an unscheduled task is never run."""
+    await session.execute(
+        update(Task)
+        .where(Task.id == task_id)
+        .values(next_run_at=None)
+        .execution_options(synchronize_session="fetch")
+    )
+
+
+async def _expire_monitor(session, settings, task_id: uuid.UUID, owner_id) -> None:
+    """End a monitor whose time is up. Terminal, and not a failure.
+
+    The transition is `TaskService.transition`'s, so the cancellation is
+    journalled like any other -- with the reason `expired`. The owner's live
+    grant for the capability goes with it unless another active monitor still
+    needs it: a monitor that has ended keeps no permission behind it.
+    """
+    from app.tasks.requests import release_monitor_grants
+
+    expired = await TaskService(session, settings=settings, owner_id=owner_id).transition(
+        task_id, TaskState.CANCELLED, actor="system", reason="expired",
+    )
+    await _unschedule(session, task_id)
+    if expired.ok:
+        # Only when this transaction is the one that ended it. A task the
+        # owner cancelled a moment earlier is already ended, and journalled.
+        await journal.record(
+            session, task_id, TaskEventType.BACKGROUND_UNSCHEDULED,
+            actor="system",
+            metadata={"outcome": RunnerOutcome.REFUSED.value, "reason": "monitor_expired"},
+        )
+    await release_monitor_grants(session, owner_id)
 
 
 async def _reschedule(session, task_id: uuid.UUID, result, now: datetime) -> None:
@@ -311,24 +413,28 @@ async def _reschedule(session, task_id: uuid.UUID, result, now: datetime) -> Non
     if result.outcome in _CONTINUE:
         # More work may be ready. Due now; the next tick takes it, so one
         # tick still advances one step per task.
-        task.next_run_at = now
-        task.failure_count = 0
-        await session.flush()
+        await _schedule_if_active(session, task, now, reset_failures=True)
         return
 
     if result.outcome in _CHECK_AGAIN:
         interval = interval_of(task.monitor)
         if interval is not None:
-            task.next_run_at = now + timedelta(seconds=interval)
-            task.failure_count = 0
-            await session.flush()
+            # Stage 6N: never past a monitor's deadline.
+            await _schedule_if_active(
+                session, task,
+                clamp_to_deadline(task, now + timedelta(seconds=interval)),
+                reset_failures=True,
+            )
             return
         # No interval to wait: fall through and stop, rather than guess one.
 
     if result.outcome is RunnerOutcome.BLOCKED and result.reason in _CONTENDED:
         # Another worker holds the step. Contention, not failure.
-        task.next_run_at = now + timedelta(seconds=CONTENTION_BACKOFF_SECONDS)
-        await session.flush()
+        await _schedule_if_active(
+            session, task,
+            clamp_to_deadline(task, now + timedelta(seconds=CONTENTION_BACKOFF_SECONDS)),
+            reset_failures=False,
+        )
         return
 
     # Everything else stops polling: completed, failed, refused, over
@@ -336,8 +442,7 @@ async def _reschedule(session, task_id: uuid.UUID, result, now: datetime) -> Non
     # either repeat finished work or ask a question nobody is there to
     # answer -- which is the approval-starvation case, and why an
     # awaiting-approval task costs nothing while it waits.
-    task.next_run_at = None
-    await session.flush()
+    await _unschedule(session, task_id)
     await journal.record(
         session, task_id, TaskEventType.BACKGROUND_UNSCHEDULED,
         actor="system",
@@ -359,25 +464,59 @@ async def _record_failure(
     async with session_factory() as session:
         task = (
             await session.execute(
-                select(Task).where(Task.id == task_id, Task.owner_id == owner_id)
+                select(Task)
+                .where(Task.id == task_id, Task.owner_id == owner_id)
+                .execution_options(populate_existing=True)
             )
         ).scalars().first()
-        if task is None:
+        if task is None or task.state not in ADVANCEABLE_STATES:
+            # Stage 6P. A task that stopped being active -- cancelled,
+            # expired -- has no failure to count and nothing to schedule.
             return
-        task.failure_count = int(task.failure_count or 0) + 1
+        previous = int(task.failure_count or 0)
+        count = previous + 1
+        exhausted = count >= MAX_CONSECUTIVE_FAILURES
+        next_run = None if exhausted else clamp_to_deadline(
+            task,
+            now + timedelta(seconds=max(
+                FAILURE_BACKOFF_SECONDS * (2 ** (count - 1)), min_delay_seconds,
+            )),
+        )
 
-        if task.failure_count >= MAX_CONSECUTIVE_FAILURES:
-            task.next_run_at = None
-            await session.flush()
-            await TaskService(session, settings=settings, owner_id=owner_id).transition(
+        # Stage 6P (Known defect 8). The count and the schedule are written
+        # only while the task is still active and unchanged since it was
+        # read; otherwise nothing at all is written.
+        bumped = await session.execute(
+            update(Task)
+            .where(
+                Task.id == task_id,
+                Task.owner_id == owner_id,
+                Task.state.in_(list(ADVANCEABLE_STATES)),
+                Task.failure_count == previous,
+            )
+            .values(failure_count=count, next_run_at=next_run)
+            .execution_options(synchronize_session=False)
+        )
+        if bumped.rowcount != 1:
+            await session.rollback()
+            return
+        set_committed_value(task, "failure_count", count)
+        set_committed_value(task, "next_run_at", next_run)
+
+        if exhausted:
+            blocked = await TaskService(session, settings=settings, owner_id=owner_id).transition(
                 task_id, TaskState.BLOCKED, actor="system",
                 reason="background_failures_exhausted",
             )
+            if not blocked.ok:
+                # Lost to a concurrent change. Nothing is counted, nobody is
+                # told the monitor gave up -- it did not.
+                await session.rollback()
+                return
             await journal.record(
                 session, task_id, TaskEventType.BACKGROUND_UNSCHEDULED,
                 actor="system",
-                metadata={"reason": "failures_exhausted",
-                          "failure_count": task.failure_count},
+                metadata={"reason": "failures_exhausted", "failure_count": count},
             )
             # Stage 6H. A monitoring task that gave up is worth telling its
             # owner about -- in this transaction, so the block and the
@@ -385,13 +524,12 @@ async def _record_failure(
             # writes nothing for an ordinary task or a task the transition
             # did not actually block.
             await record_outcome(session, task, TaskNotificationKind.MONITORING_FAILED)
-        else:
-            delay = max(
-                FAILURE_BACKOFF_SECONDS * (2 ** (task.failure_count - 1)),
-                min_delay_seconds,
-            )
-            task.next_run_at = now + timedelta(seconds=delay)
-            await session.flush()
+            if task.monitor is not None:
+                # Stage 6P. A blocked monitor keeps no standing grant behind
+                # it, unless another active task still needs the capability.
+                from app.tasks.requests import release_monitor_grants
+
+                await release_monitor_grants(session, owner_id)
         await session.commit()
 
 
@@ -453,6 +591,14 @@ class BackgroundRuntime:
         #: pass without sleeping on a guess.
         self.ticks = 0
         self._tick_done = asyncio.Event()
+        #: Stage 6M.3. The automatic-delivery boundary: only notifications
+        #: created at or after this moment are delivered automatically. Fixed
+        #: when the runtime is created with the setting on (the lifespan
+        #: creates it immediately before starting it); never a parameter, so
+        #: nothing can move it back over history.
+        self._deliveries_since: Optional[datetime] = (
+            datetime.now(timezone.utc) if self.deliveries_enabled else None
+        )
 
     @property
     def running(self) -> bool:
@@ -470,8 +616,13 @@ class BackgroundRuntime:
         return bool(getattr(self._settings, "BACKGROUND_TASKS_ENABLED", False))
 
     @property
+    def deliveries_enabled(self) -> bool:
+        """Stage 6M.3. Opt-in: off unless channels are configured."""
+        return bool(getattr(self._settings, "NOTIFICATION_AUTO_DELIVER_ADAPTERS", None))
+
+    @property
     def has_work_sources(self) -> bool:
-        return self.reminders_enabled or self.tasks_enabled
+        return self.reminders_enabled or self.tasks_enabled or self.deliveries_enabled
 
     def start(self) -> None:
         """Begin polling. Idempotent: a second call does nothing."""
@@ -485,6 +636,7 @@ class BackgroundRuntime:
                 "interval_seconds": self._settings.REMINDER_POLL_SECONDS,
                 "reminders": self.reminders_enabled,
                 "tasks": self.tasks_enabled,
+                "deliveries": self.deliveries_enabled,
             },
         )
 
@@ -523,7 +675,23 @@ class BackgroundRuntime:
                 self._session_factory, self._settings, now=now
             )
 
-        return TickReport(fired, discovered, claimed, advanced)
+        # Stage 6M.3. After tasks, so a notification recorded this tick is
+        # delivered this tick. Bounded and sequential inside; every send goes
+        # through 6I's durable claim.
+        attempted = 0
+        if self.deliveries_enabled and self._deliveries_since is not None:
+            try:
+                from app.background.deliveries import run_automatic_deliveries
+
+                attempted = (await run_automatic_deliveries(
+                    self._session_factory, self._settings, since=self._deliveries_since
+                )).attempted
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Automatic delivery pass failed", extra={"error": type(exc).__name__}
+                )
+
+        return TickReport(fired, discovered, claimed, advanced, attempted)
 
     async def wait_for_ticks(self, count: int, timeout: float = 5.0) -> bool:
         """Wait until at least `count` ticks have completed, or time out."""

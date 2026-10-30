@@ -15,19 +15,20 @@ from app.relationships.models import (
     RelationshipType,
 )
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 
 @pytest.fixture
 async def conversation(db_session):
-    return await ConversationService(db_session).create_conversation()
+    return await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
 
 
 async def seed_knowledge(db_session, conversation):
     """Entities, memories and a relationship the retrieval layer can find."""
     mai = Entity(canonical_name="Mai", normalized_name="mai",
-                 entity_type=EntityType.PROJECT, status=EntityStatus.ACTIVE)
+                 entity_type=EntityType.PROJECT, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns())
     postgres = Entity(canonical_name="PostgreSQL", normalized_name="postgresql",
-                      entity_type=EntityType.TECHNOLOGY, status=EntityStatus.ACTIVE)
+                      entity_type=EntityType.TECHNOLOGY, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns())
     db_session.add_all([mai, postgres])
     await db_session.flush()
 
@@ -40,7 +41,7 @@ async def seed_knowledge(db_session, conversation):
             content=content, normalized_content=content.lower().rstrip("."),
             memory_type=kind, status=MemoryStatus.ACTIVE,
             importance_score=8, confidence_score=0.95,
-            source_conversation_id=conversation.id,
+            source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
         )
         db_session.add(memory)
         await db_session.flush()
@@ -50,7 +51,7 @@ async def seed_knowledge(db_session, conversation):
     relationship = Relationship(
         source_entity_id=mai.id, relationship_type=RelationshipType.USES,
         target_entity_id=postgres.id, confidence_score=0.95,
-        status=RelationshipStatus.ACTIVE,
+        status=RelationshipStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(relationship)
     await db_session.flush()
@@ -64,14 +65,14 @@ async def seed_knowledge(db_session, conversation):
 async def add_messages(db_session, conversation, count):
     from app.database.models import MessageRole
 
-    service = ConversationService(db_session)
+    service = ConversationService(db_session, ADMIN_SCOPE)
     for index in range(count):
         role = MessageRole.USER if index % 2 == 0 else MessageRole.ASSISTANT
         await service.add_message(conversation.id, role, f"turn {index}")
 
 
 def service(db_session, settings) -> ContextService:
-    return ContextService(session=db_session, settings=settings)
+    return ContextService(session=db_session, settings=settings, scope=ADMIN_SCOPE)
 
 
 # --- Real end-to-end assembly -----------------------------------------------
@@ -352,7 +353,7 @@ async def test_query_count_stays_bounded_with_a_large_dataset(
             content=content, normalized_content=content.lower().rstrip("."),
             memory_type=MemoryType.SEMANTIC, status=MemoryStatus.ACTIVE,
             importance_score=5, confidence_score=0.8,
-            source_conversation_id=conversation.id,
+            source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
         ))
     await db_session.commit()
 

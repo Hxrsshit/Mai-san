@@ -21,8 +21,9 @@ import enum
 from typing import Optional, Tuple, Type
 
 from app.integrations.gmail_schemas import MAX_BODIES as GMAIL_MAX_BODIES
+from app.integrations.gmail_schemas import check_received_after
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from app.core.logging import get_logger
 from app.tools.base import Tool, ToolArguments
@@ -381,6 +382,16 @@ class GmailListMessagesArguments(ToolArguments):
     #: with a separate literal here, the integration's bound became
     #: unreachable and could be raised without any test noticing.
     body_count: int = Field(default=0, ge=0, le=GMAIL_MAX_BODIES)
+    #: Stage 6N. Only mail received after this epoch second -- a monitor's
+    #: baseline, fixed when its proposal was written. An integer and nothing
+    #: else, bounded against the clock on every validation by the one
+    #: function `MailQuery` uses too, so the two layers cannot disagree.
+    received_after: Optional[int] = Field(default=None, strict=True)
+
+    @field_validator("received_after")
+    @classmethod
+    def _received_after_in_bounds(cls, value: Optional[int]) -> Optional[int]:
+        return None if value is None else check_received_after(value)
 
 
 class GmailGetMessageArguments(ToolArguments):

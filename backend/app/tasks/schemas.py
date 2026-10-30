@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.tasks.monitoring import ConditionKind, Operator, SpecRefused, parse_spec
 from app.tasks.models import (
     MAX_OBJECTIVE_CHARS,
     MAX_RESULT_CHARS,
@@ -55,6 +56,19 @@ DEFAULT_BUDGET: Dict[str, int] = {
 #: The keys a budget may carry. A closed set, so a caller cannot invent a
 #: bound that nothing enforces.
 BUDGET_KEYS = frozenset(DEFAULT_BUDGET)
+
+
+class CancelReason(str, enum.Enum):
+    """Why a person's cancellation happened. A closed set: the journal records
+    the value, so "cancelled by the owner" is never written for a cancellation
+    the owner did not make.
+
+    OWNER          -- the task's owner asked (the cancel route, Stage 6N);
+    MEMBER_REVOKED -- an Admin revoked the owning member (Stage 7A).
+    """
+
+    OWNER = "cancelled_by_owner"
+    MEMBER_REVOKED = "member_revoked"
 
 
 class TaskResult(BaseModel):
@@ -153,6 +167,57 @@ class TaskEventRead(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class TaskMonitorRead(BaseModel):
+    """What a monitoring task checks, as the read API reports it.
+
+    Read from the stored `tasks.monitor` spec (the one the person approved,
+    written once by `TaskService.configure_monitoring`) and nothing else.
+    Only the *shape* is returned -- kind, operator and interval -- which is
+    exactly what the task journal's `monitoring_configured` event records.
+    The condition's `path` and `expected` value are deliberately absent: the
+    expected value is the person's own text and the journal never carries it.
+
+    If the stored spec no longer parses, the monitor is still reported as a
+    monitor (the column is set) with every field `None`: "this is a monitor,
+    its details cannot be read" is true, and absent is not "not a monitor".
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Optional[ConditionKind] = None
+    operator: Optional[Operator] = None
+    interval_seconds: Optional[int] = None
+
+    @classmethod
+    def from_stored(cls, raw: Any) -> Optional["TaskMonitorRead"]:
+        """None for a task that is not a monitor (the column is NULL)."""
+        if raw is None:
+            return None
+        try:
+            spec = parse_spec(raw)
+        except SpecRefused:
+            return cls()
+        return cls(
+            kind=spec.condition.kind,
+            operator=spec.condition.operator,
+            interval_seconds=spec.interval_seconds,
+        )
+
+
+def monitoring_fields(task: Any) -> Dict[str, Any]:
+    """The three monitoring fields of a `TaskRead`, read from the task row.
+
+    The one place they are derived, so every response that carries a task
+    reports the same thing. Pure: it reads attributes and writes nothing, and
+    it is a lookup of column values, not a computation of scheduling state.
+    """
+    return {
+        "monitor": TaskMonitorRead.from_stored(task.monitor),
+        "next_run_at": task.next_run_at,
+        "check_count": int(task.check_count or 0),
+    }
+
+
 class TaskRead(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -178,6 +243,28 @@ class TaskRead(BaseModel):
     #: How many steps the plan has. The plan itself is **not** returned by
     #: default: it is bounded but large, and a listing does not need it.
     step_count: int = 0
+
+    #: Monitoring metadata, read from the task row. `monitor` is None for a
+    #: task that is not a monitor.
+    monitor: Optional[TaskMonitorRead] = None
+    #: The persisted schedule (`tasks.next_run_at`), unmodified: when the
+    #: background runtime will next take this task. None means no schedule is
+    #: stored: the task was never scheduled, or the runtime cleared it
+    #: (completed, failed, blocked after repeated failures, expired, or
+    #: waiting for a person). While a check is in flight the value is the
+    #: claim's lease horizon (`CLAIM_LEASE_SECONDS` after the claim) until the
+    #: check commits and reschedules; the task state does not distinguish the
+    #: two, because a monitor stays `running` between checks. A person's
+    #: cancellation does not clear it, so a cancelled task can still carry its
+    #: old value: only the task's `state` says whether anything will run.
+    next_run_at: Optional[datetime] = None
+    #: How many checks have run (`tasks.check_count`). A check claims the next
+    #: number inside its own transaction and the number is committed together
+    #: with the check's outcome (met, not met, or failed), so it counts checks
+    #: that ran, not one still in flight; a check that rolls back, or is
+    #: handed back to wait for approval, is not counted. Zero for a task that
+    #: is not a monitor or has not been checked.
+    check_count: int = 0
 
 
 class TaskDetail(TaskRead):
@@ -292,6 +379,9 @@ class ActivityReport(BaseModel):
 
 
 __all__ = [
+    "CancelReason",
+    "TaskMonitorRead",
+    "monitoring_fields",
     "BUDGET_KEYS",
     "DEFAULT_BUDGET",
     "ActivityAnswer",

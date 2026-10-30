@@ -24,7 +24,7 @@ from app.database.session import dispose_engine, init_engine
 from app.llm.factory import get_llm_provider
 from app.main import create_app
 
-from tests.conftest import FakeLLMProvider
+from tests.conftest import AUTH_HEADERS, FakeLLMProvider
 
 ENTITY_REPLY = json.dumps(
     {
@@ -122,7 +122,7 @@ async def test_concurrent_turns_are_not_broken_by_extraction(
     app, provider, _ = file_backed_app
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversations = []
         for _ in range(8):
@@ -153,7 +153,7 @@ async def test_extraction_writes_do_not_block_the_response(file_backed_app) -> N
     app, provider, _ = file_backed_app
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversation_id = (
             await client.post("/api/conversations", json={})
@@ -183,7 +183,7 @@ async def test_rapid_turns_in_one_conversation_do_not_duplicate(
     app, provider, _ = file_backed_app
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversation_id = (
             await client.post("/api/conversations", json={})
@@ -225,7 +225,7 @@ async def test_concurrent_turns_do_not_duplicate_entities(file_backed_app) -> No
     app, _, _ = file_backed_app
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversations = []
         for _ in range(6):
@@ -256,7 +256,7 @@ async def test_concurrent_turns_do_not_duplicate_aliases(file_backed_app) -> Non
     app, _, _ = file_backed_app
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversations = []
         for _ in range(6):
@@ -292,7 +292,7 @@ async def test_concurrent_turns_do_not_duplicate_relationships(
     app, _, _ = file_backed_app
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversations = []
         for _ in range(6):
@@ -328,7 +328,7 @@ async def test_concurrent_turns_accumulate_evidence_not_duplicates(
     app, _, _ = file_backed_app
 
     async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     ) as client:
         conversations = []
         for _ in range(4):

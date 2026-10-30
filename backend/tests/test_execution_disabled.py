@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.execution.errors import ExecutionDisabled
 from app.execution.schemas import ExecutionRequest
 from app.execution.service import ExecutionService
+from tests.scopes import ADMIN_SCOPE
 
 
 def test_execution_is_off_by_default() -> None:
@@ -30,7 +31,7 @@ async def test_the_service_refuses_to_propose_when_disabled(
     db_session, settings: Settings, workspace
 ) -> None:
     settings.MAI_WORKSPACE_ROOT = str(workspace)
-    service = ExecutionService(db_session, settings=settings)
+    service = ExecutionService(db_session, settings=settings, scope=ADMIN_SCOPE)
 
     with pytest.raises(ExecutionDisabled):
         await service.create(
@@ -53,7 +54,7 @@ async def test_the_dispatcher_refuses_even_a_fully_approved_execution(
     must not survive the switch being turned off. The dispatcher checks the
     switch first, before it looks at the approval at all.
     """
-    service = ExecutionService(db_session, settings=execution_settings)
+    service = ExecutionService(db_session, settings=execution_settings, scope=ADMIN_SCOPE)
     execution = await service.create(
         ExecutionRequest(
             tool_name="create_text_file",

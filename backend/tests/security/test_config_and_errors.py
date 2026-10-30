@@ -17,6 +17,7 @@ from app.core.errors import (
     LLMResponseError,
     LLMTimeoutError,
 )
+from tests.conftest import AUTH_HEADERS
 
 #: Strings that must never appear in a response body.
 LEAK_MARKERS = (
@@ -267,7 +268,7 @@ async def test_an_unexpected_exception_returns_a_generic_envelope(
     app = client._transport.app  # type: ignore[attr-defined]
     async with AsyncClient(
         transport=ASGITransport(app=app, raise_app_exceptions=False),
-        base_url="http://test",
+        base_url="http://test", headers=AUTH_HEADERS,
     ) as strict:
         response = await strict.get(
             f"/api/conversations/{conversation_id}/messages"

@@ -197,9 +197,11 @@ def test_the_query_schema_has_no_importance_field() -> None:
     """Literal-pinned: there is nowhere for a priority notion to be carried."""
     from app.integrations.gmail_schemas import MailQuery
 
+    # Changed deliberately in 6N: `received_after`, a monitor's baseline.
+    # An integer epoch; it carries no notion of importance either.
     assert set(MailQuery.model_fields) == {
         "sender", "subject_terms", "text_terms", "unread_only",
-        "newer_than_days", "max_results",
+        "newer_than_days", "max_results", "received_after",
     }
 
 

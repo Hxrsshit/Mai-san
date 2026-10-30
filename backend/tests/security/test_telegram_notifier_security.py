@@ -14,6 +14,7 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.telegram.notifier import TelegramNotificationAdapter
+from tests.security.approved_migrations import APPROVED_MIGRATIONS, after, migration_files
 
 BACKEND = Path(__file__).resolve().parents[2]
 APP = BACKEND / "app"
@@ -377,10 +378,9 @@ def test_the_reason_codes_are_literals() -> None:
 
 
 def test_6j_adds_no_migration_table_or_persisted_delivery_state() -> None:
-    versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
-    # Changed deliberately in 6M.1: the next migration after 6H's 0018 is
-    # 6M.1's delivery-records table, and nothing else.
-    assert [v for v in versions if v[:4] > "0018"] == ["0019_notification_deliveries.py"]
+    # Changed deliberately in 6M.1 (0019) and 7A (0020), then centralised in
+    # 7B L0: after 6H's 0018 come exactly the approved migrations, in order.
+    assert after("0018", migration_files()) == after("0018", APPROVED_MIGRATIONS)
     from app.database.metadata import Base
 
     # The only delivery table is 6M.1's, written only by `app.delivery.records`

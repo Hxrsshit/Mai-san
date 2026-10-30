@@ -34,6 +34,7 @@ from app.tools.catalog import build_catalog
 from app.tools.registry import ToolRegistry
 from app.tools.schemas import AuthorizationStatus
 from tests.support.stub_transport import StubTransport, brave_payload
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 SECRET = "SEARCH_SECRET_123"
@@ -93,7 +94,7 @@ def _service(session, settings, environment):
             session, settings=settings, authorization=authorization,
             registry=executable, integrations=integrations,
         ),
-        executable=executable,
+        executable=executable, scope=ADMIN_SCOPE,
     )
 
 
@@ -405,7 +406,7 @@ async def test_unrelated_memories_are_not_sent_to_the_provider(
     from app.services.conversation_service import ConversationService
 
     secret_memory = "The user's passport number is X1234567."
-    conversation = await ConversationService(db_session).create_conversation()
+    conversation = await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
     db_session.add(
         Memory(
             content=secret_memory,
@@ -414,7 +415,7 @@ async def test_unrelated_memories_are_not_sent_to_the_provider(
             status=MemoryStatus.ACTIVE,
             importance_score=10,
             confidence_score=1.0,
-            source_conversation_id=conversation.id,
+            source_conversation_id=conversation.id, **ADMIN_SCOPE.write_columns(),
         )
     )
     await db_session.flush()

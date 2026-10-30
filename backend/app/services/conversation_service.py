@@ -2,6 +2,15 @@
 
 All database access for conversations lives here so routes stay thin and the
 chat service has one place to read/write history.
+
+Stage 7B unit 4: every conversation belongs to a knowledge scope, and the
+service is bound to one at construction. Every read, update and delete is
+filtered by `scope.clause(Conversation)`, and every new conversation is
+written with `scope.write_columns()`. A conversation outside the scope -- another
+member's, another organisation's, or an unattributed legacy one -- is "not
+found", exactly like a missing id, so its existence is never revealed.
+Messages have no scope of their own: they are read and written only through a
+conversation of this scope (`docs/stage7b_ownership_design.md`, section 3).
 """
 
 import uuid
@@ -21,6 +30,7 @@ from app.database.models import (
     Message,
     MessageRole,
 )
+from app.identity.scope import InvalidScope, KnowledgeScope
 
 logger = get_logger(__name__)
 
@@ -35,15 +45,27 @@ _TITLE_MAX_LENGTH = 60
 
 
 class ConversationService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, scope: KnowledgeScope) -> None:
+        if not isinstance(scope, KnowledgeScope):
+            raise InvalidScope("ConversationService needs a KnowledgeScope")
         self._session = session
+        self._scope = scope
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        return self._scope
+
+    def _in_scope(self):
+        return self._scope.clause(Conversation)
 
     # --- Conversations ------------------------------------------------------
 
     async def create_conversation(
         self, title: Optional[str] = None
     ) -> Conversation:
-        conversation = Conversation(title=title or DEFAULT_CONVERSATION_TITLE)
+        conversation = Conversation(
+            title=title or DEFAULT_CONVERSATION_TITLE, **self._scope.write_columns()
+        )
         self._session.add(conversation)
         try:
             await self._session.flush()
@@ -62,6 +84,7 @@ class ConversationService:
         """Most recently active conversations first."""
         statement = (
             select(Conversation)
+            .where(self._in_scope())
             .order_by(Conversation.updated_at.desc())
             .limit(limit)
             .offset(offset)
@@ -78,16 +101,25 @@ class ConversationService:
     async def count_conversations(self) -> int:
         try:
             result = await self._session.execute(
-                select(func.count()).select_from(Conversation)
+                select(func.count()).select_from(Conversation).where(self._in_scope())
             )
             return int(result.scalar_one())
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("count conversations", exc)
 
     async def get_conversation(self, conversation_id: uuid.UUID) -> Conversation:
-        """Fetch a conversation with its messages, or raise 404."""
+        """Fetch a conversation of this scope with its messages, or raise 404.
+
+        A filtered SELECT, never `session.get`: the identity map would hand
+        back an already-loaded row without applying the scope."""
         try:
-            conversation = await self._session.get(Conversation, conversation_id)
+            conversation = (
+                await self._session.execute(
+                    select(Conversation).where(
+                        Conversation.id == conversation_id, self._in_scope()
+                    )
+                )
+            ).scalars().first()
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("get conversation", exc)
 
@@ -101,7 +133,9 @@ class ConversationService:
         """Delete a conversation; its messages go with it via ON DELETE CASCADE."""
         try:
             result = await self._session.execute(
-                delete(Conversation).where(Conversation.id == conversation_id)
+                delete(Conversation).where(
+                    Conversation.id == conversation_id, self._in_scope()
+                )
             )
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("delete conversation", exc)
@@ -130,6 +164,7 @@ class ConversationService:
         role: MessageRole,
         content: str,
     ) -> Message:
+        await self._require_conversation(conversation_id)
         message = Message(
             conversation_id=conversation_id, role=role, content=content
         )
@@ -158,6 +193,7 @@ class ConversationService:
         When `limit` is set, the *most recent* `limit` messages are returned,
         still oldest-first -- that is the window handed to the model.
         """
+        await self._require_conversation(conversation_id)
         statement = select(Message).where(Message.conversation_id == conversation_id)
 
         try:
@@ -183,6 +219,7 @@ class ConversationService:
         disabled, a SQL expression would still be sitting on the instance when
         it is serialised.
         """
+        await self._require_conversation(conversation.id)
         conversation.updated_at = utcnow()
         await self._session.flush()
 
@@ -192,6 +229,7 @@ class ConversationService:
         """Give an untitled conversation a name from its first user message."""
         if conversation.title != DEFAULT_CONVERSATION_TITLE:
             return
+        await self._require_conversation(conversation.id)
 
         title = " ".join(first_user_message.split())
         if len(title) > _TITLE_MAX_LENGTH:
@@ -202,6 +240,25 @@ class ConversationService:
             await self._session.flush()
 
     # --- Helpers ------------------------------------------------------------
+
+    async def _require_conversation(self, conversation_id: uuid.UUID) -> None:
+        """Raise 404 unless the conversation exists in this scope. Messages are
+        owned through their conversation, so this guards every message read
+        and write."""
+        try:
+            found = (
+                await self._session.execute(
+                    select(Conversation.id).where(
+                        Conversation.id == conversation_id, self._in_scope()
+                    )
+                )
+            ).first()
+        except _DB_ERRORS as exc:
+            raise self._wrap_db_error("check conversation", exc)
+        if found is None:
+            raise ConversationNotFoundError(
+                f"Conversation {conversation_id} does not exist."
+            )
 
     @staticmethod
     def _wrap_db_error(action: str, exc: Exception) -> DatabaseError:

@@ -3,19 +3,20 @@
 No model is involved. The same candidates always produce the same order, which
 is what makes retrieval testable.
 
-    FINAL = w_text  * text_relevance
-          + w_ent   * entity_relevance
-          + w_rel   * relationship_relevance
-          + w_imp   * importance
-          + w_conf  * confidence
-          + w_rec   * recency
+    RELEVANCE = w_text * text_relevance + w_ent * entity_relevance
+              + w_rel  * relationship_relevance
+    METADATA  = w_imp  * importance + w_conf * confidence + w_rec * recency
+    FINAL     = RELEVANCE + METADATA * max(text, entity, relationship relevance)
 
 Every component is normalised to [0, 1] before weighting, so the weights are
 directly comparable and the final score also lands in [0, 1].
 
 Relevance dominates by design: text + entity + relationship carry 0.70 of the
-weight, while importance + confidence + recency carry 0.30. A highly important
-but irrelevant memory therefore cannot outrank a directly relevant one.
+weight, while importance + confidence + recency carry 0.30 -- and the metadata
+part is multiplied by the memory's strongest relevance signal, so metadata
+orders equally relevant memories but cannot reverse a clear relevance gap. A
+highly important but irrelevant (or only partly relevant) memory therefore
+cannot outrank a directly relevant one.
 """
 
 import math
@@ -24,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Sequence, Set
 
 from app.core.config import Settings
+from app.retrieval.query_normalizer import query_keywords, term_weight
 from app.retrieval.retrievers import MemoryCandidate, RelationshipCandidate
 from app.retrieval.schemas import (
     MatchSignal,
@@ -87,6 +89,10 @@ class Ranker:
     ) -> List[RetrievedMemory]:
         """Score, sort and number the candidate memories."""
         now = now or datetime.now(timezone.utc)
+        # The keywords the memory search used, so text relevance is measured
+        # against the same words that could have matched. Unchanged for any
+        # question within `MAX_QUERY_KEYWORDS`.
+        keywords = query_keywords(keywords)
         scored: List[RetrievedMemory] = []
 
         for candidate in candidates:
@@ -125,7 +131,14 @@ class Ranker:
         # Text: share of query keywords present in the memory.
         text = 0.0
         if keywords:
-            text = _clamp(len(candidate.keyword_hits) / len(keywords))
+            # Weighted by what each word contributes: the question's subject
+            # ("tea") counts fully, a preference word ("prefer") and a framing
+            # word ("kind") only a little. Counting them equally tied every
+            # "User prefers ..." memory with the one about tea, and importance
+            # then decided the order. See `query_normalizer.TERM_WEIGHTS`.
+            total = sum(term_weight(k) for k in keywords)
+            matched = sum(term_weight(k) for k in keywords if k in candidate.keyword_hits)
+            text = _clamp(matched / total) if total else 0.0
             if candidate.keyword_hits:
                 signals.append(
                     MatchSignal(
@@ -159,14 +172,25 @@ class Ranker:
         recency = recency_score(memory.created_at, now)
 
         weights = self.weights
-        final = (
+        relevance = (
             weights["text_relevance"] * text
             + weights["entity_relevance"] * entity
             + weights["relationship_relevance"] * relationship
-            + weights["importance"] * importance
+        )
+        metadata = (
+            weights["importance"] * importance
             + weights["confidence"] * confidence
             + weights["recency"] * recency
         )
+        # Metadata is gated by how relevant the memory is. Added at full
+        # weight, importance (0.15) could overturn a partial-relevance gap: a
+        # tea memory without the preference (text 0.74, importance 10) beat
+        # "favourite tea is jasmine" (text 1.0, importance 2) on "what is my
+        # favourite tea?". Scaled by the strongest relevance signal, metadata
+        # still orders equally relevant memories -- importance keeps its
+        # purpose -- but can no longer reverse a clear relevance difference.
+        gate = max(text, entity, relationship)
+        final = relevance + metadata * gate
 
         return (
             ScoreBreakdown(

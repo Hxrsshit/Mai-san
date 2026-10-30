@@ -15,6 +15,7 @@ from app.memory.deduplication import (
     similarity,
 )
 from app.memory.models import Memory, MemoryType
+from tests.scopes import ADMIN_SCOPE
 
 THRESHOLD = 0.82
 
@@ -26,7 +27,7 @@ def memory(content: str, memory_type=MemoryType.PREFERENCE) -> Memory:
         memory_type=memory_type,
         importance_score=7,
         confidence_score=0.9,
-        source_conversation_id=None,
+        source_conversation_id=None, **ADMIN_SCOPE.write_columns(),
     )
 
 

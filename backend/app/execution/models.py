@@ -37,6 +37,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from app.database.models.base import Base, utcnow
+from app.database.models.scope import (
+    KnowledgeScopeColumns,
+    knowledge_scope_check,
+    scoped_unique_indexes,
+    same_scope_reference,
+)
 from app.execution.states import ExecutionState
 from app.tools.schemas import AuthorizationStatus, RiskLevel
 
@@ -74,7 +80,7 @@ class ExecutionEventType(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
-class Execution(Base):
+class Execution(Base, KnowledgeScopeColumns):
     """One proposed action, and whatever became of it."""
 
     __tablename__ = "executions"
@@ -194,8 +200,10 @@ class Execution(Base):
     )
 
     __table_args__ = (
-        # The idempotency guarantee, enforced where it cannot be raced.
-        Index("uq_executions_idempotency_key", "idempotency_key", unique=True),
+        # The idempotency guarantee, enforced where it cannot be raced --
+        # per scope since Stage 7B unit 8b (migration 0023): one member's
+        # payload-derived key never collides with, or returns, another's.
+        *scoped_unique_indexes("executions", "idempotency_key", "idempotency_key"),
         Index("ix_executions_state", "state"),
         Index("ix_executions_tool_name", "tool_name"),
         Index("ix_executions_created_at", "created_at"),
@@ -214,6 +222,10 @@ class Execution(Base):
             "state NOT IN ('succeeded', 'failed') OR completed_at IS NOT NULL",
             name="completed_requires_timestamp",
         ),
+        knowledge_scope_check(),
+        # Stage 7B unit 10 (migration 0025): same-scope references, relational.
+        same_scope_reference("executions", "conversation_id", "conversations"),
+        same_scope_reference("executions", "workflow_id", "workflows"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover

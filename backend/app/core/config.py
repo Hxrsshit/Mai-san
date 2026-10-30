@@ -165,6 +165,20 @@ class Settings(BaseSettings):
     # Extraction is a classification task, so temperature stays low.
     MEMORY_EXTRACTION_TEMPERATURE: float = 0.1
     MEMORY_EXTRACTION_MAX_TOKENS: int = 1024
+    # The turns *before* the analysed message, shown to the extractor so a
+    # short answer is read as an answer ("tall, glasses" after "what is your
+    # ideal partner like?" describes the partner, not the user). Context only:
+    # memories are still extracted from the user's own message alone.
+    #
+    # Owner-approved (2026-10-14) as a change to the Stage 3D disclosure
+    # policy: background extraction may send the provider up to N earlier
+    # turns of the *same* conversation -- turns the chat call already sent to
+    # the same provider -- each capped. Pinned by
+    # tests/security/test_provider_disclosure.py. Hard bounds: an absent value
+    # is the default, an out-of-range one is refused when settings load, so
+    # the context can never be unbounded (worst case 10 x 2000 characters).
+    MEMORY_EXTRACTION_CONTEXT_MESSAGES: int = Field(default=4, ge=0, le=10)
+    MEMORY_EXTRACTION_CONTEXT_CHARS: int = Field(default=500, ge=50, le=2000)
 
     # --- Entities (Stage 2B) ---
     # Entity extraction runs after a memory is stored. Disabling it leaves
@@ -195,7 +209,11 @@ class Settings(BaseSettings):
     # Zero temperature: the same message must classify the same way every
     # time, or downstream stages cannot rely on the label.
     INTENT_CLASSIFICATION_TEMPERATURE: float = 0.0
-    INTENT_CLASSIFICATION_MAX_TOKENS: int = 512
+    # The output cap *includes* a reasoning model's hidden reasoning tokens.
+    # Observed live on gemini-3.5-flash: ~110 visible tokens of JSON plus
+    # ~250-650 hidden ones, so 512 cut the JSON off mid-field (4 of 4 probes).
+    # This is a ceiling, not a target: a model that stops early costs no more.
+    INTENT_CLASSIFICATION_MAX_TOKENS: int = 2048
     # How many recent turns are shown to the classifier so a short follow-up
     # ("do that one") can be understood. Kept small on purpose: Stage 2D
     # retrieval is NOT reused here, and this must not become a second context
@@ -411,6 +429,16 @@ class Settings(BaseSettings):
     #: value cannot raise the ceiling.
     BACKGROUND_MAX_TASKS_PER_TICK: int = 5
 
+    #: Stage 6M.3. Channels the runtime delivers new task notifications
+    #: through automatically, by registered adapter name (e.g. `telegram`).
+    #: **Empty -- the default -- means off.** Names only, never credentials:
+    #: a channel's own settings configure it. Only notifications created after
+    #: the runtime started with this set are delivered, each at most once and
+    #: never retried automatically; see `app.background.deliveries`.
+    NOTIFICATION_AUTO_DELIVER_ADAPTERS: Annotated[List[str], NoDecode] = Field(
+        default_factory=list
+    )
+
     # --- Context retrieval (Stage 2D) ---
     # Retrieval runs on the request path before the chat call. It adds no
     # model calls -- every step is a bounded database query.
@@ -447,6 +475,14 @@ class Settings(BaseSettings):
     # accounting is isolated so token budgeting can replace it.
     CONTEXT_MAX_TOTAL_CHARS: int = 10000
 
+    # --- API authentication (Stage 6M.4) ---
+    #: The SHA-256 (64 hex characters) of the one API token -- never the token
+    #: itself. Empty, the default, means unconfigured: every protected route
+    #: then refuses with 503 `authentication_not_configured`. There is no
+    #: bypass. Generate a token, hash it, and set only the hash; see
+    #: `.env.example`.
+    MAI_API_TOKEN_SHA256: str = ""
+
     # --- CORS ---
     # NoDecode is required: without it pydantic-settings tries to JSON-decode
     # any complex-typed value coming from the environment, so a plain
@@ -477,6 +513,21 @@ class Settings(BaseSettings):
             raise ValueError(f"MAI_TIMEZONE is not a known IANA zone: {name!r}") from exc
         return name
 
+    @field_validator("NOTIFICATION_AUTO_DELIVER_ADAPTERS", mode="before")
+    @classmethod
+    def _split_adapters(cls, value):
+        """A comma-separated string of names; normalised as 6I does."""
+        if isinstance(value, str):
+            value = value.split(",")
+        if isinstance(value, (list, tuple)):
+            names = []
+            for item in value:
+                name = str(item).strip().lower()
+                if name and name not in names:
+                    names.append(name)
+            return names
+        return value
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_origins(cls, value):
@@ -492,8 +543,9 @@ class Settings(BaseSettings):
 
     @property
     def is_llm_configured(self) -> bool:
-        """True when the selected provider has the credentials it needs."""
-        return bool(self.active_api_key)
+        """True when the selected provider has the credentials and the model
+        it needs. Configuration only: says nothing about reachability."""
+        return bool(self.active_api_key) and bool((self.active_model or "").strip())
 
 
 @lru_cache

@@ -10,6 +10,7 @@ AST walk.
 
 import ast
 from pathlib import Path
+from tests.security.approved_migrations import APPROVED_MIGRATIONS, after, migration_files
 
 BACKEND = Path(__file__).resolve().parents[2]
 APP = BACKEND / "app"
@@ -190,7 +191,10 @@ def test_only_the_api_dependency_calls_the_composition() -> None:
         if any(m == "app.composition" or m.startswith("app.composition.")
                for m in imports(parse(path))):
             importers.append(str(path.relative_to(BACKEND)))
-    assert importers == ["app/api/deps.py"]
+    # Changed deliberately in 6M.3: the runtime's automatic-delivery work
+    # source is the second, and only other, caller. It uses the same service
+    # factory (and the registry's names, never to register anything).
+    assert sorted(importers) == ["app/api/deps.py", "app/background/deliveries.py"]
 
 
 def test_only_the_6l_route_reaches_delivery_and_never_the_lifespan() -> None:
@@ -198,9 +202,11 @@ def test_only_the_6l_route_reaches_delivery_and_never_the_lifespan() -> None:
     service factory (never the registry), and the 6L route may use only that
     dependency. `main.py` and every other route reach none of it."""
     allowed = {
-        "deps.py": ({"app.composition.notification_delivery", "app.delivery.service"},
+        # Stage 6M.2 adds the read-only delivery-state module to both.
+        "deps.py": ({"app.composition.notification_delivery", "app.delivery.service",
+                     "app.delivery.status"},
                     {"notification_delivery_service", "NotificationDeliveryService"}),
-        "routes/notification_delivery.py": ({"app.delivery.contract"}, set()),
+        "routes/notification_delivery.py": ({"app.delivery.contract", "app.delivery.status"}, set()),
     }
     for path in list((APP / "api").rglob("*.py")) + [APP / "main.py"]:
         tree = parse(path)
@@ -261,7 +267,6 @@ def test_the_root_logs_only_the_adapter_names() -> None:
 
 
 def test_6k_adds_no_migration_or_table() -> None:
-    versions = sorted(p.name for p in (BACKEND / "alembic" / "versions").glob("0*.py"))
-    # Changed deliberately in 6M.1: the next migration after 6H's 0018 is
-    # 6M.1's delivery-records table, and nothing else.
-    assert [v for v in versions if v[:4] > "0018"] == ["0019_notification_deliveries.py"]
+    # Changed deliberately in 6M.1 (0019) and 7A (0020), then centralised in
+    # 7B L0: after 6H's 0018 come exactly the approved migrations, in order.
+    assert after("0018", migration_files()) == after("0018", APPROVED_MIGRATIONS)

@@ -647,7 +647,7 @@ async def test_without_a_grant_the_check_waits_for_a_person(
     # reschedules the task.
     async with session_factory() as session:
         runner = TaskRunner(TaskService(session, settings=execution_settings, owner_id=OWNER))
-        await runner._executions.approve(execution.id)
+        await (await runner._owner_executions()).approve(execution.id)
         assert (await TaskService(
             session, settings=execution_settings, owner_id=OWNER
         ).schedule_background(task_id, now=now)).ok
@@ -758,6 +758,11 @@ async def test_a_tampered_capability_is_refused_at_check_time(
 async def test_another_owner_cannot_check_the_task(
     session_factory, execution_settings, workspace, now
 ) -> None:
+    from tests.scopes import make_active_member
+
+    # A real, active second member (Stage 7B unit 8b), so what refuses them is
+    # the owner filter, not their lack of a membership.
+    await make_active_member(session_factory, OTHER)
     task_id = await monitoring_task(session_factory, execution_settings, at=now)
     async with session_factory() as session:
         runner = TaskRunner(TaskService(session, settings=execution_settings, owner_id=OTHER))

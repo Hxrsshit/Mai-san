@@ -249,7 +249,11 @@ def test_no_content_handling_module_can_reach_the_runtime_or_scheduling() -> Non
                     offenders.append((str(path.relative_to(BACKEND)), module))
             if "schedule_background" in source:
                 offenders.append((str(path.relative_to(BACKEND)), "schedule_background"))
-    assert offenders == [], offenders
+    # Changed deliberately in 6N: the one door from a chat turn into the task
+    # layer, `app.tasks.requests`, from `chat_service.py` and nowhere else.
+    # It reaches scheduling only through a person's confirmation; the name
+    # `schedule_background` still appears in no content-handling module.
+    assert offenders == [("app/services/chat_service.py", "app.tasks.requests")], offenders
 
 
 def test_the_reminder_alias_imports_only_the_class() -> None:

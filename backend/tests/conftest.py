@@ -4,8 +4,20 @@ Tests run against an in-process SQLite database and a fake LLM provider, so
 the suite needs neither PostgreSQL nor network access or an API key.
 """
 
+import hashlib
+import os
 import uuid
 from typing import AsyncIterator, List, NamedTuple, Optional
+
+# --- API authentication (Stage 6M.4) ----------------------------------------
+# A deterministic, obviously fake, test-only token. Its SHA-256 is put in the
+# test process's environment *before* the app is imported, so every Settings
+# the suite builds -- including the app's own -- is configured with it, and the
+# shared clients below send it. It authenticates nothing outside this suite.
+# Refusal tests use `anon_client` (no credential) or build their own client.
+TEST_API_TOKEN = "mai-test-only-api-token-not-a-real-secret"
+os.environ["MAI_API_TOKEN_SHA256"] = hashlib.sha256(TEST_API_TOKEN.encode("utf-8")).hexdigest()
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_API_TOKEN}"}
 
 import pytest
 import pytest_asyncio
@@ -22,6 +34,49 @@ from app.database.session import get_db_session, get_session_factory
 from app.llm.base import LLMMessage, LLMProvider, LLMResponse, ProviderHealth
 from app.llm.factory import get_llm_provider
 from app.main import create_app
+
+
+# --- The default organisation (Stage 7A) ------------------------------------
+# Production gets these rows from migration 0020. Test databases are built by
+# `create_all`, which runs no migration, so the same rows are inserted when
+# the members table is created -- through the typed tables, exactly as the
+# migration does. `test_migration_compatibility` checks the migration's seed
+# against the same constants, so the two cannot drift silently.
+
+from datetime import datetime, timezone  # noqa: E402
+
+from sqlalchemy import event  # noqa: E402
+
+from app.identity.constants import (  # noqa: E402
+    DEFAULT_ORGANISATION_ID,
+    DEFAULT_ORGANISATION_NAME,
+    LEGACY_ADMIN_DISPLAY_NAME,
+    LEGACY_ADMIN_MEMBER_ID,
+    LEGACY_ADMIN_USER_ID,
+    MemberStatus,
+    OrganisationStatus,
+    Role,
+)
+from app.identity.models import Organisation, OrganisationMember, User  # noqa: E402
+from tests.scopes import ADMIN_SCOPE
+
+
+@event.listens_for(OrganisationMember.__table__, "after_create")
+def _seed_default_organisation(target, connection, **_) -> None:
+    now = datetime.now(timezone.utc)
+    connection.execute(Organisation.__table__.insert(), [{
+        "id": DEFAULT_ORGANISATION_ID, "name": DEFAULT_ORGANISATION_NAME,
+        "status": OrganisationStatus.ACTIVE.value, "created_at": now, "updated_at": now,
+    }])
+    connection.execute(User.__table__.insert(), [{
+        "id": LEGACY_ADMIN_USER_ID, "display_name": LEGACY_ADMIN_DISPLAY_NAME,
+        "created_at": now, "updated_at": now,
+    }])
+    connection.execute(OrganisationMember.__table__.insert(), [{
+        "id": LEGACY_ADMIN_MEMBER_ID, "organisation_id": DEFAULT_ORGANISATION_ID,
+        "user_id": LEGACY_ADMIN_USER_ID, "role": Role.ADMIN.value,
+        "status": MemberStatus.ACTIVE.value, "created_at": now, "activated_at": now,
+    }])
 
 
 # --- Fake provider ----------------------------------------------------------
@@ -298,9 +353,29 @@ async def client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as http_client:
         yield http_client
 
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def anon_client(
+    session_factory, fake_provider: FakeLLMProvider, settings: Settings
+) -> AsyncIterator[AsyncClient]:
+    """Stage 6M.4. The `client` app with no credential: for refusal tests."""
+    app = create_app()
+
+    async def override_session() -> AsyncIterator[AsyncSession]:
+        async with session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db_session] = override_session
+    app.dependency_overrides[get_llm_provider] = lambda: fake_provider
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_session_factory] = lambda: session_factory
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http_client:
+        yield http_client
     app.dependency_overrides.clear()
 
 
@@ -458,7 +533,7 @@ async def import_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as http_client:
         yield http_client
 
     app.dependency_overrides.clear()
@@ -525,7 +600,7 @@ async def execution_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers=AUTH_HEADERS) as http_client:
         yield http_client
 
     app.dependency_overrides.clear()
@@ -536,7 +611,7 @@ async def executions(db_session, execution_settings: Settings):
     """An `ExecutionService` on the test session, for tests below the API."""
     from app.execution.service import ExecutionService
 
-    return ExecutionService(db_session, settings=execution_settings)
+    return ExecutionService(db_session, settings=execution_settings, scope=ADMIN_SCOPE)
 
 
 @pytest_asyncio.fixture
@@ -660,7 +735,7 @@ async def research_client(
                 authorization=authorization, registry=executable,
                 integrations=integrations,
             ),
-            executable=executable,
+            executable=executable, scope=ADMIN_SCOPE,
         )
         return ChatService(
             session=session,
@@ -680,14 +755,15 @@ async def research_client(
                 session,
                 settings=execution_settings,
                 executions=executions,
-                integrations=integrations,
+                integrations=integrations, scope=ADMIN_SCOPE,
             ),
             workflow_service=WorkflowService(
                 session,
                 settings=execution_settings,
                 executions=executions,
-                integrations=integrations,
+                integrations=integrations, scope=ADMIN_SCOPE,
             ),
+            scope=ADMIN_SCOPE,
         )
 
     from app.api.deps import get_chat_service
@@ -700,7 +776,7 @@ async def research_client(
 
     transport_holder = transport
     transport_client = AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
+        transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS
     )
     transport_client.search_transport = transport_holder
     transport_client.search_integration = integration
@@ -824,7 +900,7 @@ async def calendar_client(
                 authorization=authorization, registry=executable,
                 integrations=integrations,
             ),
-            executable=executable,
+            executable=executable, scope=ADMIN_SCOPE,
         )
         return ChatService(
             session=session,
@@ -840,8 +916,9 @@ async def calendar_client(
                 session,
                 settings=calendar_settings,
                 executions=executions,
-                integrations=integrations,
+                integrations=integrations, scope=ADMIN_SCOPE,
             ),
+            scope=ADMIN_SCOPE,
         )
 
     from app.api.deps import get_chat_service
@@ -852,7 +929,7 @@ async def calendar_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_chat_service] = override_chat
 
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS)
     client.calendar_transport = transport
     client.calendar_integration = integration
     client.token_store = calendar_tokens
@@ -962,7 +1039,7 @@ async def briefing_client(
                 authorization=authorization, registry=executable,
                 integrations=integrations,
             ),
-            executable=executable,
+            executable=executable, scope=ADMIN_SCOPE,
         )
         return ChatService(
             session=session,
@@ -976,16 +1053,17 @@ async def briefing_client(
             ),
             calendar_service=CalendarService(
                 session, settings=calendar_settings,
-                executions=executions, integrations=integrations,
+                executions=executions, integrations=integrations, scope=ADMIN_SCOPE,
             ),
             research_service=ResearchService(
                 session, settings=calendar_settings,
-                executions=executions, integrations=integrations,
+                executions=executions, integrations=integrations, scope=ADMIN_SCOPE,
             ),
             workflow_service=WorkflowService(
                 session, settings=calendar_settings,
-                executions=executions, integrations=integrations,
+                executions=executions, integrations=integrations, scope=ADMIN_SCOPE,
             ),
+            scope=ADMIN_SCOPE,
         )
 
     from app.api.deps import get_chat_service
@@ -996,7 +1074,7 @@ async def briefing_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_chat_service] = override_chat
 
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS)
     client.calendar_transport = calendar_transport
     client.search_transport = search_transport
     client.calendar_integration = calendar_integration
@@ -1132,7 +1210,7 @@ async def gmail_client(
                 authorization=authorization, registry=executable,
                 integrations=integrations,
             ),
-            executable=executable,
+            executable=executable, scope=ADMIN_SCOPE,
         )
         return ChatService(
             session=session,
@@ -1146,8 +1224,9 @@ async def gmail_client(
             ),
             mail_service=MailService(
                 session, settings=calendar_settings,
-                executions=executions, integrations=integrations,
+                executions=executions, integrations=integrations, scope=ADMIN_SCOPE,
             ),
+            scope=ADMIN_SCOPE,
         )
 
     from app.api.deps import get_chat_service
@@ -1158,7 +1237,7 @@ async def gmail_client(
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     app.dependency_overrides[get_chat_service] = override_chat
 
-    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers=AUTH_HEADERS)
     client.gmail_transport = transport
     client.gmail_integration = integration
     client.token_store = gmail_tokens
@@ -1245,7 +1324,7 @@ async def calendar_runner(
             authorization=AuthorizationService(registry=tools),
             registry=executable,
             integrations=integrations,
-        ),
+        ), scope=ADMIN_SCOPE,
     )
     service = TaskService(db_session, settings=calendar_settings)
     runner = TaskRunner(service, executions=executions)
@@ -1281,7 +1360,7 @@ async def calendar_runner(
                 authorization=AuthorizationService(registry=tools),
                 registry=executable,
                 integrations=integrations,
-            ),
+            ), scope=ADMIN_SCOPE,
         )
         other_service = TaskService(session, settings=calendar_settings)
         return other_service, TaskRunner(other_service, executions=other_executions)

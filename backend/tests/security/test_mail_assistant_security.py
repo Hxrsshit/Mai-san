@@ -779,7 +779,8 @@ def test_execution_truth_remains_the_single_authority_on_counts() -> None:
     # Never derived from text: the builder takes layer results only.
     import inspect
     signature = inspect.signature(record_for_turn)
-    assert set(signature.parameters) == {"research", "mail", "calendar", "workflow"}
+    # Changed deliberately in 6P: `monitor`, another layer result.
+    assert set(signature.parameters) == {"research", "mail", "calendar", "workflow", "monitor"}
 
 
 def test_stage_5f2_added_no_migration() -> None:

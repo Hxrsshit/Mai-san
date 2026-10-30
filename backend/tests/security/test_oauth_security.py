@@ -37,6 +37,7 @@ from app.integrations.oauth import (
     validate_redirect_uri,
 )
 from app.integrations.token_store import FileTokenStore, StoredToken, TokenStoreError
+from tests.scopes import ADMIN_SCOPE
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 
@@ -781,7 +782,7 @@ async def test_status_and_chat_report_the_same_state(
 
     import uuid as _uuid
 
-    result = await CalendarService(session=db_session, settings=settings).handle(
+    result = await CalendarService(session=db_session, settings=settings, scope=ADMIN_SCOPE).handle(
         _uuid.uuid4(), "What's on my calendar today?"
     )
 

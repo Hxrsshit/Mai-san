@@ -5,6 +5,12 @@ Pipeline, in order:
     turn -> extract candidates -> threshold filter -> deduplicate -> store
 
 Only this module writes memories. The LLM proposes; the application decides.
+
+Stage 7B unit 5: the service belongs to one knowledge scope, given at
+construction. Memories are written with `scope.write_columns()`, and every
+read -- deduplication included -- is filtered by `scope.clause`, so one
+member's fact is never a "duplicate" of another's and never listed, read or
+deleted through another member's service.
 """
 
 import uuid
@@ -20,6 +26,9 @@ from app.core.config import Settings, get_settings
 from app.core.errors import DatabaseError, MemoryNotFoundError
 from app.core.logging import get_logger
 from app.database.models.base import utcnow
+from app.database.models.conversation import Conversation
+from app.database.models.message import Message
+from app.identity.scope import KnowledgeScope, require_scope
 from app.llm.base import LLMProvider
 from app.memory.deduplication import DuplicateMatch, find_duplicate, normalize
 from app.memory.extractor import MemoryExtractor
@@ -87,13 +96,20 @@ class MemoryService:
         provider: Optional[LLMProvider] = None,
         settings: Optional[Settings] = None,
         extractor: Optional[MemoryExtractor] = None,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "MemoryService")
         self._settings = settings or get_settings()
         self._provider = provider
         self._extractor = extractor or (
             MemoryExtractor(provider, self._settings) if provider else None
         )
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        return self._scope
 
     # --- Extraction pipeline ------------------------------------------------
 
@@ -103,26 +119,59 @@ class MemoryService:
         user_message: str,
         assistant_message: str,
         source_message_id: Optional[uuid.UUID] = None,
+        *,
+        scope: Optional[KnowledgeScope] = None,
     ) -> List[Memory]:
         """Analyse one completed turn and store whatever survives validation.
 
         Never raises. This runs after the chat response has already been
         returned, so a failure here must stay contained.
+
+        `scope` is the trusted scope of the turn that produced the messages
+        (Stage 7B unit 4), handed over by the route -- never derived from the
+        conversation, the messages or the model's output. The scope bounds
+        the write too: unless the conversation (and the source message, when
+        given) is found inside it, nothing is extracted or stored.
+
+        Since unit 5 the scope is the service's own. `scope`, when given, is a
+        cross-check only: a turn scope that differs from the service's stores
+        nothing.
         """
         if not self._settings.MEMORY_EXTRACTION_ENABLED:
             return []
         if self._extractor is None:
             logger.warning("Memory extraction skipped: no provider configured")
             return []
+        if scope is not None and scope != self._scope:
+            logger.warning(
+                "Memory extraction refused: the turn scope is not the service's",
+                extra={"conversation_id": str(conversation_id)},
+            )
+            return []
+        scope = self._scope
+        if not await self._turn_in_scope(conversation_id, source_message_id, scope):
+            logger.warning(
+                "Memory extraction refused: the turn is not in its scope",
+                extra={"conversation_id": str(conversation_id)},
+            )
+            return []
 
+        recent_context = await self._earlier_context(
+            conversation_id, source_message_id, scope
+        )
         logger.info(
             "Memory extraction started",
-            extra={"conversation_id": str(conversation_id)},
+            extra={
+                "conversation_id": str(conversation_id),
+                "context_messages": len(recent_context),
+            },
         )
 
         try:
             candidates = await self._extractor.extract(
-                user_message=user_message, assistant_message=assistant_message
+                user_message=user_message,
+                assistant_message=assistant_message,
+                recent_context=recent_context,
             )
         except Exception as exc:  # noqa: BLE001 - belt and braces
             logger.error(
@@ -238,6 +287,97 @@ class MemoryService:
                 stored.append(memory)
         return stored
 
+    async def _turn_in_scope(
+        self,
+        conversation_id: uuid.UUID,
+        source_message_id: Optional[uuid.UUID],
+        scope: KnowledgeScope,
+    ) -> bool:
+        """The conversation -- and the source message, if any -- exist inside
+        `scope`. Checked before anything is extracted, whatever the context
+        settings, so a memory's provenance can only ever point into its own
+        scope. Never raises: anything unexpected is a refusal."""
+        if not isinstance(scope, KnowledgeScope):
+            return False
+        try:
+            statement = select(Conversation.id).where(
+                Conversation.id == conversation_id, scope.clause(Conversation)
+            )
+            if source_message_id is not None:
+                statement = statement.join(
+                    Message, Message.conversation_id == Conversation.id
+                ).where(Message.id == source_message_id)
+            return (await self._session.execute(statement)).first() is not None
+        except Exception as exc:  # noqa: BLE001 - a refusal, never an error
+            logger.warning(
+                "Memory extraction scope check failed",
+                extra={"conversation_id": str(conversation_id), "category": type(exc).__name__},
+            )
+            return False
+
+    async def _earlier_context(
+        self,
+        conversation_id: uuid.UUID,
+        source_message_id: Optional[uuid.UUID],
+        scope: KnowledgeScope,
+    ) -> List[str]:
+        """The turns before the analysed message, oldest first, bounded.
+
+        Without them the extractor saw a reply in isolation: "tall, wears
+        glasses" answering "what is your ideal partner like?" was stored as a
+        description of the *user*. Context for interpretation only -- the
+        prompt still names the user's own message as the sole source of
+        memories. Never raises: no context is a degraded extraction, not a
+        failed one.
+
+        Stage 7B unit 4: only within `scope`. The source message must belong
+        to a conversation of the scope; otherwise there is no context at all,
+        so the extractor never sees another member's turns.
+        """
+        limit = max(0, self._settings.MEMORY_EXTRACTION_CONTEXT_MESSAGES)
+        if not limit or source_message_id is None:
+            return []
+        try:
+            source_at = (
+                await self._session.execute(
+                    select(Message.created_at)
+                    .join(Conversation, Conversation.id == Message.conversation_id)
+                    .where(
+                        Message.id == source_message_id,
+                        Message.conversation_id == conversation_id,
+                        scope.clause(Conversation),
+                    )
+                )
+            ).scalar_one_or_none()
+            if source_at is None:
+                return []
+            rows = (
+                await self._session.execute(
+                    select(Message.role, Message.content)
+                    .where(
+                        Message.conversation_id == conversation_id,
+                        Message.created_at < source_at,
+                    )
+                    .order_by(Message.created_at.desc(), Message.id.desc())
+                    .limit(limit)
+                )
+            ).all()
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "Earlier context unavailable for memory extraction",
+                extra={"conversation_id": str(conversation_id), "error": str(exc)},
+            )
+            return []
+        cap = max(1, self._settings.MEMORY_EXTRACTION_CONTEXT_CHARS)
+        lines = []
+        for role, content in reversed(rows):
+            role = getattr(role, "value", role)
+            text = " ".join((content or "").split())
+            if len(text) > cap:
+                text = text[: cap - 1].rstrip() + "…"
+            lines.append(f"{role}: {text}")
+        return lines
+
     def _filter_by_thresholds(
         self, candidates: Sequence[MemoryCandidate]
     ) -> List[MemoryCandidate]:
@@ -313,13 +453,18 @@ class MemoryService:
             source_conversation_id=provenance.conversation_id,
             source_imported_message_id=provenance.imported_message_id,
             # The model may name a source message; fall back to the turn's
-            # user message. An invented id would break the FK, so it is only
-            # trusted when it resolves. Imported memories have no live message
+            # user message. A model-named id is trusted only when it is a
+            # message of this turn's own conversation (Stage 7B unit 4) --
+            # never another conversation's, so model output cannot point a
+            # memory's provenance into another scope. Imported memories have no live message
             # to point at, so the lookup is skipped entirely rather than
             # resolving a live id against archived content.
+            **self._scope.write_columns(),
             source_message_id=(
                 await self._resolve_source_message(
-                    candidate.source_message_id, provenance.fallback_message_id
+                    candidate.source_message_id,
+                    provenance.fallback_message_id,
+                    provenance.conversation_id,
                 )
                 if provenance.origin is MemoryOrigin.LIVE
                 else None
@@ -358,15 +503,23 @@ class MemoryService:
         return memory
 
     async def _resolve_source_message(
-        self, proposed: Optional[uuid.UUID], fallback: Optional[uuid.UUID]
+        self,
+        proposed: Optional[uuid.UUID],
+        fallback: Optional[uuid.UUID],
+        conversation_id: Optional[uuid.UUID],
     ) -> Optional[uuid.UUID]:
-        """Only accept a model-supplied message id if that message exists."""
-        if proposed is None:
+        """Accept a model-supplied message id only if it is a message of the
+        turn's own conversation; otherwise the turn's user message."""
+        if proposed is None or conversation_id is None:
             return fallback
-        from app.database.models import Message
-
         try:
-            found = await self._session.get(Message, proposed)
+            found = (
+                await self._session.execute(
+                    select(Message.id).where(
+                        Message.id == proposed, Message.conversation_id == conversation_id
+                    )
+                )
+            ).first()
         except _DB_ERRORS:
             return fallback
         return proposed if found is not None else fallback
@@ -379,6 +532,7 @@ class MemoryService:
             Memory.normalized_content == normalized[:NORMALIZED_CONTENT_LENGTH],
             Memory.memory_type == candidate.memory_type,
             Memory.status == MemoryStatus.ACTIVE,
+            self._scope.clause(Memory),
         )
         try:
             result = await self._session.execute(statement)
@@ -404,6 +558,7 @@ class MemoryService:
             .where(
                 Memory.memory_type == memory_type,
                 Memory.status == MemoryStatus.ACTIVE,
+                self._scope.clause(Memory),
             )
             .order_by(Memory.created_at.desc())
             .limit(self._settings.MEMORY_DEDUP_CANDIDATES)
@@ -423,7 +578,7 @@ class MemoryService:
         limit: int = 50,
         offset: int = 0,
     ) -> Sequence[Memory]:
-        statement = select(Memory)
+        statement = select(Memory).where(self._scope.clause(Memory))
         if memory_type is not None:
             statement = statement.where(Memory.memory_type == memory_type)
         if status is not None:
@@ -443,7 +598,9 @@ class MemoryService:
         memory_type: Optional[MemoryType] = None,
         status: Optional[MemoryStatus] = None,
     ) -> int:
-        statement = select(func.count()).select_from(Memory)
+        statement = select(func.count()).select_from(Memory).where(
+            self._scope.clause(Memory)
+        )
         if memory_type is not None:
             statement = statement.where(Memory.memory_type == memory_type)
         if status is not None:
@@ -455,8 +612,14 @@ class MemoryService:
             raise self._wrap_db_error("count memories", exc)
 
     async def get_memory(self, memory_id: uuid.UUID) -> Memory:
+        # A filtered SELECT, never `session.get` (the identity map bypasses
+        # the filter).
         try:
-            memory = await self._session.get(Memory, memory_id)
+            memory = (
+                await self._session.execute(
+                    select(Memory).where(Memory.id == memory_id, self._scope.clause(Memory))
+                )
+            ).scalars().first()
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("get memory", exc)
         if memory is None:
@@ -466,7 +629,7 @@ class MemoryService:
     async def delete_memory(self, memory_id: uuid.UUID) -> None:
         try:
             result = await self._session.execute(
-                delete(Memory).where(Memory.id == memory_id)
+                delete(Memory).where(Memory.id == memory_id, self._scope.clause(Memory))
             )
         except _DB_ERRORS as exc:
             raise self._wrap_db_error("delete memory", exc)

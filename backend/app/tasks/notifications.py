@@ -44,9 +44,9 @@ can name a channel or a recipient, and nothing to leak.
 
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, NamedTuple, Optional
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,6 +67,17 @@ NOTIFIABLE_OUTCOMES: Dict[TaskNotificationKind, TaskState] = {
 
 #: The most notifications one listing returns.
 MAX_LISTED = 50
+
+
+class NotificationPage(NamedTuple):
+    """Stage 6M.2. One page of the owner's notifications, newest first.
+
+    `next_before` is the id to pass as `before` for the following page, or
+    None when this page is the last.
+    """
+
+    notifications: List[TaskNotification]
+    next_before: Optional[uuid.UUID]
 
 
 async def record_outcome(
@@ -153,6 +164,46 @@ class NotificationService:
             .limit(bounded)
         )).scalars().all())
 
+    async def page(
+        self,
+        limit: int = MAX_LISTED,
+        before: Optional[uuid.UUID] = None,
+        unread_only: bool = False,
+    ) -> Optional[NotificationPage]:
+        """Stage 6M.2. The owner's notifications, newest first, bounded.
+
+        Keyset-paged on `(created_at, id)`: `before` names the last
+        notification of the previous page, and only strictly older ones
+        follow, so a page never repeats or skips a row as new ones arrive.
+        `before` must be one of this owner's notifications -- read or unread
+        -- or the answer is None: another owner's id and an unknown id are
+        the same invalid cursor, so a cursor reveals nothing.
+        """
+        bounded = max(1, min(int(limit), MAX_LISTED))
+        conditions = [TaskNotification.owner_id == self._owner_id]
+        if unread_only:
+            conditions.append(TaskNotification.read_at.is_(None))
+        if before is not None:
+            anchor = await self.get(before)
+            if anchor is None:
+                return None
+            conditions.append(or_(
+                TaskNotification.created_at < anchor.created_at,
+                and_(
+                    TaskNotification.created_at == anchor.created_at,
+                    TaskNotification.id < anchor.id,
+                ),
+            ))
+        rows = list((await self._session.execute(
+            select(TaskNotification)
+            .where(and_(*conditions))
+            .order_by(TaskNotification.created_at.desc(), TaskNotification.id.desc())
+            .limit(bounded + 1)
+        )).scalars().all())
+        more = len(rows) > bounded
+        rows = rows[:bounded]
+        return NotificationPage(rows, rows[-1].id if more else None)
+
     async def for_task(self, task_id: uuid.UUID) -> List[TaskNotification]:
         """Every notification one of the owner's tasks produced."""
         return list((await self._session.execute(
@@ -194,6 +245,7 @@ class NotificationService:
 __all__ = [
     "MAX_LISTED",
     "NOTIFIABLE_OUTCOMES",
+    "NotificationPage",
     "NotificationService",
     "record_outcome",
 ]

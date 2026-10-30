@@ -17,6 +17,7 @@ from app.llm.base import LLMMessage, LLMProvider, LLMResponse, ProviderHealth
 from app.llm.factory import UnknownProviderError, build_provider
 from app.llm.providers import GroqProvider, OpenAICompatibleProvider
 from app.services.chat_service import ChatService
+from tests.scopes import ADMIN_SCOPE
 
 
 # --- Registry ---------------------------------------------------------------
@@ -166,10 +167,10 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
     from app.services.conversation_service import ConversationService
 
     provider = ClaudeShapedProvider()
-    conversations = ConversationService(db_session)
+    conversations = ConversationService(db_session, ADMIN_SCOPE)
     conversation = await conversations.create_conversation()
 
-    chat = ChatService(session=db_session, provider=provider, settings=settings)
+    chat = ChatService(session=db_session, provider=provider, settings=settings, scope=ADMIN_SCOPE)
     (
         user_message,
         assistant_message,
@@ -180,6 +181,8 @@ async def test_chat_service_works_unchanged_with_a_foreign_provider(
         workflow,
         calendar,
         mail,
+        # Stage 6N: the monitor step's result, now part of every turn.
+        monitor,
     ) = await chat.send_message(
         conversation.id, "hello from the test"
     )

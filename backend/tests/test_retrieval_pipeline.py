@@ -15,11 +15,12 @@ from app.relationships.models import (
 )
 from app.retrieval.service import RetrievalService
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 
 @pytest.fixture
 async def conversation(db_session):
-    return await ConversationService(db_session).create_conversation()
+    return await ConversationService(db_session, ADMIN_SCOPE).create_conversation()
 
 
 async def make_entity(db_session, name, kind=EntityType.TECHNOLOGY, aliases=()) -> Entity:
@@ -27,14 +28,14 @@ async def make_entity(db_session, name, kind=EntityType.TECHNOLOGY, aliases=()) 
         canonical_name=name,
         normalized_name=name.lower(),
         entity_type=kind,
-        status=EntityStatus.ACTIVE,
+        status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(entity)
     await db_session.flush()
     for alias in aliases:
         db_session.add(
             EntityAlias(
-                entity_id=entity.id, alias=alias, normalized_alias=alias.lower()
+                entity_id=entity.id, alias=alias, normalized_alias=alias.lower(), **ADMIN_SCOPE.write_columns()
             )
         )
     await db_session.flush()
@@ -55,7 +56,7 @@ async def make_memory(
         confidence_score=confidence,
         source_conversation_id=conversation.id,
         created_at=created,
-        updated_at=created,
+        updated_at=created, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(memory)
     await db_session.flush()
@@ -71,7 +72,7 @@ async def make_relationship(db_session, source, kind, target, memory=None, confi
         relationship_type=kind,
         target_entity_id=target.id,
         confidence_score=confidence,
-        status=RelationshipStatus.ACTIVE,
+        status=RelationshipStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
     )
     db_session.add(relationship)
     await db_session.flush()
@@ -84,7 +85,7 @@ async def make_relationship(db_session, source, kind, target, memory=None, confi
 
 
 def service(db_session, settings) -> RetrievalService:
-    return RetrievalService(session=db_session, settings=settings)
+    return RetrievalService(session=db_session, settings=settings, scope=ADMIN_SCOPE)
 
 
 # --- Entity matching --------------------------------------------------------

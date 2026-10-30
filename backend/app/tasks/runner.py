@@ -55,8 +55,10 @@ from typing import Optional
 
 from sqlalchemy import update
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.logging import get_logger
+from app.database.models.scope import resolve_member_scope
 from app.execution.errors import ExecutionError
 from app.execution.service import ExecutionService
 from app.execution.states import ExecutionState
@@ -64,6 +66,7 @@ from app.execution.schemas import ExecutionRequest
 from app.tasks import events as journal
 from app.tasks.capabilities import BindingStatus, bind_step
 from app.tasks.models import TaskEventType, TaskStep
+from app.tasks.monitoring import deadline_passed
 from app.tasks.schemas import RunnerOutcome, RunnerResult
 from app.tasks.service import TaskService
 from app.tasks.states import TaskState, TaskStepState, is_terminal
@@ -87,9 +90,12 @@ class TaskRunner:
         self._tasks = tasks
         self._session = tasks._session
         self._settings = tasks._settings
-        self._executions = executions or ExecutionService(
-            self._session, settings=self._settings
-        )
+        # Stage 7B unit 8b: the owner's executions are bound to the owner's
+        # scope, resolved when the first one is created (`_owner_executions`)
+        # -- the owner re-read then, so an inactive owner's step is refused.
+        # An injected service is used as given.
+        self._executions: Optional[ExecutionService] = executions
+        self._owner_bound = False
         # Stage 6E. The one authorization service, and the grant lookup it
         # consults. The runner holds the lookup only to hand it over: it
         # never calls a method on it, and never reads a grant itself.
@@ -100,6 +106,44 @@ class TaskRunner:
         self._grants = grants if grants is not None else GrantService(
             self._session, owner_id=tasks.owner_id
         )
+
+    async def _owner_executions(self) -> ExecutionService:
+        """The execution service for this task's owner, bound to the owner's
+        scope as it is now. Raises `ExecutionError` (`owner_not_active`) when
+        the owner is no longer an active member, which every caller already
+        handles as a refusal: nothing is created and nothing runs. An
+        injected service must be bound to that same scope (review L4)."""
+        if not self._owner_bound:
+            scope = await resolve_member_scope(self._session, self._tasks.owner_id)
+            if scope is None:
+                raise ExecutionError(reason="owner_not_active", detail="no active member scope")
+            if self._executions is None:
+                self._executions = ExecutionService(
+                    self._session, settings=self._settings, scope=scope)
+            elif self._executions.scope != scope:
+                raise ExecutionError(reason="owner_scope_mismatch",
+                                     detail="injected execution service")
+            self._owner_bound = True
+        return self._executions
+
+    async def bind_owner(self) -> bool:
+        """Re-read the owner and bind their scope, *before* any task row is
+        written (review M1). Revocation locks the member row and then the
+        owner's tasks; taking the member first here gives every path one lock
+        order -- member, then task -- so the two cannot deadlock. False when
+        the owner is no longer an active member: the caller then writes
+        nothing."""
+        try:
+            await self._owner_executions()
+        except ExecutionError:
+            return False
+        return True
+
+    def _owner_refusal(self, task_id: uuid.UUID) -> RunnerResult:
+        logger.info("Runner refused: the owner is no longer an active member",
+                    extra={"task_id": str(task_id)})
+        return RunnerResult(outcome=RunnerOutcome.REFUSED, task_id=task_id,
+                            reason="owner_not_active")
 
     async def advance(self, task_id: uuid.UUID) -> RunnerResult:
         """Advance this task by at most one step. Safe to call repeatedly.
@@ -121,6 +165,8 @@ class TaskRunner:
             )
 
     async def _advance(self, task_id: uuid.UUID) -> RunnerResult:
+        if not await self.bind_owner():
+            return self._owner_refusal(task_id)
         task = await self._tasks.get_detail(task_id)
         if task is None:
             # Includes another owner's task: `get_detail` filters on owner in
@@ -211,6 +257,8 @@ class TaskRunner:
             parse_spec,
         )
 
+        if not await self.bind_owner():
+            return self._owner_refusal(task_id)
         task = await self._tasks.get_detail(task_id)
         if task is None:
             return RunnerResult(
@@ -272,6 +320,15 @@ class TaskRunner:
 
         sequence = int(task.check_count or 0) + 1
         if not await self._claim_check(task, sequence):
+            # Stage 6P. Lost to another worker, or the task stopped being
+            # active since it was read. Only the second is a refusal.
+            fresh = await self._tasks.refresh(task.id)
+            if fresh is None or fresh.state not in {TaskState.QUEUED, TaskState.RUNNING}:
+                return RunnerResult(
+                    outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                    state=fresh.state if fresh is not None else None,
+                    reason="task_not_active",
+                )
             return RunnerResult(
                 outcome=RunnerOutcome.BLOCKED, task_id=task.id,
                 state=task.state, reason="check_already_claimed",
@@ -281,7 +338,7 @@ class TaskRunner:
         )
 
         try:
-            execution = await self._executions.create(
+            execution = await (await self._owner_executions()).create(
                 ExecutionRequest(
                     tool_name=binding.capability,
                     arguments=dict(step.arguments or {}),
@@ -426,6 +483,10 @@ class TaskRunner:
                 Task.id == task.id,
                 Task.owner_id == self._tasks.owner_id,
                 Task.check_count == sequence - 1,
+                # Stage 6P. Only while the task is still active: a
+                # cancellation or expiry that committed after the task was
+                # read wins here, before anything is read from Gmail.
+                Task.state.in_([TaskState.QUEUED, TaskState.RUNNING]),
             )
             .values(check_count=sequence, updated_at=datetime.now(timezone.utc))
             .execution_options(synchronize_session="fetch")
@@ -472,6 +533,21 @@ class TaskRunner:
             return RunnerResult(
                 outcome=RunnerOutcome.REFUSED, task_id=task.id,
                 state=task.state, reason="plan_not_authorized",
+            )
+        if task.monitor is not None and (
+            deadline_passed(task) or not self._tasks.authorization_valid(task)
+        ):
+            # Stage 6N. A monitor that has reached its deadline -- checked
+            # first, before its authorization is consulted -- or whose
+            # authorization has lapsed has ended. One refusal for both, so
+            # the runtime ends it the same way: terminal, and not a failure.
+            # No execution is created and nothing is read.
+            await self._record(
+                task, TaskEventType.RUNNER_REFUSED, {"reason": "monitor_expired"}
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                state=task.state, reason="monitor_expired",
             )
         if not self._tasks.authorization_valid(task):
             await self._record(
@@ -558,7 +634,7 @@ class TaskRunner:
         )
 
         try:
-            execution = await self._executions.create(
+            execution = await (await self._owner_executions()).create(
                 ExecutionRequest(
                     tool_name=binding.capability,
                     arguments=dict(step.arguments or {}),
@@ -664,7 +740,11 @@ class TaskRunner:
         if refreshed is not None and refreshed.steps and all(
             s.state is TaskStepState.COMPLETED for s in refreshed.steps
         ):
-            await self._complete(refreshed)
+            completed = await self._complete(refreshed)
+            if completed.outcome is not RunnerOutcome.TASK_COMPLETED:
+                # Stage 6N: cancelled while this step ran. Say so, never
+                # "completed".
+                return completed
             return RunnerResult(
                 outcome=RunnerOutcome.TASK_COMPLETED, task_id=task.id,
                 step_key=step.step_key, execution_id=execution_id,
@@ -725,6 +805,34 @@ class TaskRunner:
             )
 
         now = datetime.now(timezone.utc)
+        # Stage 6N. Completion is conditional on the task still being active
+        # in the database, not merely in this session's copy of it. A person
+        # can now cancel a running monitor (`POST /api/tasks/{id}/cancel`),
+        # and a check that was already in flight -- reading Gmail -- must not
+        # then complete the cancelled task and notify about it. The matched
+        # row stays locked until this transaction ends, so a cancellation
+        # arriving afterwards finds the task completed instead.
+        from app.tasks.models import Task
+
+        still_active = await self._session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.owner_id == self._tasks.owner_id,
+                Task.state.in_([TaskState.QUEUED, TaskState.RUNNING]),
+            )
+            .values(updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if still_active.rowcount != 1:
+            await self._record(
+                task, TaskEventType.RUNNER_REFUSED, {"reason": "task_not_active"}
+            )
+            return RunnerResult(
+                outcome=RunnerOutcome.REFUSED, task_id=task.id,
+                state=task.state, reason="task_not_active",
+            )
+
         previous = task.state
         task.state = TaskState.COMPLETED
         task.completed_at = now
@@ -771,12 +879,31 @@ class TaskRunner:
         Separate from `advance` so the state change is one auditable act
         rather than a side effect of the first step being claimed.
         """
+        from app.tasks.models import Task
+
         task = await self._tasks.get(task_id)
         if task is None or task.state is not TaskState.QUEUED:
             return False
-        task.state = TaskState.RUNNING
-        task.updated_at = datetime.now(timezone.utc)
-        await self._session.flush()
+        now = datetime.now(timezone.utc)
+        # Stage 6P (Known defect 8). Conditional on the row still being
+        # queued. A cancellation that committed after this session read the
+        # task matches nothing here -- and the stale copy is refreshed, so no
+        # caller goes on to treat a cancelled task as running.
+        moved = await self._session.execute(
+            update(Task)
+            .where(
+                Task.id == task.id,
+                Task.owner_id == self._tasks.owner_id,
+                Task.state == TaskState.QUEUED,
+            )
+            .values(state=TaskState.RUNNING, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if moved.rowcount != 1:
+            await self._tasks.refresh(task_id)
+            return False
+        set_committed_value(task, "state", TaskState.RUNNING)
+        set_committed_value(task, "updated_at", now)
         await self._record(
             task, TaskEventType.STATE_CHANGED,
             {"from": TaskState.QUEUED.value, "to": TaskState.RUNNING.value},

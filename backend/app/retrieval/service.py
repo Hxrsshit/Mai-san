@@ -19,6 +19,10 @@ by which retired knowledge reaches a prompt.
 
 **Retrieval remains read-only.** Lifecycle state is consulted here and changed
 only by the background pipeline. Nothing on the request path writes.
+
+Stage 7B unit 6: the service belongs to one knowledge scope, given at
+construction and handed to every matcher and retriever it builds, so a turn
+only ever retrieves its own member's knowledge.
 """
 
 import time
@@ -29,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
+from app.identity.scope import KnowledgeScope, require_scope
 from app.retrieval.context_builder import ContextBuilder
 from app.retrieval.entity_matcher import EntityMatcher
 from app.retrieval.query_normalizer import NormalizedQuery, analyse
@@ -57,13 +62,22 @@ logger = get_logger(__name__)
 
 class RetrievalService:
     def __init__(
-        self, session: AsyncSession, settings: Optional[Settings] = None
+        self,
+        session: AsyncSession,
+        settings: Optional[Settings] = None,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "RetrievalService")
         self._settings = settings or get_settings()
-        self._matcher = EntityMatcher(session)
+        self._matcher = EntityMatcher(session, self._scope)
         self._ranker = Ranker(self._settings)
         self._builder = ContextBuilder(self._settings)
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        return self._scope
 
     @property
     def builder(self) -> ContextBuilder:
@@ -128,6 +142,7 @@ class RetrievalService:
                 self._session,
                 self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE,
                 statuses=relationship_statuses,
+                scope=self._scope,
             ).collect(entity_ids),
             "relationships",
             degraded,
@@ -136,7 +151,10 @@ class RetrievalService:
         relationship_ids = [c.relationship.id for c in relationship_candidates]
 
         evidence, evidence_memory_ids = await self._safe(
-            evidence_map(self._session, relationship_ids), "evidence", degraded, ({}, set())
+            evidence_map(self._session, relationship_ids, self._scope),
+            "evidence",
+            degraded,
+            ({}, set()),
         )
 
         candidates: Dict[uuid.UUID, MemoryCandidate] = await self._safe(
@@ -144,6 +162,7 @@ class RetrievalService:
                 self._session,
                 self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE,
                 statuses=memory_statuses,
+                scope=self._scope,
             ).collect(
                 keywords=analysis.keywords,
                 entity_ids=entity_ids,
@@ -266,19 +285,21 @@ class RetrievalService:
         entity_ids = list(entity_strength)
 
         relationship_candidates = await RelationshipRetriever(
-            self._session, self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE
+            self._session, self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE, scope=self._scope
         ).collect(entity_ids)
         relationship_ids = [c.relationship.id for c in relationship_candidates]
-        evidence, _ = await evidence_map(self._session, relationship_ids)
+        evidence, _ = await evidence_map(self._session, relationship_ids, self._scope)
 
         candidates = await MemoryRetriever(
-            self._session, self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE
+            self._session, self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE, scope=self._scope
         ).collect(
             keywords=analysis.keywords,
             entity_ids=entity_ids,
             relationship_ids=relationship_ids,
         )
-        pool = list(candidates.values())
+        # The same bound, in the same order, as `retrieve`: the debug view
+        # shows the pool chat ranks, never the larger union of its sources.
+        pool = list(candidates.values())[: self._settings.RETRIEVAL_CANDIDATE_POOL_SIZE]
         return matches, entity_strength, relationship_candidates, evidence, pool
 
 

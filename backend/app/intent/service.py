@@ -30,6 +30,7 @@ from app.intent import policy
 from app.intent.classifier import IntentClassificationError, IntentClassifier
 from app.intent.schemas import IntentResult, IntentType
 from app.llm.base import LLMProvider
+from app.identity.scope import KnowledgeScope
 from app.services.conversation_service import ConversationService
 
 logger = get_logger(__name__)
@@ -47,12 +48,15 @@ class IntentService:
         settings: Optional[Settings] = None,
         conversation_service: Optional[ConversationService] = None,
         classifier: Optional[IntentClassifier] = None,
+        *,
+        scope: Optional[KnowledgeScope] = None,
     ) -> None:
         self._session = session
         self._settings = settings or get_settings()
         self._provider = provider
         self._conversations = conversation_service or (
-            ConversationService(session) if session is not None else None
+            # Stage 7B unit 4: recent context is read only within a scope.
+            ConversationService(session, scope) if session is not None else None
         )
         self._classifier = classifier or (
             IntentClassifier(provider, self._settings) if provider is not None else None

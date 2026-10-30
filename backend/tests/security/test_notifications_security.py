@@ -195,8 +195,12 @@ def test_the_module_has_no_dynamic_or_network_call() -> None:
         "send", "send_text", "check", "advance",
     ):
         if forbidden == "get":
-            # `get` exists only as the service's own method name, never called.
-            assert "get" not in names
+            # Changed deliberately in 6M.2: `page` resolves its cursor through
+            # the service's own owner-scoped `self.get`. No other `get` is
+            # called -- in particular nothing like an HTTP client's.
+            gets = [ast.unparse(n.func) for n in ast.walk(parse(NOTIFICATIONS))
+                    if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "get"]
+            assert gets == ["self.get"], gets
             continue
         assert forbidden not in names, forbidden
 
@@ -206,7 +210,8 @@ def test_the_read_service_offers_nothing_but_reading() -> None:
         name for name, _ in inspect.getmembers(NotificationService, inspect.isfunction)
         if not name.startswith("_")
     }
-    assert public == {"unread", "for_task", "get", "mark_read"}
+    # Stage 6M.2 adds `page`: newest first, bounded, owner-scoped.
+    assert public == {"unread", "for_task", "get", "mark_read", "page"}
 
 
 def test_every_read_query_filters_on_the_owner() -> None:
@@ -235,16 +240,34 @@ def test_the_row_has_no_free_text_column() -> None:
     ] == ["kind"]
 
 
-def test_no_http_route_reaches_notifications() -> None:
+def test_only_the_read_api_reaches_notifications_and_never_the_writer() -> None:
+    """Changed deliberately in 6M.2. Through 6L no HTTP module reached task
+    notifications. The read API now does, exactly this far: `deps.py` builds
+    the 6H read service for the request's owner, and the route imports only
+    the listing bound. No HTTP module names the writer or the row model, so
+    none can create a notification or query the table itself."""
+    allowed = {
+        "deps.py": {"NotificationService"},
+        "routes/notification_delivery.py": {"MAX_LISTED"},
+    }
     for path in (APP / "api").rglob("*.py"):
         tree = parse(path)
+        relative = path.relative_to(APP / "api").as_posix()
+        names = {
+            a.name for n in ast.walk(tree)
+            if isinstance(n, ast.ImportFrom) and n.module == "app.tasks.notifications"
+            for a in n.names
+        }
+        assert names == allowed.get(relative, set()), (relative, names)
         for module in imports(tree):
-            assert "notifications" not in module or module == "app.reminders.notifications", (
-                path.name, module,
-            )
-        source = path.read_text(encoding="utf-8")
-        for name in ("TaskNotification", "NotificationService", "record_outcome"):
-            assert name not in source, (path.name, name)
+            assert ("notifications" not in module or module in (
+                "app.reminders.notifications", "app.tasks.notifications")), (relative, module)
+        mentioned = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        mentioned |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        assert not {"TaskNotification", "record_outcome"} & mentioned, relative
+        constructs = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                      and getattr(n.func, "id", None) == "NotificationService"]
+        assert len(constructs) == (1 if relative == "deps.py" else 0), relative
 
 
 def test_no_content_handling_module_can_reach_notifications() -> None:

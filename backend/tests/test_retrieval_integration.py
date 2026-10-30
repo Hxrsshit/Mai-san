@@ -23,6 +23,7 @@ from app.relationships.models import (
 from app.prompt.formatter import REFERENCE_HEADER
 from app.prompt.formatter import knowledge_block as reference_block
 from app.services.conversation_service import ConversationService
+from tests.scopes import ADMIN_SCOPE
 
 NOTHING_TO_STORE = json.dumps({"should_store_memory": False, "memories": []})
 
@@ -39,12 +40,12 @@ def knowledge_block(provider):
 async def seed_knowledge(session_factory):
     """A small knowledge base spanning memories, entities and relationships."""
     async with session_factory() as session:
-        conversation = await ConversationService(session).create_conversation()
+        conversation = await ConversationService(session, ADMIN_SCOPE).create_conversation()
 
         def entity(name, kind, aliases=()):
             e = Entity(
                 canonical_name=name, normalized_name=name.lower(),
-                entity_type=kind, status=EntityStatus.ACTIVE,
+                entity_type=kind, status=EntityStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
             )
             session.add(e)
             return e
@@ -57,7 +58,7 @@ async def seed_knowledge(session_factory):
         await session.flush()
         session.add(
             EntityAlias(
-                entity_id=postgres.id, alias="Postgres", normalized_alias="postgres"
+                entity_id=postgres.id, alias="Postgres", normalized_alias="postgres", **ADMIN_SCOPE.write_columns()
             )
         )
 
@@ -68,7 +69,7 @@ async def seed_knowledge(session_factory):
                 memory_type=kind, status=MemoryStatus.ACTIVE,
                 importance_score=importance, confidence_score=0.95,
                 source_conversation_id=conversation.id,
-                created_at=created, updated_at=created,
+                created_at=created, updated_at=created, **ADMIN_SCOPE.write_columns(),
             )
             session.add(m)
             return m, entities
@@ -98,7 +99,7 @@ async def seed_knowledge(session_factory):
                 Relationship(
                     source_entity_id=src.id, relationship_type=kind,
                     target_entity_id=tgt.id, confidence_score=0.95,
-                    status=RelationshipStatus.ACTIVE,
+                    status=RelationshipStatus.ACTIVE, **ADMIN_SCOPE.write_columns(),
                 )
             )
         await session.commit()
@@ -131,7 +132,7 @@ async def test_retrieval_makes_no_call_at_all_when_used_directly(
 ) -> None:
     from app.retrieval.service import RetrievalService
 
-    await RetrievalService(db_session, settings).retrieve("What does Mai use?")
+    await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve("What does Mai use?")
 
     assert fake_provider.calls == []
     assert fake_provider.extraction_calls == []
@@ -365,7 +366,7 @@ async def test_partial_degradation_is_recorded(
         "app.retrieval.retrievers.RelationshipRetriever.collect", boom
     )
 
-    package = await RetrievalService(db_session, settings).retrieve("Mai PostgreSQL")
+    package = await RetrievalService(db_session, settings, scope=ADMIN_SCOPE).retrieve("Mai PostgreSQL")
 
     assert "relationships" in package.metadata.degraded_sources
 

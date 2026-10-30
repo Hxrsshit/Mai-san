@@ -407,6 +407,11 @@ class GoogleGmailIntegration(Integration):
             unread_only=bool(arguments.get("unread_only")),
             newer_than_days=newer,
             max_results=max(1, min(limit, MAX_MESSAGES)),
+            # Stage 6N. Passed as given, never repaired: `MailQuery` refuses
+            # anything but an in-bounds integer. Dropping a bad baseline would
+            # widen the search to the whole mailbox -- exactly the mail a
+            # monitor promised to ignore.
+            received_after=arguments.get("received_after"),
         )
 
     async def _fetch(

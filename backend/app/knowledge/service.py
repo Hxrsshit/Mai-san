@@ -11,6 +11,9 @@ imports this module, and a structural test enforces that.
 
 **No model call.** This module imports nothing from `app.llm`. Conflict
 detection is lexical and structural throughout.
+
+Stage 7B unit 5: the service belongs to one knowledge scope, given at
+construction and handed to the detector and the writer.
 """
 
 import time
@@ -23,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings, get_settings
 from app.core.errors import MemoryNotFoundError
 from app.core.logging import get_logger
+from app.identity.scope import KnowledgeScope, require_scope
 from app.knowledge.conflicts import ConflictDetector
 from app.knowledge.lifecycle import LifecycleWriter
 from app.knowledge.models import KnowledgeConflict
@@ -34,12 +38,21 @@ logger = get_logger(__name__)
 
 class KnowledgeService:
     def __init__(
-        self, session: AsyncSession, settings: Optional[Settings] = None
+        self,
+        session: AsyncSession,
+        settings: Optional[Settings] = None,
+        *,
+        scope: KnowledgeScope,
     ) -> None:
         self._session = session
+        self._scope = require_scope(scope, "KnowledgeService")
         self._settings = settings or get_settings()
-        self._detector = ConflictDetector(session)
-        self._writer = LifecycleWriter(session)
+        self._detector = ConflictDetector(session, self._scope)
+        self._writer = LifecycleWriter(session, self._scope)
+
+    @property
+    def scope(self) -> KnowledgeScope:
+        return self._scope
 
     async def evaluate_memory(self, memory: Memory) -> EvaluationReport:
         """Detect and apply every conflict caused by one new memory.
@@ -80,7 +93,13 @@ class KnowledgeService:
 
     async def lifecycle_for_memory(self, memory_id: uuid.UUID) -> MemoryLifecycle:
         """Everything known about one memory's lifecycle. Read-only."""
-        memory = await self._session.get(Memory, memory_id)
+        # A filtered SELECT, never `session.get` (the identity map bypasses
+        # the filter).
+        memory = (
+            await self._session.execute(
+                select(Memory).where(Memory.id == memory_id, self._scope.clause(Memory))
+            )
+        ).scalars().first()
         if memory is None:
             raise MemoryNotFoundError(f"Memory {memory_id} does not exist.")
 
@@ -100,7 +119,7 @@ class KnowledgeService:
     async def _links(self, column, value: uuid.UUID) -> List[ConflictLink]:
         statement = (
             select(KnowledgeConflict)
-            .where(column == value)
+            .where(column == value, self._scope.clause(KnowledgeConflict))
             .order_by(KnowledgeConflict.detected_at.desc())
             .limit(100)
         )

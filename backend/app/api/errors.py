@@ -12,7 +12,7 @@ from app.core.logging import get_logger, get_request_id, redact
 logger = get_logger(__name__)
 
 
-def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
+def _error_response(status_code: int, code: str, message: str, headers=None) -> JSONResponse:
     """Build the error envelope.
 
     The message is redacted on the way out. Most messages are written by this
@@ -23,6 +23,7 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     """
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content={
             "error": {
                 "code": code,
@@ -42,7 +43,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             "Request failed",
             extra={"code": exc.code, "status_code": exc.status_code},
         )
-        return _error_response(exc.status_code, exc.code, exc.message)
+        return _error_response(exc.status_code, exc.code, exc.message, headers=exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
